@@ -1,0 +1,20 @@
+node_modules
+node_modules/
+.claude/
+.superpowers/
+.worktrees/
+.codegraph/
+dist/
+*.js.map
+.env
+
+data/
+# temp/ is throwaway: reusable probes live in scripts/probes/; drop anything here after use
+temp/
+tmp/
+.playwright-mcp/
+scripts/generate-keys.ts
+# marketing/
+.specstory/
+# mac
+.DS_Store

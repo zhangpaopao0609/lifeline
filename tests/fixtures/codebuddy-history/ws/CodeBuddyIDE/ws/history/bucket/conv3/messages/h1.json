@@ -1,0 +1,7 @@
+{
+  "id": "h1",
+  "role": "assistant",
+  "createdAt": "2026-01-01T12:00:00.000Z",
+  "message": "{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"helper\"}]}",
+  "extra": "{\"isHelperMessage\":true}"
+}

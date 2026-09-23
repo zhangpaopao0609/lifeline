@@ -1,0 +1,9 @@
+{
+  "conversations": [
+    { "id": "conv1", "name": "Demo", "lastMessageAt": "2026-01-02T00:00:00.000Z", "chatMode": "craft", "selectedModelId": "m1" },
+    { "id": "conv2", "name": "NoTime" },
+    { "id": "conv3", "name": "Helper", "lastMessageAt": "2026-01-01T12:00:00.000Z" },
+    { "id": "conv4", "name": "Streaming", "lastMessageAt": "2026-01-03T00:00:00.000Z" },
+    { "id": "conv5", "name": "RunningReq", "lastMessageAt": "2026-01-03T01:00:00.000Z" }
+  ]
+}

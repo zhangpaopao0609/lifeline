@@ -1,0 +1,7 @@
+{
+  "id": "t1",
+  "role": "tool",
+  "createdAt": "2026-01-02T00:00:02.000Z",
+  "message": "{\"role\":\"tool\",\"content\":[{\"type\":\"tool-result\",\"toolCallId\":\"c1\",\"toolName\":\"read_file\",\"result\":{\"status\":\"success\",\"success\":true,\"result\":\"file contents\"}}]}",
+  "extra": "{\"toolStatus\":{\"c1\":{\"status\":\"executed\"}},\"isHelperMessage\":false}"
+}

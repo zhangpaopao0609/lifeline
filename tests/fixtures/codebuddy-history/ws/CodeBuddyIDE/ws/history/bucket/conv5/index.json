@@ -1,0 +1,6 @@
+{
+  "messages": [
+    { "id": "r1", "type": "text", "role": "user", "isComplete": true }
+  ],
+  "requests": [{ "id": "req1", "state": "tool-running", "messages": ["r1"] }]
+}

@@ -1,0 +1,6 @@
+{
+  "id": "r1",
+  "role": "user",
+  "message": "{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"run\"}]}",
+  "extra": "{\"isHelperMessage\":false}"
+}

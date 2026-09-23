@@ -1,0 +1,33 @@
+# Exclude **every** node_modules (pnpm install already ran inside the image
+# before COPY . .).
+# Each workspace package besides the root has its own: pnpm creates
+# packages/<pkg>/node_modules (symlinks into the root .pnpm store) for any
+# package that declares deps. Under npm only packages/web had one (the rest
+# relied on hoisting), so the old list only named that — after the migration
+# agent/server/cli/protocol all have them too. Without excluding them, COPY . .
+# would bring the host darwin symlink trees into the linux image (platform
+# binaries mixed into the dep tree, very hard to debug). The in-image copies
+# come from install; excluding the copy does not affect resolution.
+/node_modules
+/packages/protocol/node_modules
+/packages/cli/node_modules
+/packages/agent/node_modules
+/packages/server/node_modules
+/packages/web/node_modules
+/dist
+/packages/web/dist
+/data
+/temp
+/.git
+# Tooling and tests: unused at build time (tsc only compiles packages/*/src);
+# keep them out of the image context
+/.codebuddy
+/.cursor
+/.agents
+/docs
+/tests
+*.png
+*.log
+lifeline.sqlite*
+.env
+.env.development

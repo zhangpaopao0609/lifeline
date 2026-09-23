@@ -1,0 +1,77 @@
+{
+  "name": "lifeline",
+  "displayName": "Lifeline",
+  "type": "module",
+  "version": "0.1.74",
+  "packageManager": "pnpm@11.2.2",
+  "description": "Remote-control Cursor / CodeBuddy on your machine — watch sessions, approve actions, and send tasks from your phone.",
+  "license": "MIT",
+  "bin": {
+    "lifeline": "./dist/cli/lifeline.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @lifeline/web run dev",
+    "dev:relay": "mkdir -p temp data && tsx scripts/dev-wrapper.ts",
+    "dev:server": "mkdir -p temp data && tsx packages/server/src/index.ts",
+    "build": "tsc && (mkdir -p dist/client/public && cp dist/cli/lifeline.mjs dist/client/public/ 2>/dev/null || true)",
+    "start": "mkdir -p temp data && node dist/packages/server/src/index.js",
+    "agent": "mkdir -p temp data && tsx packages/agent/src/index.ts",
+    "start:agent": "mkdir -p temp data && node dist/packages/agent/src/index.js",
+    "build:cli": "tsx scripts/build-cli.ts",
+    "build:web": "pnpm --filter @lifeline/web run build",
+    "dev:web": "pnpm --filter @lifeline/web run dev",
+    "build:runtime": "tsx scripts/pack-runtime.ts",
+    "build:docker": "docker build -t lifeline:local .",
+    "discover": "tsx scripts/discover-dom.ts",
+    "record": "mkdir -p data && tsx scripts/record-cdp.ts",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "probe": "tsx scripts/probe-cdp.ts",
+    "wait-record": "tsx scripts/wait-record.ts",
+    "commit": "cz",
+    "prepare": "husky"
+  },
+  "dependencies": {
+    "@lifeline/protocol": "workspace:*",
+    "better-sqlite3": "^12.11.1",
+    "dotenv": "^17.3.1",
+    "drizzle-orm": "^0.44.5",
+    "fastify": "^5.6.0",
+    "socket.io": "^4.8.0",
+    "socket.io-client": "^4.8.3",
+    "ws": "^8.18.0",
+    "zod": "^4.1.5"
+  },
+  "devDependencies": {
+    "@antfu/eslint-config": "^9.5.1",
+    "@commitlint/cli": "^21.2.3",
+    "@commitlint/config-conventional": "^21.2.3",
+    "@eslint-react/eslint-plugin": "^5.20.1",
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/jsdom": "^28.0.1",
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.0",
+    "adm-zip": "^0.6.1",
+    "commitizen": "^4.3.2",
+    "cz-git": "^1.14.0",
+    "drizzle-kit": "^0.31.4",
+    "esbuild": "^0.24.0",
+    "eslint": "^10.11.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.7",
+    "husky": "^9.1.7",
+    "jsdom": "^29.0.1",
+    "lint-staged": "^17.5.1",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  },
+  "config": {
+    "commitizen": {
+      "path": "node_modules/cz-git"
+    }
+  }
+}

@@ -1,0 +1,30 @@
+# Lifeline server self-host compose — **reference template**.
+#
+# Real deploys use scripts/selfhost.sh (it writes its own compose instance with
+# image name / port rendered from the environment). Using this file directly
+# requires a sibling .env (`env_file` is required) and a pullable image.
+#
+# ⚠️ Do not `docker compose up` at the repo root: the `./data` bind mount would
+# put the developer's local data/ (real SQLite) into the container.
+#
+# Auth defaults to password + first-boot claim (copy the one-time code from the
+# container logs after opening the browser). Gateway / reverse-proxy / preset
+# password all go through .env (full variable table: docs/selfhost.md and the
+# Auth providers section of the repo-root .env.example).
+services:
+  lifeline:
+    image: ghcr.io/zhangpaopao0609/lifeline:latest
+    container_name: lifeline
+    restart: unless-stopped
+    ports:
+      - '${LIFELINE_PORT:-8080}:18765'
+    volumes:
+      - ./data:/data
+    env_file:
+      - .env
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:18765/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

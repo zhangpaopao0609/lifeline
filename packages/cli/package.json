@@ -1,0 +1,10 @@
+{
+  "name": "@lifeline/cli",
+  "type": "module",
+  "version": "0.1.63",
+  "private": true,
+  "dependencies": {
+    "@lifeline/agent": "workspace:*",
+    "@lifeline/protocol": "workspace:*"
+  }
+}

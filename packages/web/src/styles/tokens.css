@@ -1,0 +1,1809 @@
+@import 'tailwindcss';
+
+/* ============================================================
+   Design Tokens — dark Minimalism
+   Source of truth: this file (shared by the console and the marketing site)
+   ============================================================ */
+
+:root {
+  /* Surfaces */
+  --bg-0: #09090b;
+  --bg-1: #141417;
+  --bg-2: #1c1c21;
+  --bg-3: #27272a;
+
+  /* Text */
+  --text-primary: rgba(255, 255, 255, .92);
+  --text-secondary: rgba(255, 255, 255, .6);
+  --text-weak: rgba(255, 255, 255, .38);
+  --text-inverse: #09090b;
+
+  /* Accent: link blue. Not also a warning color */
+  --accent: #2473c9;
+  --accent-soft: rgba(36, 115, 201, .16);
+  --accent-faint: rgba(36, 115, 201, .07);
+
+  /* Semantic colors: seeing the color = seeing the status */
+  --ok: #34d399;
+  --error: #f43f5e;
+  --warning: #fbbf24;
+
+  /* Hairline */
+  --hairline: rgba(255, 255, 255, .06);
+  --hairline-strong: rgba(255, 255, 255, .12);
+
+  /* Radii */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+
+  /* Fonts: UI = Inter; code / commands / numbers / hostname = JetBrains Mono */
+  --font-ui: 'Inter', -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* Type size: body 14px, timeline 14.5px, chrome 12–13px */
+  --text-body: 14px;
+  --text-timeline: 14.5px;
+  --text-chrome: 12.5px;
+
+  /* Spacing: 4pt grid (4/8/12/16/24/32) — use the numbers directly, no extra variables */
+
+  /* Shadow: cards have none; overlays only */
+  --shadow-overlay: 0 8px 32px rgba(0, 0, 0, .5);
+
+  /* Motion */
+  --ease-spring: cubic-bezier(.2, .8, .2, 1);
+  --duration-fast: 150ms;
+  --duration-base: 250ms;
+}
+
+/* ------------------------------------------------------------
+   Base
+   ------------------------------------------------------------ */
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+
+  /* The page as a whole does not scroll: machine list / session list / timeline each scroll in their own region (2026-09-15 iteration feedback) */
+  overflow: hidden;
+
+  /* Touch: when an inner scroller hits either end, do not hand the scroll chain to the page. iOS 16 / new WKWebView honor this;
+     older versions do not, so Timeline's touchmove end-stop is the fallback (in WeChat, rubber-banding the page changes viewport height,
+     and the timeline reflows as a block = the "jump" the user sees). */
+  overscroll-behavior: none;
+}
+
+body {
+  background: var(--bg-0);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: var(--text-body);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+#root {
+  height: 100%;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: default;
+}
+
+code,
+pre,
+.mono {
+  font-family: var(--font-mono);
+}
+
+::selection {
+  background: var(--accent-soft);
+}
+
+/* Route links are <a> (react-router <Link>): strip the underline and UA blue.
+   Color/decoration come from each class (.btn-* / .brand-mark / .menu-item / .md-body a are all class selectors and will override this) */
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--hairline-strong) transparent;
+
+  /* Touch: a double-tap zooms the fixed chrome until content runs out of the viewport (iOS ignores meta user-scalable;
+     this is the only CSS-side stop that works). manipulation still allows scroll and swipe, it only drops double-tap zoom;
+     pinch-zoom and "restored zoom on returning to the foreground" are handled by lib/page-zoom.ts. */
+  touch-action: manipulation;
+}
+
+/* Restrained motion: honor prefers-reduced-motion (spec §1) */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ------------------------------------------------------------
+   Markdown (assistant as a full-width document, Linear-style)
+   ------------------------------------------------------------ */
+
+.md-body {
+  font-size: var(--text-timeline);
+  line-height: 1.65;
+  overflow-wrap: break-word;
+}
+
+.md-body > :first-child { margin-top: 0; }
+
+.md-body > :last-child { margin-bottom: 0; }
+
+.md-body p { margin: 6px 0; }
+
+.md-body h1,
+.md-body h2,
+.md-body h3,
+.md-body h4 {
+  margin: 16px 0 8px;
+  line-height: 1.3;
+}
+
+.md-body ul,
+.md-body ol {
+  margin: 6px 0;
+  padding-left: 22px;
+}
+
+.md-body li + li { margin-top: 2px; }
+
+.md-body a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.md-body a:hover { text-decoration: underline; }
+
+.md-body code:not(pre code) {
+  background: var(--bg-3);
+  border-radius: var(--radius-sm);
+  padding: 1px 5px;
+  font-family: var(--font-mono);
+  font-size: .92em;
+}
+
+.md-codeblock {
+  margin: 8px 0;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--bg-1);
+  overflow: hidden;
+}
+
+.md-codeblock-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--hairline);
+  font-size: 11px;
+  color: var(--text-weak);
+}
+
+.md-codeblock-lang {
+  font-family: var(--font-mono);
+  text-transform: lowercase;
+}
+
+.md-codeblock-actions {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.md-codeblock-copy,
+.md-codeblock-expand {
+  background: none;
+  border: 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+}
+
+.md-codeblock-copy:hover,
+.md-codeblock-expand:hover { background: var(--bg-3); }
+
+.md-codeblock pre {
+  margin: 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.md-body blockquote {
+  margin: 6px 0;
+  padding: 2px 12px;
+  border-left: 2px solid var(--hairline-strong);
+  color: var(--text-secondary);
+}
+
+.md-body table {
+  border-collapse: collapse;
+  margin: 8px 0;
+}
+
+.md-body th,
+.md-body td {
+  border: 1px solid var(--hairline);
+  padding: 4px 10px;
+  font-size: var(--text-chrome);
+}
+
+/* ------------------------------------------------------------
+   Timeline scroll container: native scroll (not virtualized).
+
+   The window is already capped at 120 items by the store; real height + exact anchors are far more
+   stable than "estimated height + post-hoc correction" (see the comment at the top of Timeline.tsx).
+   This layer only needs three things:
+   1) scrolling happens here; the page as a whole still does not scroll;
+   2) `.tl-list` is the position:relative containing block — anchors convert via offsetTop,
+      and its offsetParent is this element;
+   3) when content is shorter than one screen, stick to the bottom (`:first-child` margin-top:auto, same as the old alignToBottom):
+      leftover space sits under the session bar instead of shoving bubbles to mid-screen.
+   ------------------------------------------------------------ */
+
+.tl-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.tl-list {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+.tl-list > .tl-item:first-child {
+  margin-top: auto;
+}
+
+/* ------------------------------------------------------------
+   Timeline rhythm (spec §4: 24px before human, 0 inside a work run, 12px from work → body)
+   Segments are sibling nodes, but rhythm is still computed per item, and it must be padding — margin
+   participates in collapsing, so measured item height would not match real occupancy (anchors drift).
+   12px of breathing room at each end.
+   ------------------------------------------------------------ */
+
+.tl-item { padding-top: 12px; }
+
+.tl-item-human { padding-top: 24px; }
+
+.tl-item-tight { padding-top: 0; }
+
+.tl-item-last { padding-bottom: 12px; }
+
+/* ------------------------------------------------------------
+   On-device scroll field-capture panel (mounted only when the URL has `tltrace`; see TimelineProbe.tsx)
+   Pinned top-left, click-through: a screenshot of this block is enough when reproducing on a real device — criterion hits on scene + the windowing decision at that moment.
+   ------------------------------------------------------------ */
+
+.tl-probe {
+  position: fixed;
+  top: max(8px, env(safe-area-inset-top));
+  left: 8px;
+  z-index: 95;
+  max-width: calc(100vw - 16px);
+  padding: 6px 8px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-sm);
+  background: rgba(9, 9, 11, .86);
+  color: #d7ffe1;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+}
+
+.tl-probe-head {
+  color: var(--accent);
+}
+
+.tl-probe-line {
+  color: var(--text-weak);
+}
+
+/* Loading three-dot breathe */
+.tl-loading {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px 0;
+}
+
+.tl-loading span {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--text-weak);
+  animation: tl-breathe 1.2s var(--ease-spring) infinite;
+}
+
+.tl-loading span:nth-child(2) { animation-delay: .2s; }
+
+.tl-loading span:nth-child(3) { animation-delay: .4s; }
+
+@keyframes tl-breathe {
+  0%,
+  60%,
+  100% {
+    opacity: .35;
+    transform: translateY(0);
+  }
+
+  30% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
+
+/* ------------------------------------------------------------
+   Body-fetch skeleton (after tapping a session, before the session:get reply)
+   Laid out with the real rhythm (peer body full-width, own right bubble) and stuck to the bottom: when the body arrives the visual landing matches,
+   instead of "jumping from blank to content". If the reply is fast enough it never appears (see Timeline's 200ms threshold).
+   ------------------------------------------------------------ */
+
+.tl-skel {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 16px 0 12px;
+  animation: tl-skel-in var(--duration-base) var(--ease-spring);
+}
+
+.tl-skel-line,
+.tl-skel-bubble {
+  background: var(--bg-2);
+  animation: tl-skel-pulse 1.6s var(--ease-spring) infinite;
+}
+
+.tl-skel-line {
+  height: 12px;
+  border-radius: var(--radius-sm);
+}
+
+.tl-skel-bubble {
+  height: 34px;
+  border-radius: 14px 14px 4px 14px;
+}
+
+@keyframes tl-skel-in {
+  from { opacity: 0; }
+
+  to { opacity: 1; }
+}
+
+@keyframes tl-skel-pulse {
+  0%,
+  100% { opacity: .6; }
+
+  50% { opacity: 1; }
+}
+
+/* ------------------------------------------------------------
+   Overlay spring feel (spec §1: 150–250ms cubic-bezier(.2,.8,.2,1))
+   ------------------------------------------------------------ */
+
+@keyframes overlay-in {
+  from { opacity: 0; }
+
+  to { opacity: 1; }
+}
+
+@keyframes popover-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(.98);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes sheet-in {
+  from { transform: translateY(100%); }
+
+  to { transform: none; }
+}
+
+.anim-overlay { animation: overlay-in var(--duration-fast) var(--ease-spring); }
+
+.anim-popover { animation: popover-in var(--duration-fast) var(--ease-spring); }
+
+.anim-sheet { animation: sheet-in var(--duration-base) var(--ease-spring); }
+
+/* live status-dot: restrained pulse */
+@keyframes live-pulse {
+  0%,
+  100% { opacity: 1; }
+
+  50% { opacity: .4; }
+}
+
+.live-dot-pulse { animation: live-pulse 1.6s var(--ease-spring) infinite; }
+
+/* ------------------------------------------------------------
+   Chrome skeleton (desktop three columns / phone single column)
+   ------------------------------------------------------------ */
+
+.shell-desktop {
+  position: relative; /* containing block for the absolutely positioned split handles */
+  display: grid;
+
+  /* First two column widths are written by React into --rail-w / --sess-w (dragging the split handle; see lib/column-width.ts);
+     if never written, fall back to the original values — BootOverlay does not set the variables, so the skeleton paints as before */
+  grid-template-columns: var(--rail-w, 240px) var(--sess-w, 280px) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  height: 100%;
+  overflow: hidden;
+}
+
+.shell-mobile {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.shell-col {
+  min-width: 0;
+  min-height: 0;
+}
+
+.shell-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg-0);
+}
+
+/* Draggable split handle between the three columns (2026-09-20): 11px hit area floats on the seam, does not occupy a grid column.
+   Invisible by default; a 2px accent line lights up on hover / focus / while dragging — the columns' own hairlines are already enough,
+   an always-on colored line is noise. Position also reads those two variables: when a column width moves, the seam follows.
+
+   Hit area (including cursor): cursor is col-resize for anything that lands on this strip — more than twice as wide as VSCode's sash (~4px),
+   but do not expand further: the "…" menu on the right of the rail and the right edge of session rows sit about 10px from the seam,
+   and any wider would steal clicks from them. */
+.split-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 11px;
+  transform: translateX(-50%);
+  z-index: 5;
+  border: 0;
+  padding: 0;
+  background: none;
+  cursor: col-resize;
+  touch-action: none; /* Touch (iPad landscape ≥1024): hold to drag, do not scroll the page */
+  user-select: none;
+}
+
+.split-handle::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+  background: transparent;
+  transition: background var(--duration-fast) var(--ease-spring);
+}
+
+.split-handle:hover::after,
+.split-handle:focus-visible::after,
+.split-handle.is-dragging::after {
+  background: var(--accent);
+}
+
+.split-handle:focus-visible {
+  outline: none;
+}
+
+.split-rail { left: var(--rail-w, 240px); }
+
+.split-sess { left: calc(var(--rail-w, 240px) + var(--sess-w, 280px)); }
+
+/* While dragging: keep cursor col-resize throughout and forbid selection (otherwise sweeping across the timeline paints a blue selection) */
+body.is-col-resizing,
+body.is-col-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
+.icon-btn {
+  background: none;
+  border: 0;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.icon-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-3);
+}
+
+.mobile-topbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  padding-top: max(8px, env(safe-area-inset-top));
+  border-bottom: 1px solid var(--hairline);
+  background: var(--bg-1);
+}
+
+.fullscreen-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: var(--bg-0);
+  display: flex;
+  flex-direction: column;
+}
+
+.drag-handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 28px;
+  margin: 0;
+  color: var(--text-weak);
+  cursor: grab;
+  flex-shrink: 0;
+  background: none;
+  border: 0;
+  padding: 0;
+  opacity: .5;
+}
+
+.drag-handle:hover {
+  opacity: 1;
+  color: var(--text-secondary);
+}
+
+.drag-handle:active {
+  cursor: grabbing;
+}
+
+@media (max-width: 1023px) {
+  /* Touch has no hover: the drag-reorder handle must stay visible (desktop only shows it on hover; see .sess-head-drag); size it to 44px as well.
+     The selector must include .sess-group, otherwise the later .sess-head-drag { opacity: 0 } wins by source order. */
+  .drag-handle,
+  .sess-group .sess-head-drag {
+    width: 44px;
+    height: 44px;
+    margin: -8px 0 -8px -8px;
+    opacity: .7;
+  }
+
+  .sess-add {
+    width: 44px;
+    height: 44px;
+    margin: -8px -4px -8px 0;
+  }
+
+  /* The + inside a nested section header (New Agent in the Agents window): the section header itself is only 24px tall,
+     and 44px would fatten it into a chubby row, so shrink one step here */
+  .sess-section-head .sess-add {
+    width: 30px;
+    height: 30px;
+    margin: -3px -4px -3px 0;
+  }
+
+  /* Touch: send button back to 44px; pills also bump one size */
+  .send-btn {
+    width: 44px;
+    height: 44px;
+    border-radius: var(--radius-md);
+  }
+
+  .pill {
+    height: 34px;
+    padding: 0 12px;
+  }
+}
+
+/* iOS Safari auto-zooms the whole page on focusing an input (and does not auto-zoom back); the threshold is control font-size < 16px.
+   This project's body is 14px and the search box is 12.5px, both under the line; on touch / narrow screens lift them to 16px.
+   Do not block this with viewport maximum-scale — that would also disable pinch-zoom.
+   This file sits outside Tailwind's @layer, so these rules outrank the text-[length:*] utilities in components. */
+@media (pointer: coarse), (max-width: 1023px) {
+  input,
+  textarea,
+  select {
+    font-size: 16px;
+  }
+}
+
+/* Session rail: windows are groups, sessions are rows. Do not paint selection as a pill. */
+/* Type hierarchy: window name 14px semibold mono > session row 12.5px regular UI */
+.sess-group {
+  padding: 2px 0 10px;
+}
+
+.sess-group + .sess-group {
+  border-top: 1px solid var(--hairline);
+  padding-top: 10px;
+}
+
+/* Whole group header is clickable: accordion (all expanded by default; tap once to collapse) */
+.sess-head {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 30px;
+  padding: 2px 4px 3px 2px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.sess-head:hover,
+.sess-head:focus-visible {
+  background: var(--bg-2);
+  outline: none;
+}
+
+/* Icon slot, three states: default window icon; expanded hover = down caret; collapsed hover = right caret */
+.sess-head-icon {
+  position: relative;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  color: var(--text-weak);
+}
+
+.sess-head-icon > svg {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  transition: opacity var(--duration-fast) var(--ease-spring);
+}
+
+.sess-head-icon .ico-toggle { opacity: 0; }
+
+.sess-group.is-collapsed .sess-head-icon .ico-open { display: none; }
+
+.sess-group:not(.is-collapsed) .sess-head-icon .ico-closed { display: none; }
+
+.sess-head:hover .sess-head-icon .ico-window { opacity: 0; }
+
+.sess-head:hover .sess-head-icon .ico-toggle { opacity: 1; }
+
+/* Drag-reorder handle: only appear on hover, do not compete with the icon slot for attention */
+.sess-head-drag {
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-spring);
+}
+
+.sess-head:hover .sess-head-drag { opacity: .55; }
+
+.sess-head:hover .sess-head-drag:hover { opacity: 1; }
+
+/* Window name = group title: one size above the session row, semibold, mono (2026-09-15 iteration feedback) */
+.sess-head-title {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--text-body);
+  font-weight: 600;
+  color: var(--text-secondary);
+  letter-spacing: .01em;
+}
+
+.sess-add {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  border: 0;
+  background: none;
+  color: var(--text-weak);
+  border-radius: var(--radius-sm);
+}
+
+.sess-add:hover,
+.sess-add:focus-visible {
+  color: var(--accent);
+  background: var(--accent-faint);
+}
+
+/* Nested section in the Agents window (repo groups): one size below the window name, muted color, not a draggable window */
+.sess-section-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  min-height: 24px;
+  margin: 2px 0 0;
+  padding: 2px 6px 2px 14px;
+  border: 0;
+  background: none;
+  color: var(--text-weak);
+  font: inherit;
+  font-size: var(--text-chrome);
+  text-align: left;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+
+.sess-section-head:hover,
+.sess-section-head:focus-visible {
+  background: var(--bg-2);
+  color: var(--text-secondary);
+  outline: none;
+}
+
+.sess-section-title {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+
+.sess-section-count {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-weak);
+  opacity: .8;
+}
+
+/* Draft chip (the row created by tapping New Agent in the Agents window) */
+.sess-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--bg-3);
+  color: var(--text-weak);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+/* Session rows indent one step (12px): line up with the title start in sess-head (2 + drag handle 18 + gap 2 = 22px),
+   so it reads as a "window → session" hierarchy (2026-09-15 iteration feedback) */
+.sess-tab {
+  display: flex;
+  width: calc(100% - 12px);
+  align-items: center;
+  gap: 8px;
+  margin: 1px 0 1px 12px;
+  padding: 6px 8px 6px 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--text-chrome);
+  text-align: left;
+}
+
+.sess-tab:hover:not(.is-viewing) {
+  background: var(--bg-2);
+  color: var(--text-primary);
+}
+
+.sess-tab.is-window-live {
+  color: var(--text-primary);
+}
+
+.sess-tab.is-viewing {
+  background: var(--bg-3);
+  color: var(--text-primary);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.sess-tab.is-viewing:hover {
+  background: var(--bg-3);
+}
+
+/* ------------------------------------------------------------
+   Questionnaire card question area (Action Center): capped height + inner scroll.
+
+   Multi-question questionnaires can punch through the whole viewport on a narrow screen — 4 questions ~700px, Timeline crushed to 0,
+   Composer shoved off-screen, last questions have nowhere to appear (2026-09-18 feedback: 4 questions, only 3 showed).
+   Cap height relative to the viewport here; questions scroll in this layer; header (answered x/y) and footer (Complete /
+   Skip) stay outside the scroller and remain visible.
+   Write 46vh first as a fallback: if an old WebView does not understand dvh the whole declaration is dropped, which would mean no cap at all.
+   ------------------------------------------------------------ */
+
+.qa-list-scroll {
+  max-height: 46vh;
+  max-height: 46dvh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* More questions below: bottom fade + ⌄ (touch has no persistent scrollbar; "content is clipped" alone is not obvious enough) */
+.qa-list-fade {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  justify-content: center;
+  padding-top: 16px;
+  background: linear-gradient(to bottom, transparent, var(--bg-2) 72%);
+  color: var(--text-weak);
+  pointer-events: none;
+}
+
+/* ------------------------------------------------------------
+   Shared controls
+   ------------------------------------------------------------ */
+
+.content-col {
+  width: 100%;
+  max-width: 860px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border-radius: var(--radius-sm);
+  padding: 6px 14px;
+  font: inherit;
+  font-size: var(--text-chrome);
+  transition: background var(--duration-fast) var(--ease-spring), color var(--duration-fast) var(--ease-spring);
+}
+
+.btn-primary {
+  border: 0;
+  background: var(--accent);
+  color: var(--text-inverse);
+  font-weight: 600;
+}
+
+.btn-primary:disabled {
+  background: var(--bg-3);
+  color: var(--text-weak);
+}
+
+.btn-ghost {
+  border: 1px solid var(--hairline-strong);
+  background: none;
+  color: var(--text-secondary);
+}
+
+.btn-outline {
+  border: 1px solid var(--accent);
+  background: none;
+  color: var(--accent);
+}
+
+.btn-soft {
+  border: 1px solid var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.btn-danger {
+  border: 0;
+  background: var(--error);
+  color: #fff;
+}
+
+/* Selector pill: uniform neutral state (accent is reserved for status and primary actions, no longer a stroke on mode/model) */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  max-width: 180px;
+  padding: 0 10px;
+  border: 1px solid var(--hairline-strong);
+  background: var(--bg-2);
+  color: var(--text-secondary);
+  border-radius: 999px;
+  font-size: var(--text-chrome);
+  transition: color var(--duration-fast) var(--ease-spring), border-color var(--duration-fast) var(--ease-spring);
+}
+
+.pill:hover {
+  color: var(--text-primary);
+  border-color: var(--text-weak);
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: none;
+  color: var(--text-primary);
+  font-size: var(--text-body);
+}
+
+.menu-item:hover {
+  background: var(--bg-3);
+}
+
+.cmd-pre {
+  margin: 0;
+  padding: 12px;
+  background: var(--bg-0);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  font-size: 12.5px;
+
+  /* Wrap instead of horizontal scroll: the machine-row menu popover is only 380px, uninstall/update commands are longer,
+     and `overflow-x: auto` at this width has no visible scrollbar, so the command is clipped mid-sentence (2026-09-20 feedback) */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.surface-card {
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--bg-1);
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.dot-sm {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.eyebrow {
+  font-size: 11px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.tl-hint {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--text-weak);
+  font-size: var(--text-chrome);
+  padding: 24px;
+  text-align: center;
+}
+
+/* Composer: same background as the main pane; the input itself is a floating card (no more a spanning grey bar + hard divider) */
+.composer-dock {
+  background: var(--bg-0);
+  padding: 8px 16px calc(8px + env(safe-area-inset-bottom));
+}
+
+/* Input + send button as one piece: one box, button at inner bottom-right, height aligned to 44px */
+.composer-box {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  min-height: 44px;
+  padding: 5px 5px 5px 12px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-2);
+  transition: border-color var(--duration-fast) var(--ease-spring);
+}
+
+.composer-box:focus-within {
+  border-color: var(--accent);
+}
+
+.composer-box textarea::placeholder {
+  color: var(--text-weak);
+}
+
+.send-btn {
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+  transition: background var(--duration-fast) var(--ease-spring), color var(--duration-fast) var(--ease-spring);
+}
+
+.bubble-human {
+  max-width: 78%;
+  background: var(--bg-2);
+  border-radius: 14px 14px 4px 14px;
+  padding: 8px 14px;
+  border: 1px solid transparent;
+}
+
+/* Questionnaire answer (card after parsing `<question_answer>`): question + answer is longer than a chat line,
+   78% wraps long options onto several lines; only widen here, no min-width — short answers stay a small bubble */
+.bubble-human.is-qa {
+  max-width: 88%;
+}
+
+.bubble-human.is-failed {
+  border-color: var(--error);
+}
+
+.thought-row {
+  border-left: 2px solid var(--hairline-strong);
+  padding: 2px 0 2px 10px;
+  color: var(--text-weak);
+  font-size: var(--text-chrome);
+}
+
+/* Position / offset / flip are computed by Radix Popover (Floating UI); this file only keeps the look */
+.layer-popover {
+  z-index: 50;
+  min-width: 220px;
+  max-width: 380px;
+  max-height: 50vh;
+  overflow-y: auto;
+  background: var(--bg-2);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-overlay);
+  padding: 6px;
+}
+
+.layer-sheet-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(0, 0, 0, .5);
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+}
+
+.layer-sheet {
+  background: var(--bg-2);
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  padding: 12px 12px calc(12px + env(safe-area-inset-bottom));
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+@keyframes boot-fade-in {
+  from { opacity: 0; }
+
+  to { opacity: 1; }
+}
+
+.boot-fade {
+  height: 100%;
+  animation: boot-fade-in var(--duration-fast) var(--ease-spring);
+}
+
+.boot-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  background: var(--bg-0);
+}
+
+.skel-bar {
+  height: 12px;
+  margin-bottom: 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-2);
+}
+
+.toast-stack {
+  position: fixed;
+  bottom: calc(20px + env(safe-area-inset-bottom));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+}
+
+.toast {
+  border: 1px solid var(--hairline);
+  background: var(--bg-2);
+  color: var(--text-primary);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-overlay);
+  padding: 8px 16px;
+  font-size: var(--text-chrome);
+  max-width: 80vw;
+}
+
+.toast-error {
+  color: var(--error);
+}
+
+.palette-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: rgba(0, 0, 0, .5);
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 12vh;
+}
+
+.palette {
+  width: min(560px, calc(100vw - 32px));
+  background: var(--bg-2);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-overlay);
+  overflow: hidden;
+}
+
+.palette-input {
+  width: 100%;
+  box-sizing: border-box;
+  background: none;
+  border: 0;
+  outline: none;
+  border-bottom: 1px solid var(--hairline);
+  color: var(--text-primary);
+  font: inherit;
+  padding: 13px 16px;
+}
+
+.modal-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  background: rgba(0, 0, 0, .55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.modal-card {
+  width: min(760px, calc(100vw - 48px));
+  max-height: calc(100vh - 96px);
+  background: var(--bg-1);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-overlay);
+  display: flex;
+  flex-direction: column;
+}
+
+.code-fs {
+  position: fixed;
+  inset: 0;
+  z-index: 75;
+  background: var(--bg-0);
+  display: flex;
+  flex-direction: column;
+}
+
+.progress-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--bg-3);
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--accent);
+}
+
+.diff-add {
+  color: var(--ok);
+  background: rgba(52, 211, 153, .08);
+  padding-left: 6px;
+  white-space: pre;
+}
+
+.diff-rem {
+  color: var(--error);
+  background: rgba(244, 63, 94, .08);
+  padding-left: 6px;
+  white-space: pre;
+}
+
+.diff-ctx {
+  color: var(--text-secondary);
+  padding-left: 6px;
+  white-space: pre;
+}
+
+.banner-offline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--warning);
+  background: rgba(251, 191, 36, .08);
+  color: var(--warning);
+  font-size: var(--text-chrome);
+}
+
+.md-pre {
+  margin: 0;
+  padding: 10px;
+  background: var(--bg-0);
+  border-radius: var(--radius-md);
+  font-size: 12.5px;
+  overflow-x: auto;
+}
+
+/* ------------------------------------------------------------
+   Marketing home (/ ; console is at /console)
+   One visual motif: a line that runs horizontally in the hero (this machine → your phone) and then vertically through each section.
+   Color, radius, and type size all come from the tokens above; do not introduce a second visual language.
+   ------------------------------------------------------------ */
+
+/* This page scrolls itself: body is overflow:hidden (the app chrome does not scroll), so the home page has to be its own scroll container */
+.landing {
+  background: var(--bg-0);
+}
+
+.landing-col {
+  width: 100%;
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 0 20px;
+}
+
+@media (min-width: 1024px) {
+  .landing-col {
+    padding: 0 32px;
+  }
+}
+
+.landing-nav {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  padding: 8px 0;
+  padding-top: max(8px, env(safe-area-inset-top));
+  border-bottom: 1px solid var(--hairline);
+  background: rgba(9, 9, 11, .86);
+  backdrop-filter: blur(12px);
+}
+
+/* Brand mark (shared by the rail top and the marketing nav): letter-spacing and weight are set here too, so the two sides must not look different */
+.brand-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-primary);
+  font: inherit;
+  font-weight: 700;
+  letter-spacing: .04em;
+}
+
+.landing-navlink {
+  border: 0;
+  background: none;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--text-chrome);
+  transition: color var(--duration-fast) var(--ease-spring), background var(--duration-fast) var(--ease-spring);
+}
+
+.landing-navlink:hover {
+  color: var(--text-primary);
+  background: var(--bg-2);
+}
+
+.landing-hero {
+  position: relative;
+  padding: 44px 0 36px;
+  background: radial-gradient(120% 70% at 50% -10%, var(--accent-faint), transparent 62%);
+}
+
+@media (min-width: 1024px) {
+  .landing-hero {
+    padding: 84px 0 52px;
+  }
+}
+
+/* Mixed-case Lifeline (not all-caps): tracking pulled to -0.02em (uppercase tracking is reserved for all-caps treatments),
+   type size one step larger than the all-caps version — mixed-case occupies less width, otherwise the whole wordmark would look lighter than before. */
+.landing-title {
+  margin: 10px 0 0;
+  font-size: clamp(42px, 9.6vw, 74px);
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -.02em;
+}
+
+/* Type size + color step down together (locked 2026-09-16): name > subtitle > main slogan > supporting slogan.
+   Name and subtitle together are the "what this is" title block — both bright (primary), layered by size;
+   the two slogans are aftertaste — both drop to secondary, layered by size + weight (600 / 400).
+   Do not lift slogans back to primary: that would put the brightest line on the third tier, fighting the size order. */
+.landing-sub {
+  margin: 14px 0 0;
+  font-size: clamp(20px, 3.4vw, 27px);
+  font-weight: 500;
+  line-height: 1.45;
+  color: var(--text-primary);
+}
+
+.landing-slogan {
+  margin: 24px 0 0;
+  font-size: clamp(16px, 2.4vw, 21px);
+  font-weight: 600;
+  line-height: 1.5;
+  letter-spacing: .01em;
+  color: var(--text-secondary);
+}
+
+/* Phone also needs the drop from main slogan → supporting; do not squeeze them into the same tier (hence a floor rather than a fixed 14.5px) */
+.landing-note {
+  margin: 8px 0 0;
+  font-size: clamp(13.5px, 1.2vw, 14.5px);
+  color: var(--text-secondary);
+}
+
+.landing-cta {
+  height: 44px;
+  padding: 0 20px;
+  font-size: 14px;
+}
+
+/* The horizontal line under the hero: a pulse dot runs from "this machine" to "your phone" */
+.hero-line {
+  position: relative;
+  display: block;
+  height: 1px;
+  background: linear-gradient(90deg, var(--hairline-strong), var(--hairline) 50%, var(--hairline-strong));
+}
+
+.hero-line-dot {
+  position: absolute;
+  top: -3px;
+  left: 4%;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 5px var(--accent-faint);
+  animation: line-travel 4.5s var(--ease-spring) infinite;
+}
+
+@keyframes line-travel {
+  0% {
+    left: 4%;
+    opacity: 0;
+  }
+
+  14% { opacity: 1; }
+
+  86% { opacity: 1; }
+
+  100% {
+    left: 96%;
+    opacity: 0;
+  }
+}
+
+/* The screen inside the phone */
+.phone {
+  width: 100%;
+  max-width: 320px;
+  margin: 0 auto;
+  padding: 9px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 34px;
+  background: var(--bg-1);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, .55), 0 0 0 1px var(--accent-faint);
+}
+
+.phone-notch {
+  width: 60px;
+  height: 4px;
+  margin: 2px auto 7px;
+  border-radius: 2px;
+  background: var(--bg-3);
+}
+
+/* Size the screen by real-device ratio (9:16); if content cannot fill it, leave blank —
+   previously height was content-driven and came out as a short brick (2026-09-16 feedback). */
+.phone-screen {
+  display: flex;
+  flex-direction: column;
+  aspect-ratio: 9 / 16;
+  border: 1px solid var(--hairline);
+  border-radius: 26px;
+  background: var(--bg-0);
+  overflow: hidden;
+}
+
+/* Two header blocks: top row "machine · IDE" (the real-device top-bar switcher), bottom row "session + status" (the real-device TargetBar) */
+.phone-head {
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--hairline);
+}
+
+/* Machine · IDE: same ⌄ as the real-device top bar, meaning tap to switch machines */
+.phone-top {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 9px 12px 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.phone-caret {
+  flex-shrink: 0;
+  color: var(--text-weak);
+}
+
+.phone-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 12px 9px;
+  font-size: var(--text-chrome);
+  font-weight: 600;
+}
+
+/* Stick to the bottom: the real UI's timeline also stacks from the bottom up (see .tl-skel justify-content);
+   when the session is short, leftover space sits under the session bar instead of shoving the todo card to mid-screen. */
+.phone-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  justify-content: flex-end;
+  padding: 12px;
+}
+
+/* Own line: right bubble, matching the real UI (no avatar, right-aligned) */
+.phone-said {
+  width: fit-content;
+  max-width: 80%;
+  margin: 8px 0 0 auto;
+  padding: 5px 10px;
+  border-radius: 12px 12px 4px 12px;
+  background: var(--bg-2);
+  font-size: 12px;
+}
+
+.phone-tools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-weak);
+}
+
+.phone-plan {
+  margin-top: 10px;
+}
+
+.phone-plan-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  font-size: 11px;
+  color: var(--text-weak);
+}
+
+/* Todo card + input stuck to the bottom as a clump (in the real UI, approvals hang above the composer; spec P2) */
+.phone-dock {
+  flex-shrink: 0;
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--hairline);
+}
+
+.phone-input {
+  margin-top: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-2);
+  font-size: 12px;
+  color: var(--text-weak);
+}
+
+.phone-btns {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.phone-btn {
+  border-radius: var(--radius-sm);
+  padding: 3px 10px;
+  font-size: 11px;
+}
+
+.phone-btn-primary {
+  background: var(--accent);
+  color: var(--text-inverse);
+  font-weight: 600;
+}
+
+.phone-btn-ghost {
+  border: 1px solid var(--hairline-strong);
+  color: var(--text-secondary);
+}
+
+/* Vertical line through the whole page + one node per section */
+.landing-thread {
+  --thread-x: 5px;
+  --thread-pad: 24px;
+  position: relative;
+  padding-left: var(--thread-pad);
+}
+
+.landing-thread::before {
+  content: '';
+  position: absolute;
+  left: var(--thread-x);
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: linear-gradient(180deg, var(--hairline-strong), var(--hairline) 12%, var(--hairline) 88%, transparent);
+}
+
+.landing-sec {
+  position: relative;
+  padding-top: 56px;
+
+  /* The top bar is sticky: when an anchor scrolls in, leave the title the strip that would otherwise be covered */
+  scroll-margin-top: 68px;
+}
+
+.landing-sec-head {
+  position: relative;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.landing-sec-head::before {
+  content: '';
+  position: absolute;
+  top: 5px;
+  left: calc(var(--thread-x) - var(--thread-pad) - 5px);
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--bg-0);
+  border: 1px solid var(--accent);
+  box-shadow: 0 0 0 4px var(--accent-faint);
+}
+
+.landing-idx {
+  font-size: 11px;
+  letter-spacing: 1px;
+  color: var(--text-weak);
+}
+
+.landing-h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: .01em;
+}
+
+.landing-lead {
+  max-width: 640px;
+  margin: 10px 0 0;
+  font-size: 14.5px;
+  line-height: 1.7;
+  color: var(--text-secondary);
+}
+
+.landing-card {
+  padding: 16px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--bg-1);
+}
+
+/* Only the icon-row cards are horizontal (icon + body); comparison cards are a pure stack — do not let flex flatten their content */
+.landing-card.with-icon {
+  display: flex;
+  gap: 12px;
+}
+
+.landing-card.is-now {
+  border-color: rgba(36, 115, 201, .35);
+}
+
+.landing-card-icon {
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
+.landing-card-title {
+  margin: 0;
+  font-size: 14.5px;
+  font-weight: 600;
+}
+
+.landing-card-body {
+  margin: 6px 0 0;
+  font-size: var(--text-chrome);
+  line-height: 1.7;
+  color: var(--text-secondary);
+}
+
+/* How it runs: three nodes on the same line (phone vertical / desktop horizontal) */
+.landing-flow {
+  position: relative;
+}
+
+.landing-flow::before {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 6px;
+  bottom: 6px;
+  width: 1px;
+  background: var(--hairline-strong);
+}
+
+.landing-node {
+  position: relative;
+  padding: 0 0 22px 26px;
+}
+
+.landing-node:last-child {
+  padding-bottom: 0;
+}
+
+.landing-node::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 4px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--bg-0);
+  border: 1px solid var(--accent);
+}
+
+.landing-node-name {
+  font-family: var(--font-mono);
+  font-size: var(--text-body);
+  font-weight: 600;
+}
+
+.landing-node-desc {
+  margin-top: 4px;
+  font-size: var(--text-chrome);
+  line-height: 1.6;
+  color: var(--text-weak);
+}
+
+@media (min-width: 1024px) {
+  .landing-thread {
+    --thread-x: 7px;
+    --thread-pad: 56px;
+  }
+
+  .landing-sec {
+    padding-top: 80px;
+  }
+
+  .landing-h2 {
+    font-size: 24px;
+  }
+
+  .landing-flow {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 28px;
+  }
+
+  .landing-flow::before {
+    left: 6px;
+    right: 6px;
+    top: 6px;
+    bottom: auto;
+    width: auto;
+    height: 1px;
+  }
+
+  .landing-node {
+    padding: 26px 24px 0 0;
+  }
+
+  .landing-node::before {
+    top: 2px;
+  }
+}
+
+.landing-footer {
+  margin-top: 64px;
+  border-top: 1px solid var(--hairline);
+}
+
+.landing-footer-inner {
+  padding-top: 28px;
+  padding-bottom: calc(48px + env(safe-area-inset-bottom));
+}
+
+@media (min-width: 1024px) {
+  .landing-footer {
+    margin-top: 96px;
+  }
+}
+

@@ -1,0 +1,7 @@
+{
+  "id": "a1",
+  "role": "assistant",
+  "createdAt": "2026-01-02T00:00:01.000Z",
+  "message": "{\"role\":\"assistant\",\"content\":[{\"type\":\"reasoning\",\"text\":\"think\"},{\"type\":\"text\",\"text\":\"world\"},{\"type\":\"tool-call\",\"toolCallId\":\"c1\",\"toolName\":\"read_file\",\"args\":{\"path\":\"a.ts\"}}]}",
+  "extra": "{\"isHelperMessage\":false}"
+}

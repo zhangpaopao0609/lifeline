@@ -1,0 +1,31 @@
+# Source of truth for pnpm workspaces.
+#
+# Lives here rather than `workspaces` in the root package.json: from pnpm 10
+# that field is no longer read (it prints a warning and then **silently
+# ignores** it — packages/* are treated as external packages, and
+# `@lifeline/protocol` 404s from the registry).
+packages:
+  - 'packages/*'
+
+# Dependency-build-script allowlist (pnpm 11 format; v10's
+# `onlyBuiltDependencies` whitelist **does nothing** in v11 — packages install
+# but scripts are skipped, yielding ERR_PNPM_IGNORED_BUILDS).
+#
+# better-sqlite3: true is mandatory. Measured (macOS + Node 22.21.1): the
+# package **does not** ship a prebuilt .node. The last candidate path `bindings`
+# tries is `lib/binding/node-v127-darwin-arm64/better_sqlite3.node` — produced
+# by its own `postinstall: prebuild-install || node-gyp rebuild`. Without this
+# allow, there is no native binding: `require('better-sqlite3')` succeeds, then
+# `new Database()` throws "Could not locate the bindings file", and both local
+# tests and the deploy-machine server fail to start.
+#
+# Unrelated to the runtime shipped to users: `scripts/pack-runtime.ts` pulls
+# GitHub official prebuilds into the stage. This allow only affects
+# node_modules on the developer / deploy machine.
+#
+# esbuild: false is an explicit "not needed". Its platform binary comes through
+# optionalDependencies; measured `require('esbuild')` and transform work. If we
+# omit the false, it stays in ERR_PNPM_IGNORED_BUILDS noise forever.
+allowBuilds:
+  better-sqlite3: true
+  esbuild: false

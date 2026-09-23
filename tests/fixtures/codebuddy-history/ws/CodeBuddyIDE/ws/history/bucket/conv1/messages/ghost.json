@@ -1,0 +1,6 @@
+{
+  "id": "ghost",
+  "role": "assistant",
+  "createdAt": "2026-01-02T00:00:03.000Z",
+  "message": "{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"should not project\"}]}"
+}
