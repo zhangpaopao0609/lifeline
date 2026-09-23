@@ -69,31 +69,9 @@ curl -fsSL http://<your-lifeline-server>/public/uninstall.sh | sh
 
 机器身份与归属 token 存在 `~/.lifeline/config.json`；server 侧握手认不出归属就拒连。
 
-## 仓库结构
-
-| 目录 | 内容 |
-|---|---|
-| `packages/server` | Fastify + socket.io：机器注册、会话镜像、静态页 |
-| `packages/agent` | 本地 agent：CDP 活态、磁盘会话投影、命令执行 |
-| `packages/cli` | `lifeline` CLI：安装、setup、守护进程、升级 |
-| `packages/web` | Vite + React 控制台与官网（`public/install.sh` 也在这里） |
-| `packages/protocol` | 前后端共享类型与协议 |
-| `tests/` | node:test 全量测试 |
-
 ## 参与开发
 
 见 [`CONTRIBUTING.zh-CN.md`](CONTRIBUTING.zh-CN.md)。给 AI agent 的项目上下文（架构、命令、踩坑）在 [`AGENTS.md`](AGENTS.md)（英文，无中文配对）。
-
-## 文档
-
-| 文件 | 内容 |
-|---|---|
-| [`docs/zh-CN/lifeline-intro.md`](docs/zh-CN/lifeline-intro.md) | 产品介绍（只谈功能） |
-| [`docs/zh-CN/ide-drivers.md`](docs/zh-CN/ide-drivers.md) | IDE 适配层（driver 注册表与踩坑判据） |
-| [`docs/zh-CN/selfhost.md`](docs/zh-CN/selfhost.md) | 自托管（Docker 镜像、env、反代） |
-| [`docs/zh-CN/naming-brief.md`](docs/zh-CN/naming-brief.md) | 命名记录（为何叫 Lifeline / 生命线） |
-
-公开文档英文在无后缀文件，中文在 `*.zh-CN.md`（根目录）或 `docs/zh-CN/`（专题）。
 
 ## 安全
 

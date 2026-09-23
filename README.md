@@ -68,31 +68,9 @@ browser  --HTTP/WS-->  packages/server  <--outbound WS + per-machine token--  pa
 
 Machine identity and ownership token live in `~/.lifeline/config.json`. The server refuses the handshake if it cannot resolve ownership.
 
-## Repository layout
-
-| Directory | Contents |
-|---|---|
-| `packages/server` | Fastify + socket.io: machine register, session mirror, static pages |
-| `packages/agent` | Local agent: CDP live state, on-disk session projection, command dispatch |
-| `packages/cli` | `lifeline` CLI: install, setup, daemon, upgrade |
-| `packages/web` | Vite + React landing and console (`public/install.sh` lives here too) |
-| `packages/protocol` | Shared types and wire protocol |
-| `tests/` | Full `node:test` suite |
-
 ## Contributing
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md). Project context for AI agents (architecture, commands, pitfalls) is in [`AGENTS.md`](AGENTS.md).
-
-## Docs
-
-| File | Contents |
-|---|---|
-| [`docs/lifeline-intro.md`](docs/lifeline-intro.md) | Product intro (features only) |
-| [`docs/ide-drivers.md`](docs/ide-drivers.md) | IDE adapter layer (driver registry and criteria) |
-| [`docs/selfhost.md`](docs/selfhost.md) | Self-hosting (Docker image, env, reverse proxy) |
-| [`docs/naming-brief.md`](docs/naming-brief.md) | Naming notes (why Lifeline / 生命线) |
-
-Public docs are English in the unsuffixed files; 简体中文 is `*.zh-CN.md` at the repo root or `docs/zh-CN/` for topic docs.
 
 ## Security
 
