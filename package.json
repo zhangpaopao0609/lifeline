@@ -4,7 +4,7 @@
   "type": "module",
   "version": "0.1.74",
   "packageManager": "pnpm@11.2.2",
-  "description": "Remote-control Cursor / CodeBuddy on your machine — watch sessions, approve actions, and send tasks from your phone.",
+  "description": "Remote-control the Cursor / CodeBuddy IDE on your machine — watch sessions, approve actions, and send tasks from your phone.",
   "license": "MIT",
   "bin": {
     "lifeline": "./dist/cli/lifeline.mjs"

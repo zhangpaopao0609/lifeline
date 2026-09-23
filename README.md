@@ -2,7 +2,7 @@
 
 **English** | [简体中文](./README.zh-CN.md)
 
-**Remote-control Cursor / CodeBuddy on your machine** — watch the IDE sessions, approve actions, and send tasks from a phone or browser.
+**Remote-control the Cursor / CodeBuddy IDE on your machine** — watch sessions, approve actions, and send tasks from a phone or browser.
 
 Your code, IDE, and environment stay on that computer. Lifeline only projects the session onto the web so you can walk away from the desk.
 
