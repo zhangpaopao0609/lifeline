@@ -3,7 +3,7 @@ name: Publish image
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [master]
     paths:
       - Dockerfile
       - .github/workflows/publish-image.yml
