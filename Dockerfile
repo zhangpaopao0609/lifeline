@@ -60,6 +60,8 @@ RUN pnpm run build:cli \
 
 # ---- run ----
 FROM node:22-bookworm-slim
+# Links the GHCR package to this repository (Packages on the repo page).
+LABEL org.opencontainers.image.source="https://github.com/zhangpaopao0609/lifeline"
 WORKDIR /app
 # server-version.ts clientDir()/repoRoot() locate the repo root via package.json
 COPY --from=build /repo/package.json ./
