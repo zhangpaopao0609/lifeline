@@ -6,9 +6,8 @@
 
 你的代码、IDE、环境都还在那台电脑上；Lifeline 只是把会话投影到网页，让你能从那台电脑前走开。
 
-- 网页分两屏：`/` 官网（介绍 + 接入命令）、`/console` 控制台
-- 产品介绍（不讲技术）：[`docs/zh-CN/lifeline-intro.md`](docs/zh-CN/lifeline-intro.md)
-- 自托管（Docker / env / 反代）：[`docs/zh-CN/selfhost.md`](docs/zh-CN/selfhost.md)
+- 产品介绍：[`docs/zh-CN/lifeline-intro.md`](docs/zh-CN/lifeline-intro.md)
+- 自托管：[`docs/zh-CN/selfhost.md`](docs/zh-CN/selfhost.md)
 
 ## 在网页上能做什么
 

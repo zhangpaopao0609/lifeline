@@ -6,9 +6,8 @@
 
 Your code, IDE, and environment stay on that computer. Lifeline only projects the session onto the web so you can walk away from the desk.
 
-- Two web surfaces: `/` landing (intro + enroll commands), `/console` console
-- Product intro (no internals): [`docs/lifeline-intro.md`](docs/lifeline-intro.md)
-- Self-hosting (Docker / env / reverse proxy): [`docs/selfhost.md`](docs/selfhost.md)
+- Product intro: [`docs/lifeline-intro.md`](docs/lifeline-intro.md)
+- Self-hosting: [`docs/selfhost.md`](docs/selfhost.md)
 
 ## What you can do on the web
 
