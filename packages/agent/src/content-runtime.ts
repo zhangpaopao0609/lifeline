@@ -142,7 +142,7 @@ export interface ContentLiveHandlers {
 }
 
 export interface ContentLiveTickOpts {
-  liveTail?: { sessionId: string; text: string };
+  liveTail?: { sessionId: string; messageId?: string; text: string };
 }
 
 const DEFAULT_INTERVAL_MS = 300;
@@ -161,6 +161,8 @@ export class ContentLiveRuntime {
   private readonly lastEmitted = new Map<string, ChatElement[]>();
   private readonly lastDiskSig = new Map<string, string>();
   private readonly lastSizes = new Map<string, Map<string, number>>();
+  /** ids whose text we pushed from liveTail: the disk is the truth, so re-read them until it wins. */
+  private readonly tainted = new Map<string, Set<string>>();
   /** Max seq already sent per session; reset to 0 on full. */
   private readonly seqBySession = new Map<string, number>();
   /** Sessions that do not exist locally (cross-machine) — log once, do not spam every tick. */
@@ -191,6 +193,9 @@ export class ContentLiveRuntime {
       this.lastDiskSig.set(sessionId, wm.diskSig);
       if (wm.sizes)
         this.lastSizes.set(sessionId, new Map(Object.entries(wm.sizes)));
+      // Restart must not forget the taint: unhealed ids keep being re-read from disk.
+      if (wm.tainted?.length)
+        this.tainted.set(sessionId, new Set(wm.tainted));
       this.watermarks.set(sessionId, wm);
     }
   }
@@ -242,11 +247,11 @@ export class ContentLiveRuntime {
   }
 
   /** Last-assistant DOM textContent for R1 overlay. Not HTML → ChatElement. */
-  setLiveTail(liveTail?: { sessionId: string; text: string }): void {
+  setLiveTail(liveTail?: ContentLiveTickOpts['liveTail']): void {
     this.liveTail = liveTail;
   }
 
-  getLiveTail(): { sessionId: string; text: string } | undefined {
+  getLiveTail(): ContentLiveTickOpts['liveTail'] {
     return this.liveTail;
   }
 
@@ -299,6 +304,9 @@ export class ContentLiveRuntime {
   /** Is the on-disk copy identical to last send? One fingerprint read, cheap enough (only when requested). */
   private upToDate(sessionId: string): boolean {
     if (!this.fullSent.has(sessionId))
+      return false;
+    // Tainted ids carry text the disk never wrote: not "up to date" until healed.
+    if ((this.tainted.get(sessionId)?.size ?? 0) > 0)
       return false;
     try {
       const index = this.adapter.readIndex(sessionId);
@@ -368,7 +376,11 @@ export class ContentLiveRuntime {
       return;
     }
 
-    if (!changed) {
+    // A non-empty taint set must reach emitProjected even when the disk looks
+    // quiet: healing re-reads the tainted ids, and the shortcuts below never do.
+    const taintedCount = this.tainted.get(active)?.size ?? 0;
+
+    if (!changed && taintedCount === 0) {
       this.emitLiveTailOnly(active, liveTail);
       return;
     }
@@ -376,7 +388,7 @@ export class ContentLiveRuntime {
     const index = this.adapter.readIndex(active);
     const sizes = this.adapter.bubbleSizes?.(active);
     const sig = diskSignature(index, sizes, this.adapter.sessionBodySignal?.(active));
-    if (sig === this.lastDiskSig.get(active)) {
+    if (sig === this.lastDiskSig.get(active) && taintedCount === 0) {
       this.emitLiveTailOnly(active, liveTail);
       return;
     }
@@ -408,26 +420,48 @@ export class ContentLiveRuntime {
     const sizes = hint?.sizes ?? this.adapter.bubbleSizes?.(sessionId);
     const wantFull = force === 'full' || force === 'patch-all' || !this.fullSent.has(sessionId);
 
+    // Ownership needs the freshest index available here: an id not in it counts as
+    // complete (never overlay a message we cannot vouch for).
+    const isComplete = (bubbleId: string): boolean =>
+      index.find(h => h.messageId === bubbleId)?.complete ?? true;
     let messages: ChatElement[];
+    let tainted: string[];
     if (wantFull) {
-      messages = applyLiveTail(
+      ({ messages, tainted } = applyLiveTail(
         this.adapter.projectSession(sessionId),
         liveTail,
         sessionId,
-      );
+        isComplete,
+      ));
     }
     else {
       const prevIndex = this.lastIndex.get(sessionId) ?? [];
       const prevMessages = this.lastEmitted.get(sessionId) ?? [];
-      const toFetch = idsToFetch(index, prevIndex, sizes, this.lastSizes.get(sessionId));
+      const toFetch = idsToFetch(index, prevIndex, sizes, this.lastSizes.get(sessionId), this.tainted.get(sessionId));
       if (toFetch.length === 0) {
-        messages = applyLiveTail(prevMessages, liveTail, sessionId);
+        ({ messages, tainted } = applyLiveTail(prevMessages, liveTail, sessionId, isComplete));
       }
       else {
         const patch = this.adapter.projectSession(sessionId, toFetch);
-        messages = applyLiveTail(mergeEmitted(prevMessages, patch), liveTail, sessionId);
+        ({ messages, tainted } = applyLiveTail(mergeEmitted(prevMessages, patch), liveTail, sessionId, isComplete));
       }
     }
+    // Taint recompute: every previously tainted id was re-read from disk this tick
+    // (toFetch always includes them; full re-reads everything), so the new set is
+    // exactly what applyLiveTail (re-)wrote. Cleared on convergence even when the
+    // disk text ends up equal to the tainted text — "re-read", not "text differs".
+    // Ids gone from the index are dropped too (deleted messages cannot heal).
+    const indexIds = new Set(index.map(h => h.messageId));
+    const modified = tainted.filter(id => indexIds.has(id));
+    if (modified.length > 0)
+      this.tainted.set(sessionId, new Set(modified));
+    else
+      this.tainted.delete(sessionId);
+
+    // Wire format: the projection numbered flatIndex inside the requested subset;
+    // the merged array is the truth — renumber so append/patch carry global order
+    // (full was already global; renumbering it is an identity pass, one path only).
+    messages = renumberFlatIndex(messages);
 
     if (wantFull && force !== 'patch-all') {
       // full is a baseline reset: seq goes to 0, the web resets its checkpoint too.
@@ -500,7 +534,16 @@ export class ContentLiveRuntime {
     const prev = this.lastEmitted.get(sessionId);
     if (!prev || !liveTail)
       return;
-    const next = applyLiveTail(prev, liveTail, sessionId);
+    // No disk read on this path: judge completeness by the last remembered index.
+    const isComplete = (bubbleId: string): boolean =>
+      (this.lastIndex.get(sessionId) ?? []).find(h => h.messageId === bubbleId)?.complete ?? true;
+    const { messages: next, tainted } = applyLiveTail(prev, liveTail, sessionId, isComplete);
+    // No disk read on this path → only grow the taint set, never clear it here.
+    for (const id of tainted) {
+      const set = this.tainted.get(sessionId) ?? new Set<string>();
+      set.add(id);
+      this.tainted.set(sessionId, set);
+    }
     if (next === prev)
       return;
     const changed = next.filter((m, i) => m !== prev[i]);
@@ -538,6 +581,7 @@ export class ContentLiveRuntime {
       seq: this.seqBySession.get(sessionId) ?? 0,
       headers: index.length > WATERMARK_MAX_HEADERS ? index.slice(-WATERMARK_MAX_HEADERS) : index,
       ...(nextSizes ? { sizes: Object.fromEntries(nextSizes) } : {}),
+      tainted: [...(this.tainted.get(sessionId) ?? [])],
       diskSig: this.lastDiskSig.get(sessionId) ?? '',
       updatedAt: Date.now(),
     });
@@ -587,9 +631,10 @@ function idsToFetch(
   prevIndex: MessageHeader[],
   sizes?: Map<string, number>,
   prevSizes?: Map<string, number>,
+  taintedIds?: Set<string>,
 ): string[] {
   const prevById = new Map(prevIndex.map(h => [h.messageId, h]));
-  const want = new Set<string>();
+  const want = new Set<string>(taintedIds ?? []);
   for (const h of index) {
     const prev = prevById.get(h.messageId);
     if (!prev)
@@ -639,24 +684,32 @@ function mergeEmitted(prev: ChatElement[], patch: ChatElement[]): ChatElement[] 
   return out;
 }
 
+/** Projection numbers flatIndex inside the requested subset; the wire needs the merged, global order. */
+function renumberFlatIndex(messages: ChatElement[]): ChatElement[] {
+  return messages.map((m, i) => ((m as { flatIndex?: number }).flatIndex === i ? m : { ...m, flatIndex: i }));
+}
+
 function applyLiveTail(
   messages: ChatElement[],
   liveTail: ContentLiveTickOpts['liveTail'],
   sessionId: string,
-): ChatElement[] {
+  isComplete: (bubbleId: string) => boolean,
+): { messages: ChatElement[]; tainted: string[] } {
   if (!liveTail || liveTail.sessionId !== sessionId)
-    return messages;
-  if (messages.length === 0)
-    return messages;
-  const lastIdx = messages.length - 1;
-  const el = messages[lastIdx];
-  if (el.type !== 'assistant')
-    return messages;
-  if (el.text.length >= liveTail.text.length)
-    return messages;
+    return { messages, tainted: [] };
+  const targetId = liveTail.messageId;
+  // No id → no ownership proof → never write (missing text beats wrong text).
+  if (!targetId || isComplete(targetId))
+    return { messages, tainted: [] };
+  const idx = messages.findIndex(m => elementBubbleId(m.id) === targetId);
+  if (idx < 0)
+    return { messages, tainted: [] };
+  const el = messages[idx];
+  if (el.type !== 'assistant' || el.text.length >= liveTail.text.length)
+    return { messages, tainted: [] };
   const next = messages.slice();
-  next[lastIdx] = { ...el, text: liveTail.text };
-  return next;
+  next[idx] = { ...el, text: liveTail.text };
+  return { messages: next, tainted: [targetId] };
 }
 
 function elementBubbleId(id: string): string {

@@ -54,9 +54,14 @@ function feedContentLive(runtime: ContentLiveRuntime | null, state: CursorState)
   if (!runtime)
     return;
   runtime.setActiveSession(state.activeComposerId || null);
+  // Cross-session guard (R7): veto only on POSITIVE evidence of mismatch — a row whose
+  // owning composer differs from the active one is a stale DOM. No composer evidence →
+  // allow; the runtime-side ownership check (applyLiveTail) still rejects foreign ids.
+  const owningComposerOk
+    = !state.lastAssistantComposerId || state.lastAssistantComposerId === state.activeComposerId;
   runtime.setLiveTail(
-    state.activeComposerId && state.lastAssistantText
-      ? { sessionId: state.activeComposerId, text: state.lastAssistantText }
+    state.activeComposerId && state.lastAssistantText && owningComposerOk
+      ? { sessionId: state.activeComposerId, messageId: state.lastAssistantMessageId, text: state.lastAssistantText }
       : undefined,
   );
 }

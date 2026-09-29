@@ -963,6 +963,54 @@ export function extractionFunction(
         }
       }
 
+      /*
+       * Editor (project) windows: sidebar rows carry neither an id nor a selected
+       * state (measured 2026-09-28: both rows have data-selected / data-highlighted
+       * false, and there is no data-composer-id element anywhere inside them), so
+       * the editor Chat tabs are the only id source. Backfill the real id onto the
+       * row whose title is unique in the sidebar — this has to run *before* the
+       * composer-bar reconcile below: otherwise the session that is open right now
+       * looks like a brand-new draft the sidebar has not listed yet, a second row
+       * with the same title gets synthesized here, and that fake draft steals the
+       * real id in tab-identity (the genuine row keeps a placeholder tab-N) — the
+       * web then shows "click a session, land in an empty draft with the same
+       * title" (measured 2026-09-28 on mobile, for every row, as long as the
+       * window is in editor mode).
+       *
+       * Same rule as tab-identity's editor-tab pass: only trust the name when the
+       * title is unique. Same-title groups are left alone — guessing wrong marks a
+       * real session as having no body, which is the worse failure.
+       */
+      {
+        // same key as tab-identity's nameKey: collapse whitespace + lowercase
+        const titleKey = (raw: string): string => raw.replace(/\s+/g, ' ').trim().toLowerCase();
+        const countByTitle = (list: Array<{ title: string }>): Map<string, number> => {
+          const counts = new Map<string, number>();
+          for (const item of list) {
+            const key = titleKey(item.title);
+            if (!key)
+              continue;
+            counts.set(key, (counts.get(key) ?? 0) + 1);
+          }
+          return counts;
+        };
+        const rowCounts = countByTitle(chatTabs);
+        const tabCounts = countByTitle(_editorChatTabs);
+        for (const et of _editorChatTabs) {
+          const key = titleKey(et.title);
+          if (!et.composerId || !key)
+            continue;
+          // unique on both sides only: two tabs sharing a name cannot be told apart
+          if (rowCounts.get(key) !== 1 || tabCounts.get(key) !== 1)
+            continue;
+          const row = chatTabs.find(t => titleKey(t.title) === key);
+          if (row && /^tab-\d+$/.test(row.composerId)) {
+            row.composerId = et.composerId;
+            row.composerIdSource = 'dom';
+          }
+        }
+      }
+
       // composer-bar is the more authoritative "which session is open now"
       // (sidebar selected state can lag). Only reconcile isActive / composerId,
       // never rewrite status — status is the sidebar row's spinner truth;
@@ -1298,11 +1346,19 @@ export function extractionFunction(
     }
 
     let lastAssistantText = '';
+    let lastAssistantMessageId = '';
+    let lastAssistantComposerId = '';
     const assistantNodes = container.querySelectorAll(
       '[data-message-role="assistant"], [data-react-transcript-row-kind="assistantMarkdown"]',
     );
     if (assistantNodes.length > 0) {
-      lastAssistantText = (assistantNodes[assistantNodes.length - 1].textContent || '').trim();
+      const lastNode = assistantNodes[assistantNodes.length - 1];
+      lastAssistantText = (lastNode.textContent || '').trim();
+      // Live-tail ownership: the row's own id + the composer that owns the row.
+      // Never "whichever row happens to be last" (the incident) and never a row
+      // from a stale session (R4 cross-session variant).
+      lastAssistantMessageId = lastNode.closest('[data-message-id]')?.getAttribute('data-message-id') || '';
+      lastAssistantComposerId = lastNode.closest('[data-composer-id]')?.getAttribute('data-composer-id') || '';
     }
 
     return {
@@ -1318,6 +1374,8 @@ export function extractionFunction(
       messages: [],
       liveActions,
       lastAssistantText: lastAssistantText || undefined,
+      lastAssistantMessageId: lastAssistantMessageId || undefined,
+      lastAssistantComposerId: lastAssistantComposerId || undefined,
       pendingApprovals,
       inputAvailable: inputEl !== null,
       chatTabs,

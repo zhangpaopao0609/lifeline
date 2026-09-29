@@ -87,6 +87,19 @@ describe('content watermark', () => {
     assert.equal(raw.version, 1);
   });
 
+  it('round-trips the tainted set through save→load and tolerates old files', () => {
+    const path = join(dir, 'content-watermark.json');
+    saveWatermarks({ s1: { ...wm(3, 1), tainted: ['a1'] } }, path);
+    assert.deepEqual(loadWatermarks(path).s1.tainted, ['a1']);
+
+    // 旧格式（无 tainted）读入不报错
+    const legacy = parseWatermark({ sessions: { s2: { seq: 1, headers: [], diskSig: '', updatedAt: 1 } } });
+    assert.equal(legacy.s2.tainted, undefined);
+    // 脏数据（非 string[]）静默丢弃，不炸
+    const garbage = parseWatermark({ sessions: { s3: { seq: 1, headers: [], diskSig: '', updatedAt: 1, tainted: 'oops' } } });
+    assert.equal(garbage.s3.tainted, undefined);
+  });
+
   it('picks and merges one ide without touching the other', () => {
     const all = mergeIde(mergeIde({}, 'cursor', { s1: wm(1, 1) }), 'codebuddy', { s2: wm(2, 2) });
     assert.deepEqual(Object.keys(all).sort(), ['codebuddy:s2', 'cursor:s1']);

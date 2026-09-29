@@ -225,6 +225,20 @@ function addAssistant(id: string, text: string): void {
   db.close();
 }
 
+function setAssistantText(id: string, text: string): void {
+  const db = new Database(dbPath);
+  const row = db
+    .prepare('SELECT value FROM cursorDiskKV WHERE key = ?')
+    .get(`bubbleId:cid1:${id}`) as { value: string };
+  const bubble = JSON.parse(row.value) as { text: string };
+  bubble.text = text;
+  db.prepare('UPDATE cursorDiskKV SET value = ? WHERE key = ?').run(
+    JSON.stringify(bubble),
+    `bubbleId:cid1:${id}`,
+  );
+  db.close();
+}
+
 function addOtherComposer(): void {
   const db = new Database(dbPath);
   db.prepare(`INSERT INTO composerHeaders VALUES (?,?,?,?,?,?,?)`).run(
@@ -523,22 +537,117 @@ describe('ContentLiveRuntime', () => {
     assert.ok(rec.append[0].messages.some(m => m.id === 'a2'));
   });
 
-  it('overlays liveTail on last assistant when disk text is shorter', () => {
+  it('renumbers flatIndex globally on incremental pushes', () => {
     seed();
     adapter = new CursorAdapter(dbPath);
     const rec = recorder();
     const rt = new ContentLiveRuntime(adapter, rec.handlers);
     rt.setActiveSession('cid1');
-    rt.tick({ liveTail: { sessionId: 'cid1', text: 'ok from the live DOM' } });
-    const asst = rec.full[0].messages.find(m => m.type === 'assistant') as AssistantMessage;
-    assert.equal(asst.text, 'ok from the live DOM');
+    rt.tick(); // full：0..n-1
+    const baseline = rec.full[0].messages.length;
+    addAssistant('a2', 'second assistant message');
+    rt.tick();
+    const pushed = rec.append.at(-1)!.messages;
+    const flat = pushed.map(m => (m as { flatIndex: number }).flatIndex);
+    // 旧 bug：patch 投影在请求的子集内从 0 编号 → a2 的 flatIndex 是 0 而不是 baseline
+    assert.equal(flat[0], baseline, 'appended elements must continue the global numbering, not restart at 0');
+    assert.ok(flat.every((v, i) => i === 0 || v === flat[i - 1] + 1), 'numbering stays consecutive');
+  });
 
-    rt.tick({ liveTail: { sessionId: 'cid1', text: 'ok from the live DOM plus more' } });
-    assert.equal(rec.full.length, 1);
-    assert.equal(rec.index.length, 0);
-    assert.equal(rec.append.length, 1);
-    const overlay = rec.append[0].messages.find(m => m.type === 'assistant') as AssistantMessage;
-    assert.equal(overlay.text, 'ok from the live DOM plus more');
+  it('overlays liveTail only on its own message and only while that message is incomplete', () => {
+    seed({ generatingIds: ['a1'] });
+    adapter = new CursorAdapter(dbPath);
+    const rec = recorder();
+    const rt = new ContentLiveRuntime(adapter, rec.handlers);
+    rt.setActiveSession('cid1');
+
+    // 归属命中 + 未完成 → 贴（full 路径）
+    rt.tick({ liveTail: { sessionId: 'cid1', messageId: 'a1', text: 'ok from the live DOM' } });
+    const first = rec.full[0].messages.find(m => m.id === 'a1') as AssistantMessage;
+    assert.equal(first.text, 'ok from the live DOM');
+
+    // 归属错（liveTail 指向不存在的 a2）→ a1 任何时刻都不得挂上 a2 声称的文字。
+    // （磁盘自愈重读会在后续 tick 把 a1 拉回磁盘真值——那是期望行为；
+    //  这里只锁「外来文字绝不出现」。）
+    rt.tick({ liveTail: { sessionId: 'cid1', messageId: 'a2', text: 'text that belongs to another message' } });
+    const emitted1 = [...rec.full, ...rec.append, ...rec.patch].flatMap(e => e.messages);
+    assert.ok(emitted1.every(m => (m as AssistantMessage).text !== 'text that belongs to another message'));
+
+    // 归属命中 + 未完成 + 文字变长 → 照常增长（G4 不回退）
+    rt.tick({ liveTail: { sessionId: 'cid1', messageId: 'a1', text: 'ok from the live DOM plus more' } });
+    const a1Texts = [...rec.full, ...rec.append, ...rec.patch]
+      .flatMap(e => e.messages)
+      .filter(m => m.id === 'a1')
+      .map(m => (m as AssistantMessage).text);
+    assert.ok(a1Texts.includes('ok from the live DOM plus more'), 'live growth must still flow');
+  });
+
+  it('never overlays when the target header is complete', () => {
+    seed(); // 全部 complete
+    adapter = new CursorAdapter(dbPath);
+    const rec = recorder();
+    const rt = new ContentLiveRuntime(adapter, rec.handlers);
+    rt.setActiveSession('cid1');
+    rt.tick({ liveTail: { sessionId: 'cid1', messageId: 'a1', text: 'much longer than the disk text' } });
+    const asst = rec.full[0].messages.find(m => m.id === 'a1') as AssistantMessage;
+    assert.equal(asst.text, 'ok');
+  });
+
+  it('does not overlay shorter live text even when ownership matches (length guard stays)', () => {
+    seed({ generatingIds: ['a1'] });
+    adapter = new CursorAdapter(dbPath);
+    const rec = recorder();
+    const rt = new ContentLiveRuntime(adapter, rec.handlers);
+    rt.setActiveSession('cid1');
+    rt.tick({ liveTail: { sessionId: 'cid1', messageId: 'a1', text: 'o' } });
+    const asst = rec.full[0].messages.find(m => m.id === 'a1') as AssistantMessage;
+    assert.equal(asst.text, 'ok');
+  });
+
+  it('re-reads a tainted id on the next tick and clears the taint once the disk text is back', () => {
+    seed({ generatingIds: ['a1'] });
+    adapter = new CursorAdapter(dbPath);
+    const rec = recorder();
+    const rt = new ContentLiveRuntime(adapter, rec.handlers);
+    rt.setActiveSession('cid1');
+    rt.tick({ liveTail: { sessionId: 'cid1', messageId: 'a1', text: 'live text pushed early' } });
+    assert.equal((rec.full[0].messages.find(m => m.id === 'a1') as AssistantMessage).text, 'live text pushed early');
+
+    // 磁盘一字未动（PRAGMA data_version 不变）—— 老实现就此永久不再纠正
+    rt.tick();
+    const healed = rec.append.at(-1)!.messages.find(m => m.id === 'a1') as AssistantMessage;
+    assert.equal(healed.text, 'ok');
+    rt.tick();
+    assert.equal(rec.append.length, 1, 'taint cleared → no more re-fetch');
+  });
+
+  it('clears the taint when the disk converges to the tainted text (streaming happy path)', () => {
+    seed({ generatingIds: ['a1'] });
+    adapter = new CursorAdapter(dbPath);
+    const rec = recorder();
+    const rt = new ContentLiveRuntime(adapter, rec.handlers);
+    rt.setActiveSession('cid1');
+    rt.tick({ liveTail: { sessionId: 'cid1', messageId: 'a1', text: 'live text pushed early' } });
+
+    // 磁盘最终写入的正文与污染文字逐字相同（流式收敛的正常结局）：
+    // 清集依据必须是「已重读」，否则 taint 卡死、sync 从此失效
+    setAssistantText('a1', 'live text pushed early');
+    rt.tick();
+    // 未完成末条的例行重发会把 seq 推进一格（既有行为），对账要用当前 seq
+    rt.requestSession('cid1', rec.append.at(-1)?.seq ?? 0);
+    assert.equal(rec.sync.length, 1, 'converged taint must clear → sync is answerable again');
+  });
+
+  it('does not answer sync while the taint set is not empty', () => {
+    seed({ generatingIds: ['a1'] });
+    adapter = new CursorAdapter(dbPath);
+    const rec = recorder();
+    const rt = new ContentLiveRuntime(adapter, rec.handlers);
+    rt.setActiveSession('cid1');
+    rt.tick({ liveTail: { sessionId: 'cid1', messageId: 'a1', text: 'live text pushed early' } });
+    rt.requestSession('cid1', rec.full[0].seq);
+    assert.equal(rec.sync.length, 0, 'must not claim "already up to date" while tainted');
+    assert.equal(rec.patch.length, 1, 'falls back to patch which re-reads the tainted id');
   });
 
   it('does not overlay liveTail for another session or shorter text', () => {

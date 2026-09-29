@@ -371,6 +371,10 @@ export interface CursorState {
   messages: ChatElement[];
   liveActions: Record<string, RunAction[]>;
   lastAssistantText?: string;
+  /** Live-tail ownership: the last assistant row's own message id (never "whichever row is last"). */
+  lastAssistantMessageId?: string;
+  /** Live-tail cross-session guard: the composer that owns the last assistant row. */
+  lastAssistantComposerId?: string;
   pendingApprovals: Approval[];
   inputAvailable: boolean;
   chatTabs: ChatTab[];

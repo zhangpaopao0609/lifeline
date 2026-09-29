@@ -24,6 +24,8 @@ export interface SessionWatermark {
   seq: number;
   headers: MessageHeader[];
   sizes?: Record<string, number>;
+  /** ids whose text we once overlaid from liveTail — the disk must re-read them before they count as delivered. */
+  tainted?: string[];
   diskSig: string;
   updatedAt: number;
 }
@@ -61,10 +63,12 @@ export function parseWatermark(raw: unknown): Record<string, SessionWatermark> {
     if (!isWatermark(value))
       continue;
     const sizes = (value as { sizes?: unknown }).sizes;
+    const tainted = (value as { tainted?: unknown }).tainted;
     out[key] = {
       seq: value.seq,
       headers: value.headers,
       ...(sizes && typeof sizes === 'object' ? { sizes: sizes as Record<string, number> } : {}),
+      ...(Array.isArray(tainted) && tainted.every(v => typeof v === 'string') ? { tainted: tainted as string[] } : {}),
       diskSig: value.diskSig,
       updatedAt: value.updatedAt,
     };

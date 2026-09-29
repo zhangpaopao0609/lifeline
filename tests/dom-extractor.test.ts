@@ -404,6 +404,46 @@ describe('extractionFunction', () => {
     assert.equal(state.activeComposerId, '9f0c4d21-6a55-4a0e-9d3c-7b2f18ae55d1');
   });
 
+  it('backfills real ids from editor Chat tabs when sidebar rows carry no id (editor mode)', () => {
+    // Measured 2026-09-28 on mobile with Cursor in editor mode: sidebar rows have no
+    // data-composer-id and never report a selected state, so the session that is open right now looked
+    // like a brand-new draft — a second row with the same title was synthesized and that fake draft
+    // then stole the real id in tab-identity, leaving the genuine row with a placeholder tab-N. On the
+    // web every click landed in an empty draft with the same title. The real id must return to the row.
+    const state = withDom(`
+      <main id="root"></main>
+      <div class="tabs-container">
+        <div class="tab selected active" role="tab" data-resource-name="a4debf5b-693d-416e-8144-753d17e81ae1">
+          <span class="monaco-highlighted-label">WeChat login task continuation</span>
+        </div>
+        <div class="tab" role="tab" data-resource-name="880cadc9-f88f-4f82-8931-ae2a7728d160">
+          <span class="monaco-highlighted-label">Greeting conversation</span>
+        </div>
+      </div>
+      <div class="composer-bar editor" data-composer-id="a4debf5b-693d-416e-8144-753d17e81ae1"></div>
+      <div class="agent-sidebar-list">
+        <div class="agent-sidebar-cell" data-selected="false">
+          <span class="agent-sidebar-cell-text">WeChat login task continuation</span>
+        </div>
+        <div class="agent-sidebar-cell" data-selected="false">
+          <span class="agent-sidebar-cell-text">Greeting conversation</span>
+        </div>
+      </div>
+    `);
+
+    assert.deepEqual(
+      state.chatTabs.map(t => t.title),
+      ['WeChat login task continuation', 'Greeting conversation'],
+    );
+    assert.equal(state.chatTabs[0].composerId, 'a4debf5b-693d-416e-8144-753d17e81ae1');
+    assert.equal(state.chatTabs[1].composerId, '880cadc9-f88f-4f82-8931-ae2a7728d160');
+    // no second row with the same title
+    assert.equal(state.chatTabs.some(t => t.isDraft === true), false);
+    // the open session is that row, and it holds a real id (not a placeholder tab-N)
+    assert.equal(state.chatTabs[0].isActive, true);
+    assert.equal(state.activeComposerId, 'a4debf5b-693d-416e-8144-753d17e81ae1');
+  });
+
   it('does not add a second row when a sidebar row already carries the active composer', () => {
     const state = withDom(`
       <main id="root"></main>
@@ -463,6 +503,21 @@ describe('extractionFunction', () => {
       <div data-message-role="assistant">outside later noise</div>
     `);
     assert.equal(state.lastAssistantText, 'inside tail');
+  });
+
+  it('reads the last assistant message id and its owning composer (live tail ownership)', () => {
+    const state = withDom(`
+      <main id="root">
+        <div data-composer-id="a4debf5b-693d-416e-8144-753d17e81ae1">
+          <div data-message-role="assistant" data-message-id="1d4e1261-add7-4724-b30e-efb3d7e99d15">登录已经通了。</div>
+          <div data-message-role="assistant" data-message-id="66456ba1-9f3c-490e-ad79-b733220b51e6">左下角的「退出登录 / 登录」还是……</div>
+        </div>
+      </main>
+      <div class="composer-bar editor" data-composer-id="a4debf5b-693d-416e-8144-753d17e81ae1"></div>
+    `);
+    assert.equal(state.lastAssistantText, '左下角的「退出登录 / 登录」还是……');
+    assert.equal(state.lastAssistantMessageId, '66456ba1-9f3c-490e-ad79-b733220b51e6');
+    assert.equal(state.lastAssistantComposerId, 'a4debf5b-693d-416e-8144-753d17e81ae1');
   });
 
   it('does not treat a chat button that only looks like server log output as a reject approval', () => {
