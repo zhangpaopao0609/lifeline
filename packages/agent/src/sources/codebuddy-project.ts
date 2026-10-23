@@ -53,7 +53,7 @@ interface ParsedMessage {
   extra: Record<string, unknown>;
 }
 
-interface ToolAcc {
+export interface ToolAcc {
   toolCallId: string;
   toolName?: string;
   args?: unknown;
@@ -172,7 +172,7 @@ function mapToolStatus(t: ToolAcc): ToolStatus {
   return 'loading';
 }
 
-function toTool(t: ToolAcc, flatIndex: number): ToolCallElement {
+export function toTool(t: ToolAcc, flatIndex: number): ToolCallElement {
   const name = t.toolName ?? 'tool';
   const filename = pickFilename(t.args);
   return {

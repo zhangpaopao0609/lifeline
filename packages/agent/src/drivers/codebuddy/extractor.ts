@@ -627,10 +627,195 @@ export function dumpCodeBuddyLive(): CodeBuddyLiveDump | null {
       liveActions[key] = list;
     });
 
+    // Rendered timeline messages of the active conversation. Remote-workspace
+    // (SSH) sessions persist on the remote host, so the disk content source can
+    // never see them — the DOM is the only local signal. Assistant bubbles are
+    // converted back to markdown (tables / code fences / headings survive) so the
+    // console renders them like a disk-backed session.
+    const htmlToMd = (rootEl: Element): string => {
+      const escCell = (s: string) => s.replace(/\|/g, '\\|').replace(/\s*\n\s*/g, ' ').trim();
+      const inline = (node: Element): string => {
+        let out = '';
+        for (const ch of Array.from(node.childNodes || [])) {
+          if (ch.nodeType === 3) {
+            out += (ch.textContent || '').replace(/\s+/g, ' ');
+            continue;
+          }
+          if (ch.nodeType !== 1)
+            continue;
+          const el2 = ch as Element;
+          const tag = el2.tagName.toLowerCase();
+          const inner = inline(el2);
+          if (tag === 'strong' || tag === 'b') {
+            out += `**${inner.trim()}**`;
+          }
+          else if (tag === 'em' || tag === 'i') {
+            out += `*${inner.trim()}*`;
+          }
+          else if (tag === 'code') {
+            out += `\`${(el2.textContent || '').replace(/`/g, '\\`')}\``;
+          }
+          else if (tag === 'a') {
+            const href = el2.getAttribute('href');
+            out += href ? `[${inner.trim()}](${href})` : inner;
+          }
+          else if (tag === 'br') {
+            out += '\n';
+          }
+          else if (tag === 'img') {
+            out += el2.getAttribute('alt') || '';
+          }
+          else {
+            out += inner;
+          } // span/div/other inline wrappers: unwrap
+        }
+        return out.replace(/ {2,}/g, ' ').trim();
+      };
+      const tableToMd = (tbl: Element): string => {
+        const rows: string[][] = [];
+        const headCells = Array.from(tbl.querySelectorAll('thead th, thead td'));
+        if (headCells.length)
+          rows.push(headCells.map(c => inline(c)));
+        const bodyRows = Array.from(tbl.querySelectorAll('tbody tr'));
+        const src = bodyRows.length ? bodyRows : Array.from(tbl.querySelectorAll('tr')).slice(headCells.length ? 1 : 0);
+        for (const tr of src) {
+          const cells = Array.from(tr.querySelectorAll('th, td')).map(c => inline(c));
+          if (cells.length)
+            rows.push(cells);
+        }
+        if (!rows.length)
+          return '';
+        const cols = Math.max(...rows.map(r => r.length));
+        const norm = rows.map((r) => {
+          while (r.length < cols) r.push('');
+          return r.map(escCell);
+        });
+        const lines = [
+          `| ${norm[0].join(' | ')} |`,
+          `| ${norm[0].map(() => '---').join(' | ')} |`,
+        ];
+        for (const r of norm.slice(1)) lines.push(`| ${r.join(' | ')} |`);
+        return `\n\n${lines.join('\n')}\n\n`;
+      };
+      const block = (node: Element, depth: number): string => {
+        let out = '';
+        for (const ch of Array.from(node.childNodes || [])) {
+          if (ch.nodeType === 3) {
+            const t = (ch.textContent || '').replace(/\n{3,}/g, '\n\n').trim();
+            if (t)
+              out += `${t}\n\n`;
+            continue;
+          }
+          if (ch.nodeType !== 1)
+            continue;
+          const el2 = ch as Element;
+          const tag = el2.tagName.toLowerCase();
+          if (/^h[1-6]$/.test(tag)) {
+            out += `${'#'.repeat(+tag[1])} ${inline(el2)}\n\n`;
+          }
+          else if (tag === 'p') {
+            const t = inline(el2);
+            if (t)
+              out += `${t}\n\n`;
+          }
+          else if (tag === 'table') {
+            out += tableToMd(el2);
+          }
+          else if (tag === 'pre') {
+            const code = el2.querySelector('code');
+            const lang = code ? (((code.className || '').match(/language-(\w+)/) || [])[1] || '') : '';
+            out += `\n\`\`\`${lang}\n${((code || el2).textContent || '').replace(/\n+$/, '')}\n\`\`\`\n\n`;
+          }
+          else if (tag === 'blockquote') {
+            const t = block(el2, depth).trim().split('\n').map(l => `> ${l}`).join('\n');
+            out += `${t}\n\n`;
+          }
+          else if (tag === 'ul' || tag === 'ol') {
+            let i = 0;
+            for (const li of Array.from(el2.children)) {
+              if (li.tagName.toLowerCase() !== 'li')
+                continue;
+              i++;
+              const marker = tag === 'ol' ? `${i}. ` : '- ';
+              // An li without block-level children renders inline; otherwise it would shatter into lines
+              const hasBlock = Array.from(li.children).some(c => /^(p|div|ul|ol|table|pre|blockquote|h[1-6])$/.test(c.tagName.toLowerCase()));
+              const t = hasBlock ? (block(li, depth + 1).trim() || inline(li)) : inline(li);
+              out += `${'  '.repeat(depth)}${marker}${t.replace(/\n/g, `\n${'  '.repeat(depth)}  `)}\n`;
+            }
+            out += '\n';
+          }
+          else if (tag === 'hr') {
+            out += '\n---\n\n';
+          }
+          else if (tag === 'div' || tag === 'section' || tag === 'article') {
+            out += block(el2, depth);
+          } // .cb-markdown and other containers: recurse
+          else if (tag === 'br') {
+            out += '\n';
+          }
+          else {
+            const t = inline(el2);
+            if (t)
+              out += `${t}\n\n`;
+          }
+        }
+        return out;
+      };
+      return block(rootEl, 0).replace(/\n{3,}/g, '\n\n').trim();
+    };
+
+    const chatMessages: { role: 'user' | 'assistant'; id: string; text: string }[] = [];
+    try {
+      const clsMatch = (el: Element, re: RegExp): boolean => {
+        const raw = typeof el.className === 'string' ? el.className : '';
+        return raw.split(/\s+/).some(c => re.test(c));
+      };
+      // CSS Modules hashes change; prefix-match with the trailing underscore kept.
+      const ASST_BOX_RE = /^message-timeline-module_assistantMessage_/;
+      const msgNodes = Array.from(root.querySelectorAll('[id^="user-message-"], [class*="message-timeline-module_assistantMessage_"]'));
+      let seq = 0;
+      for (const el of msgNodes) {
+        // Skip nodes nested inside another matched message container (defensive).
+        let anc = el.parentElement;
+        let nested = false;
+        while (anc) {
+          if ((anc.id && anc.id.startsWith('user-message-')) || clsMatch(anc, ASST_BOX_RE)) {
+            nested = true;
+            break;
+          }
+          anc = anc.parentElement;
+        }
+        if (nested)
+          continue;
+        seq++;
+        if (el.id && el.id.startsWith('user-message-')) {
+          const t = Array.from(el.querySelectorAll('[class*="message-timeline-module_userMessageText_"]')).pop();
+          const target = (t || el) as HTMLElement;
+          // eslint-disable-next-line unicorn/prefer-dom-node-text-content -- innerText keeps the rendered line breaks (<br>); textContent flattens them
+          const text = ((target.innerText || target.textContent) || '').trim();
+          if (text)
+            chatMessages.push({ role: 'user', id: `dom-${el.id.slice('user-message-'.length)}`, text });
+        }
+        else if (clsMatch(el, ASST_BOX_RE)) {
+          const parts: string[] = [];
+          for (const n of Array.from(el.querySelectorAll('[class*="message-timeline-module_assistantTextContent_"]'))) {
+            const s = htmlToMd(n);
+            if (s)
+              parts.push(s);
+          }
+          const text = parts.join('\n\n').trim();
+          if (text)
+            chatMessages.push({ role: 'assistant', id: `dom-a${seq}`, text });
+        }
+      }
+    }
+    catch { /* message scraping is best-effort; the rest of the dump still stands */ }
+
     return {
       inputAvailable: input !== null,
       agentStatus,
       agentActivityText: activity,
+      chatMessages,
       chatTabs,
       activeComposerId: activeTab?.id || '',
       pendingApprovals,

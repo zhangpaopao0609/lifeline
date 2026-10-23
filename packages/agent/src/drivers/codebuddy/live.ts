@@ -3,6 +3,7 @@ import type {
   Approval,
   ChatTab,
   CursorState,
+  LiveChatMessage,
   ModeInfo,
   ModelInfo,
   Questionnaire,
@@ -48,6 +49,12 @@ export interface CodeBuddyLiveDump {
   agentStatus: AgentStatus;
   agentActivityText: string | null;
   chatTabs: CodeBuddyLiveDumpTab[];
+  /**
+   * Rendered messages of the active conversation, scraped from the timeline DOM
+   * (assistant text converted back to markdown). Remote-workspace sessions persist
+   * on the SSH host; this is the only local signal for them.
+   */
+  chatMessages?: LiveChatMessage[];
   activeComposerId: string;
   pendingApprovals: CodeBuddyLiveDumpApproval[];
   liveActions: Record<string, { label: string; type: RunAction['type']; selectorPath: string }[]>;
@@ -152,6 +159,7 @@ export function mapCodeBuddyLive(dump: CodeBuddyLiveDump): Partial<CursorState> 
     pendingApprovals: dump.pendingApprovals.map(mapApproval),
     liveActions: mapLiveActions(dump.liveActions),
     chatTabs: dump.chatTabs.map(mapTab),
+    chatMessages: Array.isArray(dump.chatMessages) ? dump.chatMessages : [],
     activeComposerId: dump.activeComposerId,
     mode: dump.mode,
     model: dump.model,
