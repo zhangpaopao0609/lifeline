@@ -230,12 +230,42 @@ export class CursorAdapter implements ContentSource {
   }
 
   /**
+   * Message-header entries for one chat. Newer Cursor builds (mid Oct 2026) moved
+   * the index out of `composerData.fullConversationHeadersOnly` into paged KV rows
+   * `composerConvHeaders:<sessionId>:<page>` — the legacy field stays empty for new
+   * chats. Fall back to merging the pages in key order; page entries keep the
+   * legacy shape (bubbleId / type / grouping / createdAt).
+   */
+  private readHeaderEntries(sessionId: string, cd = this.readComposer(sessionId)): HeaderEntry[] {
+    const legacy = cd?.fullConversationHeadersOnly ?? [];
+    if (legacy.length > 0)
+      return legacy;
+    try {
+      const rows = this.db
+        .prepare('SELECT value FROM cursorDiskKV WHERE key LIKE ? ORDER BY key')
+        .all(`composerConvHeaders:${sessionId}:%`) as { value: string }[];
+      return rows.flatMap((r) => {
+        try {
+          const parsed = JSON.parse(r.value) as unknown;
+          return Array.isArray(parsed) ? (parsed as HeaderEntry[]) : [];
+        }
+        catch {
+          return [];
+        }
+      });
+    }
+    catch {
+      return [];
+    }
+  }
+
+  /**
    * Index-driven order. Drop grouping.isRenderable === false.
    * complete is false while bubbleId is in generatingBubbleIds.
    */
   readIndex(sessionId: string): MessageHeader[] {
     const cd = this.readComposer(sessionId);
-    const entries = cd?.fullConversationHeadersOnly ?? [];
+    const entries = this.readHeaderEntries(sessionId, cd);
     const generating = cd?.generatingBubbleIds ?? [];
     return entries
       .filter(e => e.grouping?.isRenderable !== false)
@@ -273,7 +303,7 @@ export class CursorAdapter implements ContentSource {
       childSessionIds: cd.subagentComposerIds?.length
         ? cd.subagentComposerIds
         : undefined,
-      messageCount: cd.fullConversationHeadersOnly?.length ?? 0,
+      messageCount: this.readHeaderEntries(meta.ref.sessionId, cd).length,
       modelName:
         cd.modelConfig?.modelName
         ?? cd.modelConfig?.selectedModels?.[0]?.modelId,
@@ -381,7 +411,7 @@ export class CursorAdapter implements ContentSource {
       // Align against **every** header, hidden ones included: Cursor hides some human bubbles from the UI
       // (`isRenderable: false`) but the transcript still counts their turn, so the filtered `readIndex` would
       // never match the transcript's user-message count.
-      const index = (this.readComposer(sessionId)?.fullConversationHeadersOnly ?? []).map(e => ({
+      const index = this.readHeaderEntries(sessionId).map(e => ({
         messageId: e.bubbleId,
         role: e.type === 1 ? ('human' as const) : ('assistant' as const),
         preview: e.grouping?.textPreview,
