@@ -1326,11 +1326,21 @@ export class CommandExecutor {
             if (scoped.length > 0) hits = scoped;
           }
           if (hits.length === 0) return { ok: false, error: 'Tab not found: ' + title };
-          const composerIdOf = () =>
-            document.querySelector('div.composer-bar.editor[data-composer-id]')?.getAttribute('data-composer-id') || '';
+          const rowKey = (el) => el?.closest('[data-sidebar-item-key]')?.getAttribute('data-sidebar-item-key') || '';
+          const idFromKey = (key) => (key && key.startsWith('row:') ? key.slice(4) : '');
+          const composerIdOf = () => {
+            const fromBar = document.querySelector('div.composer-bar.editor[data-composer-id]')?.getAttribute('data-composer-id') || '';
+            if (fromBar) return fromBar;
+            const active = document.querySelector('.ui-sidebar-menu-button[aria-id="glass-sidebar-agent-row"][data-active="true"]');
+            return idFromKey(rowKey(active));
+          };
           const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
           const order = [];
-          if (wantIdx >= 0 && wantIdx < hits.length) order.push(wantIdx);
+          if (wantId) {
+            const exact = hits.findIndex((el) => idFromKey(rowKey(el)) === wantId);
+            if (exact >= 0) order.push(exact);
+          }
+          if (wantIdx >= 0 && wantIdx < hits.length && !order.includes(wantIdx)) order.push(wantIdx);
           for (let i = 0; i < hits.length; i++) if (!order.includes(i)) order.push(i);
           let landed = '';
           for (const i of order) {

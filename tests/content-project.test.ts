@@ -26,6 +26,44 @@ describe('project', () => {
     assert.equal(stats.missing, 0);
   });
 
+  it('shows the user_query inside a wrapped human bubble', () => {
+    const bubbles: Bubble[] = [
+      {
+        bubbleId: 'h1',
+        type: 1,
+        createdAt: 1,
+        text: '<timestamp>Wednesday, Oct 14, 2026, 1:59 PM (UTC+8)</timestamp>\n<system_notification>task finished</system_notification>\n<user_query>\n汇总下测试结果\n</user_query>',
+      },
+    ];
+    const { messages } = project([header('h1', 'human')], bubbles);
+    assert.equal(messages.length, 1);
+    assert.equal((messages[0] as { text: string }).text, '汇总下测试结果');
+  });
+
+  it('renders a simulated system message as a compact notification', () => {
+    const bubbles: Bubble[] = [
+      {
+        bubbleId: 'n1',
+        type: 1,
+        createdAt: 1,
+        text: '<system_notification>\n<task>\nstatus: success\ntitle: Register another account\n</task>\n</system_notification>\n<user_query>Perform follow-up work</user_query>',
+      },
+    ];
+    const notification: MessageHeader = {
+      ...header('n1', 'human'),
+      notificationTitle: 'Register another account',
+    };
+    const { messages } = project([notification], bubbles);
+    assert.deepEqual(messages, [{
+      type: 'notification',
+      id: 'n1',
+      flatIndex: 0,
+      title: 'Register another account',
+      status: 'success',
+      createdAt: 1,
+    }]);
+  });
+
   it('counts missing index entries', () => {
     const { stats } = project([header('nope', 'human')], []);
     assert.equal(stats.missing, 1);

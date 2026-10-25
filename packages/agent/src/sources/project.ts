@@ -18,6 +18,7 @@ import type {
 } from '../types.js';
 import type { Bubble } from './cursor-adapter.js';
 import type { MessageHeader } from './types.js';
+import { humanBubbleText } from './cursor-transcript.js';
 
 type ToolStatus = ToolCallElement['status'];
 
@@ -131,6 +132,10 @@ function summarize(
   }
 }
 
+function stamp(createdAt: number): { createdAt?: number } {
+  return createdAt > 0 ? { createdAt } : {};
+}
+
 function parseTodos(raw: unknown): PlanTodo[] {
   if (!Array.isArray(raw))
     return [];
@@ -204,8 +209,20 @@ export function project(
       continue;
     }
 
+    if (h.notificationTitle) {
+      messages.push({
+        type: 'notification',
+        id: b.bubbleId,
+        flatIndex: flatIndex++,
+        title: h.notificationTitle,
+        status: /(?:^|\n)status:\s*error(?:\n|$)/i.test(b.text) ? 'error' : 'success',
+        ...stamp(b.createdAt),
+      });
+      continue;
+    }
+
     if (h.role === 'human') {
-      const text = (b.text || '').trim();
+      const text = humanBubbleText(b.text || '').trim();
       if (!text) {
         stats.empty++;
         continue;
@@ -216,6 +233,7 @@ export function project(
         flatIndex: flatIndex++,
         text,
         mentions: [],
+        ...stamp(b.createdAt),
       };
       messages.push(msg);
       stats.human++;
@@ -233,6 +251,7 @@ export function project(
         duration: b.thinkingDurationMs ? `${b.thinkingDurationMs}ms` : '',
         detail: thinking,
         thoughtKind: 'thinking_step',
+        ...stamp(b.createdAt),
       };
       messages.push(thought);
       stats.thought++;
@@ -283,6 +302,7 @@ export function project(
           filename,
           summaryText: summarize(name, params, filename),
           diffBlock,
+          ...stamp(b.createdAt),
         };
         messages.push(tool);
         stats.tool++;
@@ -297,6 +317,7 @@ export function project(
         id: b.bubbleId,
         flatIndex: flatIndex++,
         text: b.text,
+        ...stamp(b.createdAt),
       };
       messages.push(msg);
       stats.assistant++;

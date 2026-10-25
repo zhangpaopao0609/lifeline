@@ -32,7 +32,8 @@ export interface TurnBubble {
 /** Turns from the end that are examined; older turns are settled and their bodies are not even read. */
 export const TRANSCRIPT_TAIL_TURNS = 8;
 
-function userText(raw: string): string {
+/** Human bubble text as the user typed it. Cursor wraps later turns in `<timestamp>` / `<user_query>`. */
+export function humanBubbleText(raw: string): string {
   const open = raw.indexOf('<user_query>');
   if (open >= 0) {
     const from = open + '<user_query>'.length;
@@ -70,7 +71,7 @@ export function parseTranscript(raw: string): TranscriptEntry[] {
     const joined = parts.join('\n').trim();
     if (!joined)
       continue;
-    out.push({ role: row.role, text: row.role === 'user' ? userText(joined) : joined });
+    out.push({ role: row.role, text: row.role === 'user' ? humanBubbleText(joined) : joined });
   }
   return out;
 }

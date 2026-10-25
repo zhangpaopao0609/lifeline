@@ -280,6 +280,24 @@ describe('mapAgentsWindowDump', () => {
     assert.equal(mapped.pendingApprovals?.[0].actions[0].label, 'Run');
   });
 
+  it('侧栏 row:<uuid> 盖过按标题对齐，同名会话不会串到另一条', () => {
+    const d = dump();
+    const real = '9c5676f9-3235-47e5-adf0-4399485c95b8';
+    d.sections[0].rows[0] = row({
+      title: 'Design plan discussion',
+      dot: 'needs-attention',
+      active: true,
+      composerId: real,
+    });
+    d.activeComposerId = '';
+    const mapped = mapAgentsWindowDump(d, { windowId: 'w', deps: mapDeps() });
+    const tabs = mapped.chatTabs ?? [];
+    assert.equal(tabs[0].composerId, real);
+    assert.equal(tabs[0].composerIdSource, 'dom');
+    assert.equal(tabs[1].composerId, 'c2');
+    assert.equal(mapped.activeComposerId, real);
+  });
+
   it('resolveIds=false 时全走占位 id（DOM-only 模式）', () => {
     const mapped = mapAgentsWindowDump(dump(), { windowId: 'w', resolveIds: false });
     assert.deepEqual((mapped.chatTabs ?? []).map(t => t.composerId), ['tab-0', 'tab-1', 'tab-2', 'tab-3']);

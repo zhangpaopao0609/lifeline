@@ -108,6 +108,7 @@ function elementContentKey(el: ChatElement): string {
     case 'plan':
       return `${el.todosCompleted}/${el.todosTotal}:${(el.description || '').length}:${el.model ?? ''}`;
     case 'todo_list': return `${el.todosCompleted}/${el.todosTotal}`;
+    case 'notification': return `${el.status}:${el.title}`;
     case 'loading': return el.text ?? '';
   }
 }

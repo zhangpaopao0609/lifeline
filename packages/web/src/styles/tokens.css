@@ -171,9 +171,21 @@ a {
 .md-body a {
   color: var(--accent);
   text-decoration: none;
+  padding: 2px;
+  margin: 0 -2px;
+  border-radius: 4px;
 }
 
 .md-body a:hover { text-decoration: underline; }
+
+.md-body a .md-link-favicon {
+  width: 1em;
+  height: 1em;
+  margin-right: 0.2em;
+  border-radius: 0.2em;
+  object-fit: contain;
+  vertical-align: -0.15em;
+}
 
 .md-body code:not(pre code) {
   background: var(--bg-3);

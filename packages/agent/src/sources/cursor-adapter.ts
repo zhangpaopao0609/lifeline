@@ -79,7 +79,24 @@ interface HeaderEntry {
     isRenderable?: boolean;
     textPreview?: string;
     thinkingDurationMs?: number;
+    isSimulatedMsg?: boolean;
+    simulatedMsgReason?: number;
+    simulatedMessageMetadataTitle?: string;
+    simulatedMessageMetadataSuppressUIDisplay?: boolean;
+    backgroundTaskCompletionKind?: string;
   };
+}
+
+/** agent.v1.SimulatedMsgReason.BACKGROUND_TASK_COMPLETION. Cursor renders these as "Finished" rows. */
+const SIMULATED_REASON_BACKGROUND_TASK = 3;
+
+function isBackgroundTaskNotification(grouping: HeaderEntry['grouping']): boolean {
+  if (grouping?.isSimulatedMsg !== true)
+    return false;
+  if (grouping.simulatedMessageMetadataSuppressUIDisplay === true)
+    return false;
+  return grouping.backgroundTaskCompletionKind !== undefined
+    || grouping.simulatedMsgReason === SIMULATED_REASON_BACKGROUND_TASK;
 }
 
 export class CursorAdapter implements ContentSource {
@@ -239,14 +256,26 @@ export class CursorAdapter implements ContentSource {
     const generating = cd?.generatingBubbleIds ?? [];
     return entries
       .filter(e => e.grouping?.isRenderable !== false)
-      .map(e => ({
-        messageId: e.bubbleId,
-        role: e.type === 1 ? ('human' as const) : ('assistant' as const),
-        createdAt: e.createdAt ? Date.parse(e.createdAt) : 0,
-        preview: e.grouping?.textPreview,
-        thinkingDurationMs: e.grouping?.thinkingDurationMs,
-        complete: generating.includes(e.bubbleId) === false,
-      }));
+      .filter(e => !(
+        e.type === 1
+        && e.grouping?.isSimulatedMsg === true
+        && e.grouping.simulatedMsgReason === SIMULATED_REASON_BACKGROUND_TASK
+        && e.grouping.simulatedMessageMetadataSuppressUIDisplay === true
+      ))
+      .map((e) => {
+        const notification = e.type === 1 && isBackgroundTaskNotification(e.grouping);
+        return {
+          messageId: e.bubbleId,
+          role: e.type === 1 ? ('human' as const) : ('assistant' as const),
+          createdAt: e.createdAt ? Date.parse(e.createdAt) : 0,
+          preview: e.grouping?.textPreview,
+          thinkingDurationMs: e.grouping?.thinkingDurationMs,
+          ...(notification
+            ? { notificationTitle: e.grouping?.simulatedMessageMetadataTitle?.trim() || 'Background task' }
+            : {}),
+          complete: generating.includes(e.bubbleId) === false,
+        };
+      });
   }
 
   enrichMeta(meta: SessionMeta): SessionMeta {

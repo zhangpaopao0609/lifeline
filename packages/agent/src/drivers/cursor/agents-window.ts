@@ -4,15 +4,18 @@
  * How it differs from a project window (measured 2026-09-16, Cursor 3.18.9):
  *   - no project workspace (`vscode.context.configuration().workspace` is null), no `#workbench.parts.*`;
  *   - sidebar is `.ui-sidebar-menu-button[aria-id="glass-sidebar-agent-row"]` inside
- *     `.ui-sidebar-section[data-agent-drop-section-id]` (repo / workspace groups); rows have no composerId;
- *   - the main pane is the selected agent's session: `div.composer-bar.editor[data-composer-id][data-composer-status]`;
+ *     `.ui-sidebar-section[data-agent-drop-section-id]` (repo / workspace groups);
+ *   - Cursor 3.24 puts the composer id on the row's `<li data-sidebar-item-key="row:<uuid>">`
+ *     (measured 2026-10-15). Older builds still expose it only on
+ *     `div.composer-bar.editor[data-composer-id]`. When the row key is absent, ids are
+ *     inferred by aligning the group to that workspace's session sequence;
  *   - the input is `.ui-prompt-input-editor__input` (tiptap), **not** inside `.composer-bar`.
  *
  * Two sources of truth:
  *   1. row status dots `.ui-agent-status-dot[data-variant]`: needs-attention / done-unseen / draft;
- *   2. the row's real composerId — not on the row; inferred by aligning
- *      "group → that workspace's session sequence" (see alignAgentsSectionIds;
- *      if it does not align, keep the placeholder id, do not guess).
+ *   2. the row's real composerId — `data-sidebar-item-key` when Cursor prints it,
+ *      otherwise inferred by aligning "group → that workspace's session sequence"
+ *      (see alignAgentsSectionIds; if it does not align, keep the placeholder id, do not guess).
  */
 
 import type {
@@ -85,8 +88,21 @@ export function isCloudSectionId(sectionId: string): boolean {
   return CLOUD_SECTION_IDS.includes(sectionId);
 }
 
+/** `row:<uuid>` on `data-sidebar-item-key` (Cursor 3.24 Agents sidebar). Anything else is not a composer id. */
+export function sidebarRowComposerId(itemKey: string | null | undefined): string {
+  if (!itemKey?.startsWith('row:'))
+    return '';
+  const id = itemKey.slice('row:'.length);
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id) ? id : '';
+}
+
 export interface AgentsWindowRow {
   title: string;
+  /**
+   * Composer id printed on the row (`data-sidebar-item-key="row:<uuid>"`).
+   * Empty on older builds that only put the id on the composer bar.
+   */
+  composerId?: string;
   /** Relative time on the right of the list (`8m` / `2d`); display only. */
   time: string;
   active: boolean;
@@ -203,6 +219,11 @@ export function dumpAgentsWindow(): AgentsWindowDump {
       sections.push(current);
     }
     const dot = el.querySelector('.ui-agent-status-dot');
+    const itemKey = el.closest('[data-sidebar-item-key]')?.getAttribute('data-sidebar-item-key') || '';
+    const rowComposerId = itemKey.startsWith('row:')
+      && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(itemKey.slice(4))
+      ? itemKey.slice(4)
+      : '';
     current.rows.push({
       title: clean(el.querySelector('.ui-sidebar-menu-button-label')?.textContent),
       time: clean(el.querySelector('.ui-sidebar-menu-button-end')?.textContent),
@@ -210,6 +231,7 @@ export function dumpAgentsWindow(): AgentsWindowDump {
       unread: el.hasAttribute('data-unread'),
       dot: dot?.getAttribute('data-variant') || '',
       running: !!el.querySelector('.ui-sidebar-menu-button-status-icon .ui-dot-grid-loader'),
+      ...(rowComposerId ? { composerId: rowComposerId } : {}),
     });
   }
 
@@ -361,6 +383,14 @@ export function dumpAgentsWindow(): AgentsWindowDump {
   // When the window is occluded / minimized Cursor does not render the transcript, so this is naturally null.
   // The main-pane composer bar also gives "which agent is current": the questionnaire belongs to it; switching away on the web dismisses the card.
   const bar = document.querySelector('div.composer-bar.editor[data-composer-id]');
+  const activeRowEl = document.querySelector(
+    '.ui-sidebar-menu-button[aria-id="glass-sidebar-agent-row"][data-active="true"]',
+  );
+  const activeRowKey = activeRowEl?.closest('[data-sidebar-item-key]')?.getAttribute('data-sidebar-item-key') || '';
+  const activeRowComposerId = activeRowKey.startsWith('row:')
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(activeRowKey.slice(4))
+    ? activeRowKey.slice(4)
+    : '';
   let questionnaire: Questionnaire | null = null;
   const qTray = document.querySelector('[class*="glass-questionnaire-tray"]');
   if (qTray) {
@@ -405,7 +435,7 @@ export function dumpAgentsWindow(): AgentsWindowDump {
     const skipBtn = qTray.querySelector('.ui-tray-footer button[data-variant="ghost"]');
     const continueBtn = qTray.querySelector('.ui-tray-footer__primary > button');
     questionnaire = {
-      composerId: bar?.getAttribute('data-composer-id') || '',
+      composerId: activeRowComposerId || bar?.getAttribute('data-composer-id') || '',
       questions,
       activeIndex: activeIdx,
       totalLabel: '',
@@ -438,7 +468,7 @@ export function dumpAgentsWindow(): AgentsWindowDump {
 
   return {
     sections,
-    activeComposerId: bar?.getAttribute('data-composer-id') || '',
+    activeComposerId: activeRowComposerId || bar?.getAttribute('data-composer-id') || '',
     composerStatus: bar?.getAttribute('data-composer-status') || '',
     stopGenerating,
     inputAvailable: !!composerEl,
@@ -718,7 +748,8 @@ export function mapAgentsWindowDump(
       const key = nameKey(row.title);
       const n = sameTitle.get(key) ?? 0;
       sameTitle.set(key, n + 1);
-      const id = ids[i] ?? '';
+      const domId = row.composerId?.trim() || '';
+      const id = domId || ids[i] || '';
       const draft = isDraftRow(row);
       tabs.push({
         composerId: id || `tab-${tabs.length}`,
@@ -729,7 +760,7 @@ export function mapAgentsWindowDump(
         windowId: opts.windowId,
         rowIndex: tabs.length,
         sameTitleIndex: n,
-        composerIdSource: id ? 'db' : undefined,
+        composerIdSource: domId ? 'dom' : id ? 'db' : undefined,
         section: section.title,
         sectionId: section.id,
         // Draft: no body yet (the web must not fill in the previous session's body); text is in the composer.
@@ -762,7 +793,9 @@ export function mapAgentsWindowDump(
     // If the current agent is cloud it has no projectable composer: do not
     // report `bc-…` as a live id (content-live would only log content:missing,
     // and the web would get an extra unclickable "current session").
-    activeComposerId: activeIsCloud ? '' : dump.activeComposerId || '',
+    activeComposerId: activeIsCloud
+      ? ''
+      : (activeRow?.composerId?.trim() || dump.activeComposerId || ''),
     // The input exists on a cloud agent too, but row/body are not shown, so do not offer a remote input entry
     inputAvailable: activeIsCloud ? false : dump.inputAvailable,
     // Also report a cloud agent's window-level status as "idle": it has no

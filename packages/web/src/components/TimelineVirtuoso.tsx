@@ -5,6 +5,7 @@ import type { TlSnapshot } from '../lib/timeline-persist';
 import type { Segment } from './timeline-segments';
 import { forwardRef, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso } from 'react-virtuoso';
+import { markWork } from '../lib/cursor-activity';
 import { pillCount } from '../lib/new-message-pill';
 import { shouldPageAtTop, shouldPrefetch } from '../lib/timeline-paging';
 import { canRestore, loadSnapshot, saveSnapshot } from '../lib/timeline-persist';
@@ -12,7 +13,7 @@ import { segmentsPrepended } from '../lib/timeline-window';
 import { parseIde } from '../net/protocol';
 import { socket } from '../net/socket';
 import { useSessionsStore } from '../store/sessions';
-import { itemClassOf, segmentize, SegmentView } from './timeline-segments';
+import { FoldedSegment, itemClassOf, segmentize } from './timeline-segments';
 
 /**
  * PoC: the timeline rendered by react-virtuoso (chat-oriented bidirectional virtual list).
@@ -96,6 +97,22 @@ export function TimelineVirtuoso({ sessionKey, bindHandle, bindScroller, onMaybe
     prevSegmentsRef.current = next;
     return next;
   }, [body]);
+  /** `sessionKey` is `${ide}:${sessionId}` (store/sessions sessionBodyKey). */
+  const ide = useMemo(() => parseIde(sessionKey.split(':', 1)[0]), [sessionKey]);
+  const marks = useMemo(() => markWork(segments, ide), [segments, ide]);
+  const [workOpen, setWorkOpen] = useState<Record<string, boolean>>({});
+  const toggleWork = useCallback((groupId: string) => {
+    setWorkOpen((prev) => {
+      const active = marks.some(mark => mark?.head?.id === groupId && mark.head.active);
+      const currently = groupId in prev ? prev[groupId] : active;
+      return { ...prev, [groupId]: !currently };
+    });
+  }, [marks]);
+  const workIsOpen = useCallback((groupId: string) => {
+    if (groupId in workOpen)
+      return workOpen[groupId];
+    return marks.some(mark => mark?.head?.id === groupId && mark.head.active);
+  }, [marks, workOpen]);
 
   /** Paging only after a real gesture — otherwise "opened and settled at top" would auto-drag the whole history. */
   const userTouchedRef = useRef(false);
@@ -490,13 +507,27 @@ export function TimelineVirtuoso({ sessionKey, bindHandle, bindScroller, onMaybe
         style={{ flex: 1, minHeight: 0 }}
         scrollerRef={scrollerRef}
         components={components}
-        itemContent={(index, seg) => (
+        itemContent={(index, seg) => {
           // The library's index is ABSOLUTE (offset by firstItemIndex under the prepend protocol);
           // itemClassOf needs the position within the current segments array.
-          <div data-key={seg.key} className={itemClassOf(segments, index - firstItemIndex)}>
-            <SegmentView seg={seg} pendingSends={pendingSends} />
-          </div>
-        )}
+          const local = index - firstItemIndex;
+          const mark = marks[local];
+          const open = mark ? workIsOpen(mark.groupId) : true;
+          if (mark && !mark.head && !open)
+            return <div data-key={seg.key} />;
+          return (
+            <div data-key={seg.key} className={itemClassOf(segments, local)}>
+              <FoldedSegment
+                seg={seg}
+                mark={mark}
+                open={open}
+                onToggle={toggleWork}
+                pendingSends={pendingSends}
+                ide={ide}
+              />
+            </div>
+          );
+        }}
       />
       {pill > 0 && (
         <button

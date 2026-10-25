@@ -1,6 +1,7 @@
-import type { ToolCallElement } from '../net/protocol';
-import { CaretDown, CaretRight, Gear } from '@phosphor-icons/react';
-import { useMemo, useState } from 'react';
+import type { IdeKind, ToolCallElement } from '../net/protocol';
+import { CaretDown, CaretRight } from '@phosphor-icons/react';
+import { useState } from 'react';
+import { activitySummary } from '../lib/cursor-activity';
 import { sendCommand } from '../net/socket';
 import { useIdesStore } from '../store/ides';
 
@@ -62,47 +63,46 @@ function ToolRow({ t }: { t: ToolCallElement }) {
 }
 
 /**
- * Consecutive tools auto-group: collapsed to a one-line summary by default;
- * expanded, each tool is a mono line. Groups with pending action buttons stay expanded (spec §4).
+ * Consecutive tools. Cursor folds them into one activity sentence ("Explored 14 files, 15 searches")
+ * that expands to the rows; CodeBuddy's transcript lists every call on its own, so there it stays flat.
+ * Groups with pending action buttons stay open.
  */
-export function ToolGroup({ items }: { items: ToolCallElement[] }) {
+export function ToolGroup({ items, ide }: { items: ToolCallElement[]; ide: IdeKind }) {
+  const folded = ide === 'cursor';
   const hasActions = items.some(t => (t.actions?.length ?? 0) > 0);
   const [open, setOpen] = useState(hasActions);
   const selectedIde = useIdesStore(s => s.selectedIde);
-
-  const summary = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const t of items) {
-      const name = t.toolName || t.action || 'tool';
-      counts.set(name, (counts.get(name) ?? 0) + 1);
-    }
-    return [...counts.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 3)
-      .map(([name, n]) => `${name} ×${n}`)
-      .join(' · ');
-  }, [items]);
-
-  const expanded = open || hasActions;
+  const summary = folded ? activitySummary(items) : null;
+  const expanded = !folded || open || hasActions;
 
   return (
-    <div className="surface-card">
-      <button
-        type="button"
-        onClick={() => setOpen(v => !v)}
-        className="flex w-full items-center gap-2 border-0 bg-transparent px-2.5 py-1.5 text-left text-[length:var(--text-chrome)] text-[var(--text-secondary)]"
-      >
-        <Gear size={14} />
-        <span className="mono min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap">
-          {items.length}
-          {' '}
-          个工具调用 ·
-          {summary}
-        </span>
-        {expanded ? <CaretDown size={12} /> : <CaretRight size={12} />}
-      </button>
+    <div>
+      {summary && (
+        <button
+          type="button"
+          aria-expanded={expanded}
+          onClick={() => setOpen(v => !v)}
+          className="inline-flex max-w-full flex-wrap items-center gap-x-1 border-0 bg-transparent p-0 text-left text-[length:var(--text-chrome)]"
+        >
+          <span className="text-[var(--text-secondary)]">{summary.action}</span>
+          {summary.details && <span className="text-[var(--text-weak)]">{summary.details}</span>}
+          {summary.additions != null && summary.additions > 0 && (
+            <span className="text-[var(--ok)]">
+              +
+              {summary.additions}
+            </span>
+          )}
+          {summary.deletions != null && summary.deletions > 0 && (
+            <span className="text-[var(--error)]">
+              -
+              {summary.deletions}
+            </span>
+          )}
+          {expanded ? <CaretDown size={12} className="text-[var(--text-weak)]" /> : <CaretRight size={12} className="text-[var(--text-weak)]" />}
+        </button>
+      )}
       {expanded && (
-        <div className="border-t border-[var(--hairline)] px-2.5 pb-2 pt-1">
+        <div className={folded ? 'pt-1' : undefined}>
           {items.map(t => (
             <div key={t.id}>
               <ToolRow t={t} />

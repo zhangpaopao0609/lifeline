@@ -41,6 +41,7 @@ describe('CommandExecutor.switchTab（agents 窗口）', () => {
     const expr = expressions[0];
     // Only accept Agents-window rows; group/title/index must all be sent into the page
     assert.match(expr, /glass-sidebar-agent-row/);
+    assert.match(expr, /data-sidebar-item-key/);
     assert.match(expr, /acme\/demo-repo/);
     assert.match(expr, /Design plan discussion/);
     assert.match(expr, /"wantIdx": 1|wantIdx = 1/);

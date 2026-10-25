@@ -149,6 +149,12 @@ const DEFAULT_INTERVAL_MS = 300;
 
 /** Disk-write throttle: a tick is 300ms; do not write every round */
 const WATERMARK_SAVE_DEBOUNCE_MS = 3000;
+/**
+ * Bump whenever the same Cursor rows project to different wire elements.
+ * Persisted watermarks survive daemon upgrades; without this prefix an upgraded agent can answer
+ * "sync" from an old semantic projection and leave stale server rows in place indefinitely.
+ */
+const PROJECTION_SIGNATURE_VERSION = 'projection-v3';
 
 export class ContentLiveRuntime {
   private readonly intervalMs: number;
@@ -631,7 +637,7 @@ function diskSignature(
   sizes?: Map<string, number>,
   bodySignal?: string,
 ): string {
-  return `${indexFingerprint(index)}|${sizesFingerprint(sizes)}|${bodySignal ?? ''}`;
+  return `${PROJECTION_SIGNATURE_VERSION}|${indexFingerprint(index)}|${sizesFingerprint(sizes)}|${bodySignal ?? ''}`;
 }
 
 function idsToFetch(

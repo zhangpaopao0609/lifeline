@@ -126,13 +126,41 @@ export function SessionList({
   const [query, setQuery] = useState('');
   const [dragId, setDragId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
-  // Accordion: all expanded by default; collapsed state is keyed by "machine:IDE:window" so machines don't leak, and a refresh returns to the default expanded
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  // Accordion starts collapsed. Open keys are "machine:IDE:window" and "...:section", so machines don't leak, and a refresh returns to folded.
+  const [openKeys, setOpenKeys] = useState<Set<string>>(() => new Set());
 
   const rawGroups = useMemo(() => (state ? groupTabsByWindow(state) : []), [state]);
   const { groups, reorder } = useWindowOrder(agentId, selectedIde, rawGroups);
   const q = query.trim().toLowerCase();
   const pendingHere = pendingSwitch && pendingSwitch.ide === selectedIde ? pendingSwitch : null;
+
+  // Folded-by-default + desktop = a session is open on the right while the list shows nothing selected anywhere (2026-10-20 feedback;
+  // the default flipped to folded and only the phone switcher force-opened the current group).
+  // Unfold the group (and the Agents-window section) holding the session currently on screen.
+  // Only when the "current group" changes: folding it by hand must stick until the user switches into another session.
+  const autoExpandKeys = useMemo(() => {
+    if (!state)
+      return [];
+    for (const g of groups) {
+      const tab = g.tabs.find(t => isViewingTab(t, g.windowId, selectedIde, state, pendingSwitch));
+      if (!tab)
+        continue;
+      const key = `${agentId}:${selectedIde}:${g.windowId}`;
+      return tab.section ? [key, `${key}:${tab.section}`] : [key];
+    }
+    return [];
+  }, [groups, state, selectedIde, pendingSwitch, agentId]);
+  const autoExpandSig = autoExpandKeys.join('\n');
+  // layoutEffect: unfold before the first paint, so the desktop column never shows "session open, every group folded" for a frame
+  useLayoutEffect(() => {
+    if (!autoExpandSig)
+      return;
+    const keys = autoExpandSig.split('\n');
+    setOpenKeys((prev) => {
+      const missing = keys.filter(k => !prev.has(k));
+      return missing.length ? new Set([...prev, ...missing]) : prev;
+    });
+  }, [autoExpandSig]);
 
   const listRef = useRef<HTMLDivElement | null>(null);
   const currentRowRef = useRef<HTMLButtonElement | null>(null);
@@ -157,24 +185,12 @@ export function SessionList({
   }, [revealCurrent, q, state, pendingSwitch]);
 
   const groupKey = (windowId: string) => `${agentId}:${selectedIde}:${windowId}`;
-  const toggleGroup = (windowId: string) => {
-    const key = groupKey(windowId);
-    setCollapsed((prev) => {
+  const toggleKey = (key: string) => {
+    setOpenKeys((prev) => {
       const next = new Set(prev);
       if (next.has(key))
         next.delete(key);
       else next.add(key);
-      return next;
-    });
-  };
-
-  /** Nested section (repo groups inside the Agents window): shares the window collapse set; the key includes the section name. */
-  const toggleSection = (secKey: string) => {
-    setCollapsed((prev) => {
-      const next = new Set(prev);
-      if (next.has(secKey))
-        next.delete(secKey);
-      else next.add(secKey);
       return next;
     });
   };
@@ -274,7 +290,8 @@ export function SessionList({
           if (tabs.length === 0)
             return null;
           const dropping = overId === g.windowId && dragId !== null && dragId !== g.windowId;
-          const folded = collapsed.has(groupKey(g.windowId));
+          const viewingInGroup = revealCurrent && !!state && tabs.some(t => isViewingTab(t, g.windowId, selectedIde, state, pendingSwitch));
+          const folded = !q && !viewingInGroup && !openKeys.has(groupKey(g.windowId));
           // Agents window (Cursor's global agent list): subdivide the group by repo, matching the IDE
           const isAgents = (state?.windows.find(w => w.id === g.windowId)?.kind ?? 'project') === 'agents';
           const renderRow = (t: ChatTab) => {
@@ -319,12 +336,12 @@ export function SessionList({
                 tabIndex={0}
                 aria-expanded={!folded}
                 aria-label={`${folded ? '展开' : '收起'}窗口「${g.title}」`}
-                onClick={() => toggleGroup(g.windowId)}
+                onClick={() => toggleKey(groupKey(g.windowId))}
                 onKeyDown={(e) => {
                   if (e.key !== 'Enter' && e.key !== ' ')
                     return;
                   e.preventDefault();
-                  toggleGroup(g.windowId);
+                  toggleKey(groupKey(g.windowId));
                 }}
               >
                 <span className="sess-head-icon" aria-hidden>
@@ -359,7 +376,8 @@ export function SessionList({
               {!folded && (isAgents
                 ? groupTabsBySection(tabs).map((sec, secIdx) => {
                     const secKey = `${groupKey(g.windowId)}:${sec.section}`;
-                    const secFolded = collapsed.has(secKey);
+                    const viewingInSection = revealCurrent && !!state && sec.tabs.some(t => isViewingTab(t, g.windowId, selectedIde, state, pendingSwitch));
+                    const secFolded = !q && !viewingInSection && !openKeys.has(secKey);
                     // Collapse state is keyed by section name (secKey), but the React key needs another identity layer:
                     // groupTabsBySection only merges **adjacent** same-named sections (the IDE's own order can leave same names non-adjacent),
                     // so "two workspace.json sections in the Agents window" is valid input — using secKey alone would collide keys
@@ -374,12 +392,12 @@ export function SessionList({
                           tabIndex={0}
                           aria-expanded={!secFolded}
                           aria-label={`${secFolded ? '展开' : '收起'}「${sec.section || '其他'}」`}
-                          onClick={() => toggleSection(secKey)}
+                          onClick={() => toggleKey(secKey)}
                           onKeyDown={(e) => {
                             if (e.key !== 'Enter' && e.key !== ' ')
                               return;
                             e.preventDefault();
-                            toggleSection(secKey);
+                            toggleKey(secKey);
                           }}
                         >
                           {secFolded

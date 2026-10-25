@@ -158,6 +158,49 @@ describe('projectCodeBuddy user text', () => {
     );
     assert.equal((msgs[0] as { text: string }).text, 'hello');
   });
+
+  it('strips project_context when the turn carries no user_query', () => {
+    const msgs = projectCodeBuddy(
+      [{ id: 'u1', role: 'user' }],
+      new Map([
+        [
+          'u1',
+          humanFile(
+            'u1',
+            '<user_info>\nOS Version: darwin\n</user_info>\n\n<project_context>\n# AGENTS.md\n\nproject guidance\n</project_context>\n\n继续',
+          ),
+        ],
+      ]),
+    );
+    assert.equal(msgs.length, 1);
+    assert.equal((msgs[0] as { text: string }).text, '继续');
+  });
+
+  it('keeps the human query when a compaction turn carries one', () => {
+    const compaction = {
+      ...humanFile(
+        'c1',
+        '<user_info>\nOS Version: darwin\n</user_info>\n\n<project_context>\n# AGENTS.md\n</project_context>\n\nSummary:\n\n1. 之前做了什么\n\n<user_query>\n继续改一下字体\n</user_query>',
+      ),
+      extra: JSON.stringify({ isSummary: true, isMaxTokenLimitSummary: true }),
+    };
+    const msgs = projectCodeBuddy([{ id: 'c1', role: 'user' }], new Map([['c1', compaction]]));
+    assert.equal(msgs.length, 1);
+    assert.equal((msgs[0] as { text: string }).text, '继续改一下字体');
+  });
+
+  it('skips a compaction turn that has no user_query — the IDE wrote it end to end', () => {
+    const summary = {
+      ...humanFile('s1', '<user_info>\nOS Version: darwin\n</user_info>\n\nSummary:\n\n1. 之前做了什么'),
+      extra: JSON.stringify({
+        isSummary: true,
+        isMaxTokenLimitSummary: true,
+        compactBoundary: { version: 1, kind: 'tail-start' },
+      }),
+    };
+    const msgs = projectCodeBuddy([{ id: 's1', role: 'user' }], new Map([['s1', summary]]));
+    assert.deepEqual(msgs, []);
+  });
 });
 
 describe('projectCodeBuddy includeProcess', () => {

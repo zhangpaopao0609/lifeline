@@ -32,6 +32,9 @@ export interface MessageHeader {
   createdAt: number;
   preview?: string;
   thinkingDurationMs?: number;
+  /** Cursor simulated-message metadata. These rows are notifications, not user prompts. */
+  notificationTitle?: string;
+  notificationStatus?: 'success' | 'error';
   complete: boolean;
 }
 

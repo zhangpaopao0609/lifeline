@@ -132,8 +132,18 @@ export function visibleCodeBuddyUserText(text: string): string {
   return text
     .replace(/<user_info>[\s\S]*?<\/user_info>/g, '')
     .replace(/<rules>[\s\S]*?<\/rules>/g, '')
+    .replace(/<project_context>[\s\S]*?<\/project_context>/g, '')
     .replace(/<additional_data>[\s\S]*?<\/additional_data>/g, '')
     .trim();
+}
+
+/**
+ * Context compaction: CodeBuddy stores its "summarize the conversation" prompt as a `user` message
+ * (`isSummary` / `compactBoundary`), so it looks like a human turn on disk. Nothing in it was typed
+ * by the human and the IDE itself draws no such bubble — skip it rather than paste the envelope.
+ */
+function isCompactionPrompt(extra: Record<string, unknown>): boolean {
+  return extra.isSummary === true || extra.isMaxTokenLimitSummary === true;
 }
 
 function pickCommand(args: unknown): string | undefined {
@@ -282,12 +292,16 @@ export function projectCodeBuddy(
 
   for (const p of parsed) {
     if (p.role === 'user') {
-      const text = visibleCodeBuddyUserText(
-        p.blocks
-          .filter(b => b.type === 'text' && b.text)
-          .map(b => b.text as string)
-          .join('\n'),
-      );
+      const raw = p.blocks
+        .filter(b => b.type === 'text' && b.text)
+        .map(b => b.text as string)
+        .join('\n');
+      // A compaction turn usually still carries the human query that triggered it — keep that.
+      // Only the summary-with-no-query shape is machine-written end to end (the IDE's tail-start
+      // boundary); that one must not become a bubble, or the whole prompt envelope gets pasted.
+      if (isCompactionPrompt(p.extra) && !raw.includes('<user_query>'))
+        continue;
+      const text = visibleCodeBuddyUserText(raw);
       if (!text)
         continue;
       const msg: HumanMessage = {

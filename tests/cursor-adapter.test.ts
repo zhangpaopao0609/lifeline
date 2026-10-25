@@ -29,6 +29,40 @@ function seed(): void {
     generatingBubbleIds: [],
     fullConversationHeadersOnly: [
       { bubbleId: 'h1', type: 1, createdAt: '2026-01-01T00:00:00.000Z', grouping: { isRenderable: true, textPreview: 'hi' } },
+      {
+        bubbleId: 'n1',
+        type: 1,
+        createdAt: '2026-01-01T00:00:00.500Z',
+        grouping: {
+          isRenderable: true,
+          isSimulatedMsg: true,
+          simulatedMessageMetadataTitle: 'Background task',
+          backgroundTaskCompletionKind: 'subagent',
+        },
+      },
+      {
+        bubbleId: 'n2',
+        type: 1,
+        createdAt: '2026-01-01T00:00:00.600Z',
+        grouping: {
+          isRenderable: true,
+          isSimulatedMsg: true,
+          simulatedMsgReason: 3,
+          simulatedMessageMetadataTitle: 'Rerun the full check',
+        },
+      },
+      {
+        bubbleId: 'n3',
+        type: 1,
+        createdAt: '2026-01-01T00:00:00.700Z',
+        grouping: {
+          isRenderable: true,
+          isSimulatedMsg: true,
+          simulatedMsgReason: 3,
+          simulatedMessageMetadataTitle: 'hidden completion',
+          simulatedMessageMetadataSuppressUIDisplay: true,
+        },
+      },
       { bubbleId: 'skip', type: 2, grouping: { isRenderable: false } },
       { bubbleId: 'a1', type: 2, createdAt: '2026-01-01T00:00:01.000Z', grouping: { isRenderable: true } },
       { bubbleId: 'e1', type: 2, createdAt: '2026-01-01T00:00:02.000Z', grouping: { isRenderable: true } },
@@ -38,6 +72,19 @@ function seed(): void {
   db.prepare('INSERT INTO cursorDiskKV VALUES (?,?)').run(
     'bubbleId:cid1:h1',
     JSON.stringify({ type: 1, bubbleId: 'h1', text: 'hi', createdAt: 1 }),
+  );
+  db.prepare('INSERT INTO cursorDiskKV VALUES (?,?)').run(
+    'bubbleId:cid1:n1',
+    JSON.stringify({ type: 1, bubbleId: 'n1', text: '<task>\nstatus: success\n</task>', createdAt: 1.5 }),
+  );
+  db.prepare('INSERT INTO cursorDiskKV VALUES (?,?)').run(
+    'bubbleId:cid1:n2',
+    JSON.stringify({
+      type: 1,
+      bubbleId: 'n2',
+      text: '<system_notification><task>status: success</task></system_notification><user_query>Perform any necessary follow-up actions</user_query>',
+      createdAt: 1.6,
+    }),
   );
   db.prepare('INSERT INTO cursorDiskKV VALUES (?,?)').run(
     'bubbleId:cid1:ghost',
@@ -109,7 +156,9 @@ describe('CursorAdapter', () => {
   it('readIndex drops isRenderable false', () => {
     const a = new CursorAdapter(dbPath);
     const idx = a.readIndex('cid1');
-    assert.deepEqual(idx.map(h => h.messageId), ['h1', 'a1', 'e1']);
+    assert.deepEqual(idx.map(h => h.messageId), ['h1', 'n1', 'n2', 'a1', 'e1']);
+    assert.equal(idx[1].notificationTitle, 'Background task');
+    assert.equal(idx[2].notificationTitle, 'Rerun the full check');
     a.close();
   });
 
@@ -134,6 +183,10 @@ describe('CursorAdapter', () => {
     assert.ok(ids.includes('h1'));
     assert.ok(!ids.includes('ghost'));
     assert.ok(!ids.includes('skip'));
+    assert.ok(!ids.includes('n3'));
+    const n2 = a.projectSession('cid1').find(m => m.id === 'n2');
+    assert.equal(n2?.type, 'notification');
+    assert.equal(n2 && 'title' in n2 ? n2.title : '', 'Rerun the full check');
     a.close();
   });
 

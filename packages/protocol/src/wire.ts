@@ -16,6 +16,8 @@ export interface HumanMessage {
   quoted?: { text: string };
   /** Client optimistic-bubble marker (not a wire field): pending-send state */
   pending?: boolean;
+  /** Bubble time. Used to label a turn "Worked for 18m". Seconds or milliseconds. */
+  createdAt?: number;
 }
 
 export interface AssistantMessage {
@@ -23,6 +25,8 @@ export interface AssistantMessage {
   id: string;
   flatIndex: number;
   text: string;
+  /** Bubble time. Seconds or milliseconds. */
+  createdAt?: number;
 }
 
 export type DiffLineKind = 'add' | 'rem' | 'ctx' | 'meta' | 'hunk';
@@ -51,6 +55,8 @@ export interface ToolCallElement {
   actions?: RunAction[];
   blocked?: string;
   diffBlock?: CodeBlockItem;
+  /** Bubble time. Seconds or milliseconds. */
+  createdAt?: number;
 }
 
 export interface ThoughtBlock {
@@ -61,6 +67,8 @@ export interface ThoughtBlock {
   action?: string;
   detail?: string;
   thoughtKind?: 'step_summary' | 'thinking_step';
+  /** Bubble time. Seconds or milliseconds. */
+  createdAt?: number;
 }
 
 export interface PlanTodo {
@@ -124,6 +132,17 @@ export interface LoadingIndicator {
   text?: string;
 }
 
+/** Cursor's compact simulated-message row, e.g. "Finished Register another account". */
+export interface NotificationElement {
+  type: 'notification';
+  id: string;
+  flatIndex: number;
+  title: string;
+  status: 'success' | 'error';
+  /** Bubble time. Seconds or milliseconds. */
+  createdAt?: number;
+}
+
 export type ChatElement
   = | HumanMessage
     | AssistantMessage
@@ -132,7 +151,8 @@ export type ChatElement
     | PlanBlock
     | TodoListBlock
     | RunCommand
-    | LoadingIndicator;
+    | LoadingIndicator
+    | NotificationElement;
 
 export interface ChatTab {
   composerId: string;

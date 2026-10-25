@@ -1,10 +1,14 @@
-import type { ChatElement, RunCommand, ThoughtBlock, TodoListBlock, ToolCallElement } from '../net/protocol';
+import type { WorkMark } from '../lib/cursor-activity';
+import type { ChatElement, IdeKind, NotificationElement, RunCommand, TodoListBlock, ToolCallElement } from '../net/protocol';
 import type { PendingSendInfo } from '../store/sessions';
+import { CaretDown, CaretRight, CheckCircle, XCircle } from '@phosphor-icons/react';
 import { memo } from 'react';
+import { formatWorkDuration } from '../lib/cursor-activity';
 import { sendCommand } from '../net/socket';
 import { useIdesStore } from '../store/ides';
 import { AssistantBlock, HumanBubble } from './MessageBubble';
 import { PlanCard } from './PlanCard';
+import { ThoughtRow } from './ThoughtRow';
 import { ToolGroup } from './ToolGroup';
 
 export type Segment
@@ -55,13 +59,6 @@ export function itemClassOf(segments: Segment[], i: number): string {
   if (i === segments.length - 1)
     cls.push('tl-item-last');
   return cls.join(' ');
-}
-
-export function thoughtLine(el: ThoughtBlock): string {
-  const bits = [el.action, el.detail].filter(Boolean);
-  if (bits.length === 0)
-    return el.duration ? `思考 ${el.duration}` : '思考中';
-  return el.duration ? `${bits.join(' · ')} · ${el.duration}` : bits.join(' · ');
 }
 
 export function TodoListCard({ msg }: { msg: TodoListBlock }) {
@@ -117,6 +114,18 @@ export function RunCommandCard({ msg }: { msg: RunCommand }) {
   );
 }
 
+function NotificationRow({ msg }: { msg: NotificationElement }) {
+  const failed = msg.status === 'error';
+  const Icon = failed ? XCircle : CheckCircle;
+  return (
+    <div className="flex items-start gap-2 py-0.5 text-[length:var(--text-chrome)] text-[var(--text-secondary)]">
+      <Icon size={14} weight="fill" className={failed ? 'mt-px shrink-0 text-[var(--error)]' : 'mt-px shrink-0 text-[var(--ok)]'} />
+      <span className="text-[var(--text-weak)]">{failed ? 'Failed' : 'Finished'}</span>
+      <span className="min-w-0 truncate">{msg.title}</span>
+    </div>
+  );
+}
+
 export function pendingMetaOf(el: ChatElement, pendingSends: Record<string, PendingSendInfo>): PendingSendInfo | undefined {
   if (el.type !== 'human' || !el.id.startsWith('pending-send:'))
     return undefined;
@@ -128,11 +137,11 @@ export function pendingMetaOf(el: ChatElement, pendingSends: Record<string, Pend
  * and real costs like markdown / code-block listeners would re-run as well.
  */
 export const SegmentView = memo(
-  ({ seg, pendingSends }: { seg: Segment; pendingSends: Record<string, PendingSendInfo> }) => {
+  ({ seg, pendingSends, ide }: { seg: Segment; pendingSends: Record<string, PendingSendInfo>; ide: IdeKind }) => {
     if (seg.kind === 'tools') {
       return (
         <div className="tl-seg tl-seg-tools">
-          <ToolGroup items={seg.items} />
+          <ToolGroup items={seg.items} ide={ide} />
         </div>
       );
     }
@@ -147,9 +156,11 @@ export const SegmentView = memo(
       case 'plan':
         return <div className="tl-seg"><PlanCard msg={el} /></div>;
       case 'thought':
-        return <div className="tl-seg"><div className="thought-row">{thoughtLine(el)}</div></div>;
+        return <div className="tl-seg"><ThoughtRow el={el} /></div>;
       case 'run_command':
         return <div className="tl-seg"><RunCommandCard msg={el} /></div>;
+      case 'notification':
+        return <div className="tl-seg"><NotificationRow msg={el} /></div>;
       case 'loading':
         return (
           <div className="tl-seg">
@@ -164,5 +175,48 @@ export const SegmentView = memo(
         return null;
     }
   },
-  (prev, next) => prev.seg === next.seg && prev.pendingSends === next.pendingSends,
+  (prev, next) => prev.seg === next.seg && prev.pendingSends === next.pendingSends && prev.ide === next.ide,
 );
+
+/**
+ * One timeline row, with Cursor's "Worked for" fold.
+ * A closed group keeps the header on its first segment and hides the rest.
+ */
+export function FoldedSegment({
+  seg,
+  mark,
+  open,
+  onToggle,
+  pendingSends,
+  ide,
+}: {
+  seg: Segment;
+  mark: WorkMark | undefined;
+  open: boolean;
+  onToggle: (groupId: string) => void;
+  pendingSends: Record<string, PendingSendInfo>;
+  ide: IdeKind;
+}) {
+  if (mark && !mark.head && !open)
+    return null;
+  const duration = mark?.head?.durationMs ? formatWorkDuration(mark.head.durationMs) : undefined;
+  const action = mark?.head?.active ? 'Working' : 'Worked';
+  const details = mark?.head && !mark.head.active && duration ? `for ${duration}` : undefined;
+  return (
+    <>
+      {mark?.head && (
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={() => onToggle(mark.groupId)}
+          className="mb-1 inline-flex items-center gap-1 border-0 bg-transparent p-0 text-left text-[length:var(--text-chrome)]"
+        >
+          <span className="text-[var(--text-secondary)]">{action}</span>
+          {details && <span className="text-[var(--text-weak)]">{details}</span>}
+          {open ? <CaretDown size={12} className="text-[var(--text-weak)]" /> : <CaretRight size={12} className="text-[var(--text-weak)]" />}
+        </button>
+      )}
+      {(open || !mark) && <SegmentView seg={seg} pendingSends={pendingSends} ide={ide} />}
+    </>
+  );
+}

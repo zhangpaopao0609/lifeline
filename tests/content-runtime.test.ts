@@ -500,6 +500,23 @@ describe('ContentLiveRuntime', () => {
     assert.equal(rec2.patch.length, 0);
   });
 
+  it('re-sends a full when a watermark predates the current projection format', () => {
+    seed();
+    adapter = new CursorAdapter(dbPath);
+    const rec = recorder();
+    const rt = new ContentLiveRuntime(adapter, rec.handlers);
+    rt.setActiveSession('cid1');
+    rt.tick();
+    const snapshot = rt.watermarkSnapshot();
+    snapshot.cid1.diskSig = snapshot.cid1.diskSig.replace(/^projection-v\d+\|/, '');
+
+    const rec2 = recorder();
+    const rt2 = new ContentLiveRuntime(adapter, rec2.handlers, { watermark: snapshot });
+    rt2.requestSession('cid1', 0);
+    assert.equal(rec2.sync.length, 0);
+    assert.equal(rec2.full.length, 1);
+  });
+
   // A restored watermark has the disk index but not the emitted element array, so a delta can't be numbered
   // globally: it used to go out numbered from 0, collide with the rows the server already held, and the server
   // (ORDER BY flat_index) interleaved the newest turns into the middle of the session (2026-09-30).
