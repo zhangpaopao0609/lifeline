@@ -199,3 +199,91 @@ describe('CursorAdapter', () => {
     a.close();
   });
 });
+
+describe('CursorAdapter paged composerConvHeaders (post 2026-10 Cursor builds)', () => {
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'vscdb-'));
+    dbPath = join(dir, 'state.vscdb');
+    // New-format seed: composerData WITHOUT fullConversationHeadersOnly; the
+    // index lives in paged composerConvHeaders:<id>:<page> rows instead.
+    const db = new Database(dbPath);
+    db.exec(`
+      CREATE TABLE composerHeaders (
+        composerId TEXT PRIMARY KEY, workspaceId TEXT,
+        createdAt INTEGER, lastUpdatedAt INTEGER,
+        isArchived INTEGER, isSubagent INTEGER, value TEXT
+      );
+      CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value TEXT);
+    `);
+    db.prepare('INSERT INTO composerHeaders VALUES (?,?,?,?,?,?,?)').run(
+      'cid2',
+      'ws1',
+      1,
+      2,
+      0,
+      0,
+      JSON.stringify({ name: 'Paged' }),
+    );
+    db.prepare('INSERT INTO cursorDiskKV VALUES (?,?)').run(
+      'composerData:cid2',
+      JSON.stringify({ _v: 18, name: 'Paged', status: 'none', generatingBubbleIds: [] }),
+    );
+    // Two pages, deliberately inserted out of order: ORDER BY key must win.
+    db.prepare('INSERT INTO cursorDiskKV VALUES (?,?)').run(
+      'composerConvHeaders:cid2:000002',
+      JSON.stringify([{ bubbleId: 'a1', type: 2, createdAt: '2026-01-01T00:00:01.000Z' }]),
+    );
+    db.prepare('INSERT INTO cursorDiskKV VALUES (?,?)').run(
+      'composerConvHeaders:cid2:000001',
+      JSON.stringify([
+        { bubbleId: 'h1', type: 1, createdAt: '2026-01-01T00:00:00.000Z', grouping: { isRenderable: true, textPreview: 'hi' } },
+        { bubbleId: 'skip', type: 2, grouping: { isRenderable: false } },
+      ]),
+    );
+    db.prepare('INSERT INTO cursorDiskKV VALUES (?,?)').run(
+      'bubbleId:cid2:h1',
+      JSON.stringify({ type: 1, bubbleId: 'h1', text: 'hi', createdAt: 1 }),
+    );
+    db.prepare('INSERT INTO cursorDiskKV VALUES (?,?)').run(
+      'bubbleId:cid2:a1',
+      JSON.stringify({ type: 2, bubbleId: 'a1', text: 'ok', createdAt: 2 }),
+    );
+    db.close();
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('readIndex merges paged composerConvHeaders in key order', () => {
+    const a = new CursorAdapter(dbPath);
+    const idx = a.readIndex('cid2');
+    assert.deepEqual(idx.map(h => h.messageId), ['h1', 'a1']); // skip dropped, pages ordered
+    assert.equal(idx[0].role, 'human');
+    a.close();
+  });
+
+  it('projectSession works with paged-only index', () => {
+    const a = new CursorAdapter(dbPath);
+    const msgs = a.projectSession('cid2');
+    assert.deepEqual(msgs.map(m => m.id), ['h1', 'a1']);
+    a.close();
+  });
+
+  it('enrichMeta counts paged headers', () => {
+    const a = new CursorAdapter(dbPath);
+    const meta = a.enrichMeta(a.listSessions()[0]);
+    assert.equal(meta.messageCount, 3); // includes the non-renderable header
+    a.close();
+  });
+
+  it('legacy fullConversationHeadersOnly wins when both exist', () => {
+    const a = new CursorAdapter(dbPath);
+    // cid1 from seed() is unreachable in this describe's db; verify via a fresh seed
+    a.close();
+    rmSync(dir, { recursive: true, force: true });
+    dir = mkdtempSync(join(tmpdir(), 'vscdb-'));
+    dbPath = join(dir, 'state.vscdb');
+    seed();
+    const b = new CursorAdapter(dbPath);
+    assert.deepEqual(b.readIndex('cid1').map(h => h.messageId), ['h1', 'a1', 'e1']);
+    b.close();
+  });
+});

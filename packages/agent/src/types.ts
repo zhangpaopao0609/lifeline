@@ -24,6 +24,7 @@ export type {
   ExtractorStatus,
   HumanMessage,
   IdeKind,
+  LiveChatMessage,
   LoadingIndicator,
   ModeInfo,
   ModelInfo,

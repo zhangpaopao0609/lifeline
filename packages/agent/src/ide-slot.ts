@@ -53,6 +53,8 @@ export interface IdeSlot {
 function feedContentLive(runtime: ContentLiveRuntime | null, state: CursorState): void {
   if (!runtime)
     return;
+  runtime.setTabAliases(state.chatTabs ?? []);
+  runtime.setLiveMessages(state.activeComposerId ?? '', state.chatMessages ?? [], state.agentStatus);
   runtime.setActiveSession(state.activeComposerId || null);
   // Cross-session guard (R7): veto only on POSITIVE evidence of mismatch — a row whose
   // owning composer differs from the active one is a stale DOM. No composer evidence →

@@ -1,5 +1,7 @@
-import type { ChatElement } from '../types.js';
+import type { ChatElement, LiveChatMessage } from '../types.js';
 import type { IdeKind, MessageHeader, SessionMeta, SourceProbe } from './types.js';
+
+export type { LiveChatMessage };
 
 export interface ContentSource {
   readonly ide: IdeKind;
@@ -19,12 +21,28 @@ export interface ContentSource {
    * Default (adapter without this method / single-machine) is "has it".
    */
   hasSession?: (sessionId: string) => boolean;
-  /** PK `length(value)` per index bubble — skip projectSession when unchanged. */
-  bubbleSizes?: (sessionId: string) => Map<string, number>;
+  /**
+   * PK `length(value)` per index bubble — skip projectSession when unchanged.
+   * May return undefined per call (e.g. WorkBuddy: only live-DOM sessions have
+   * meaningful sizes; disk sessions fall back to `sessionBodySignal`).
+   */
+  bubbleSizes?: (sessionId: string) => Map<string, number> | undefined;
   /** Fallback fingerprint when `bubbleSizes` is absent (e.g. CodeBuddy mtimes). */
   sessionBodySignal?: (sessionId: string) => string;
   /** Narrow disk watches to the DOM-active session. */
   setWatchedSession?: (sessionId: string | null) => void;
+  /**
+   * Live DOM tab aliases (webview tab id → tab title) for sources whose on-disk
+   * session id never appears in the DOM (WorkBuddy jsonl: tab id ≠ session uuid,
+   * matched heuristically by title).
+   */
+  setTabAliases?: (tabs: { composerId?: string; id?: string; title?: string }[]) => void;
+  /**
+   * Live DOM-scraped messages of the active conversation, for sessions this
+   * machine's disk can never hold (SSH-remote workspaces persist remotely).
+   * The source synthesizes virtual sessions from them.
+   */
+  setLiveMessages?: (tabId: string, messages: LiveChatMessage[], agentStatus?: string) => void;
   /**
    * Structural fingerprint for the session census (sessions:index): session
    * add/remove/header changes only, not body writes.

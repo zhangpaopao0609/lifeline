@@ -100,6 +100,9 @@ export class StateManager extends EventEmitter {
     // Timeline moved to session:* — never broadcast messages on state:patch.
     newState.messages = [];
     delete newState.lastAssistantText;
+    // DOM-scraped messages are content-source input (fed in ide-slot before this
+    // merge), not console state: do not broadcast them on state:patch.
+    delete newState.chatMessages;
     if (!newState.liveActions)
       newState.liveActions = {};
 

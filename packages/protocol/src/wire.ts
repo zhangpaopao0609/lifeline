@@ -388,6 +388,13 @@ export interface CdpIssue {
   at: number;
 }
 
+/** One message scraped from the live webview DOM (remote-workspace content fallback). */
+export interface LiveChatMessage {
+  role: 'user' | 'assistant';
+  id: string;
+  text: string;
+}
+
 export interface CursorState {
   connected: boolean;
   extractorStatus: ExtractorStatus;
@@ -399,6 +406,12 @@ export interface CursorState {
   agentActivityLive: boolean;
   agentActivitySource?: ActivitySource;
   messages: ChatElement[];
+  /**
+   * DOM-scraped messages of the active conversation (CodeBuddy). Not authoritative
+   * content — forwarded to the content source so it can synthesize sessions whose
+   * data lives on a remote (SSH) host.
+   */
+  chatMessages?: LiveChatMessage[];
   liveActions: Record<string, RunAction[]>;
   lastAssistantText?: string;
   /** Live-tail ownership: the last assistant row's own message id (never "whichever row is last"). */

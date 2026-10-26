@@ -5,7 +5,7 @@
  */
 
 import type { SessionWatermark } from './content-watermark.js';
-import type { ContentSource } from './sources/content-source.js';
+import type { ContentSource, LiveChatMessage } from './sources/content-source.js';
 import type { IdeKind, MessageHeader, SessionMeta } from './sources/types.js';
 import type { ChatElement } from './types.js';
 import { existsSync } from 'node:fs';
@@ -18,6 +18,7 @@ import {
 } from './content-watermark.js';
 import { CodeBuddyAdapter } from './sources/codebuddy-adapter.js';
 import { CursorAdapter } from './sources/cursor-adapter.js';
+import { WorkBuddyJsonlAdapter } from './sources/workbuddy-adapter.js';
 import { timingLastBubble, timingLog } from './timing-log.js';
 import { codeBuddyDataRoot, cursorVscdbPath } from './win-paths.js';
 
@@ -88,11 +89,31 @@ export function tryOpenCursorAdapter(
   }
 }
 
-/** Open CodeBuddy JSON history. Missing root: warn and return null — never throw. */
+/**
+ * Open CodeBuddy session content. CodeBuddy CN (WorkBuddy kernel) migrated sessions
+ * to `~/.workbuddy/projects/<project>/<uuid>.jsonl`; prefer that source and fall
+ * back to the legacy CodeBuddyExtension history tree for older installs.
+ * Missing root: warn and return null — never throw.
+ */
 export function tryOpenCodeBuddyAdapter(
   root = DEFAULT_CODEBUDDY_ROOT,
   opts?: { includeProcess?: boolean },
-): CodeBuddyAdapter | null {
+): ContentSource | null {
+  // WorkBuddy jsonl takes precedence only on the default (production) path; an
+  // explicit root means the caller targets the legacy history tree (tests/probes).
+  if (root === DEFAULT_CODEBUDDY_ROOT) {
+    try {
+      const wb = new WorkBuddyJsonlAdapter(undefined, opts);
+      if (wb.probe().ok) {
+        console.warn('[content-live] Using WorkBuddy jsonl sessions');
+        return wb;
+      }
+    }
+    catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`[content-live] WorkBuddy jsonl adapter failed: ${message}`);
+    }
+  }
   try {
     if (!existsSync(root)) {
       console.warn(`[content-live] CodeBuddy history root missing at ${root}`);
@@ -233,6 +254,16 @@ export class ContentLiveRuntime {
 
   resumeTicks(): void {
     this.ticksPaused = false;
+  }
+
+  /** Forward live DOM tab aliases to sources that alias tab ids to disk sessions (WorkBuddy jsonl). */
+  setTabAliases(tabs: { composerId?: string; id?: string; title?: string }[]): void {
+    this.adapter.setTabAliases?.(tabs);
+  }
+
+  /** Forward live DOM-scraped messages to sources that synthesize remote-workspace sessions. */
+  setLiveMessages(tabId: string, messages: LiveChatMessage[], agentStatus?: string): void {
+    this.adapter.setLiveMessages?.(tabId, messages, agentStatus);
   }
 
   /** DOM activeComposerId; empty means wait for the next live state, do not scan the disk session table */
