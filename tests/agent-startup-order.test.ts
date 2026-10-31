@@ -119,20 +119,31 @@ describe('agent superseded wiring', () => {
 
   it('stops talking, releases the lock, and only then exits', () => {
     const handler = supersededHandler();
-    const disconnect = handler.indexOf('uplink.disconnect()');
-    const release = handler.indexOf('releaseAgentLock()');
-    const exit = handler.indexOf('exitAfterFlush(1)');
-    assert.notEqual(disconnect, -1, 'a stand-down must stop talking to the server first');
-    assert.notEqual(release, -1, 'a stand-down must release the lock');
-    assert.notEqual(exit, -1, 'a stand-down must exit non-zero');
     // The guard has to be *before* the side effects and has to be this literal: matching on the token
     // `!standDown` alone passes when the guard is moved after the exit, which is the very accident this
     // test exists for (the keep-the-lock row would then stand down instead).
     const guard = handler.indexOf('if (!standDown)');
+    const enter = handler.indexOf('.shutdown(');
     assert.notEqual(guard, -1, 'missing the keep-the-lock guard');
-    assert.ok(guard < disconnect, 'the guard must come before the side effects');
-    // Order matters at both ends: a socket that outlives the release could re-register during the
-    // flush and tell the winner it was superseded too; a lock released after the exit never happens.
+    assert.notEqual(enter, -1, 'a stand-down must enter the shared shutdown');
+    assert.ok(guard < enter, 'the guard must come before the side effects');
+    assert.equal(handler.includes('process.exit'), false, 'a stand-down must not call process.exit');
+    // Disconnect, release, and exit moved into lifecycle.ts with the rest of shutdown. The order is
+    // unchanged: a socket that outlives the release could re-register during the flush, and a lock
+    // released after the exit never happens. CLI and IDE close are textually before that trio.
+    const lifecyclePath = fileURLToPath(new URL('../packages/agent/src/lifecycle.ts', import.meta.url));
+    const lifecycle = stripComments(readFileSync(lifecyclePath, 'utf-8'));
+    const closeCli = lifecycle.indexOf('closeCli()');
+    const closeIde = lifecycle.indexOf('closeIde()');
+    const disconnect = lifecycle.indexOf('disconnect()');
+    const release = lifecycle.indexOf('releaseLock()');
+    const exit = lifecycle.indexOf('exit(');
+    assert.notEqual(closeCli, -1, 'shutdown must close CLI');
+    assert.notEqual(closeIde, -1, 'shutdown must close IDE slots');
+    assert.notEqual(disconnect, -1, 'a stand-down must stop talking to the server');
+    assert.notEqual(release, -1, 'a stand-down must release the lock');
+    assert.notEqual(exit, -1, 'a stand-down must exit');
+    assert.ok(closeCli < disconnect && closeIde < disconnect, 'disconnect only after CLI and IDE close');
     assert.ok(disconnect < release, 'disconnect before releasing the lock');
     assert.ok(release < exit, 'the lock must be released before the process exits');
   });

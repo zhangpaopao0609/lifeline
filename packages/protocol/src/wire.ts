@@ -1,3 +1,5 @@
+import type { CliPermissionResponse, CliSource, CliTarget, CommandErrorCode } from './cli.js';
+
 /**
  * Sole source of truth for "which IDEs exist" (P2 single-point). Adding an IDE changes this (and the
  * P3 driver); zod enum / agent-hub lists / web lists and labels all derive from here — don't hand-write
@@ -198,6 +200,8 @@ export interface CursorWindow {
   wsUrl?: string;
   chatTabs?: ChatTab[];
   kind?: WindowKind;
+  /** Local folder of a project window. Remote workspaces and the Agents window omit it. */
+  workspacePath?: string;
 }
 
 export interface ModeInfo {
@@ -506,6 +510,8 @@ export interface CommandResult {
   commandId: string;
   ok: boolean;
   error?: string;
+  /** Wire failure code. Interface statuses (busy, already-resolved, sync-error) do not belong here. */
+  errorCode?: CommandErrorCode;
   data?: unknown;
 }
 
@@ -527,6 +533,19 @@ export interface CommandPayload {
   sameTitleIndex?: number;
   section?: string;
   ide?: IdeKind;
+  /** Set when the command addresses a CLI session. IDE commands omit it. */
+  target?: CliTarget;
+  /** CLI source for commands that name one directly. IDE commands omit it. */
+  source?: CliSource;
+  clientMessageId?: string;
+  optionId?: string;
+  /** CLI permission choice: `{ outcome: 'selected', optionId }` or `{ outcome: 'cancelled' }`. */
+  response?: CliPermissionResponse;
+  /** `command:cli_start` working directory. Absolute-path checks stay on `assertCliStart`. */
+  cwd?: string;
+  clientRequestId?: string;
+  /** Thinking token for `command:cli_start`. `modelId` is the matching model choice. */
+  thinking?: string;
 }
 
 export interface SendMessageTarget {

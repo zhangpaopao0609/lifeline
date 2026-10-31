@@ -2,6 +2,9 @@ import type { MachineInfo } from '../net/protocol';
 import { create } from 'zustand';
 import { currentViewHint } from '../lib/view-state';
 import { socket } from '../net/socket';
+import { visibleCliSources } from './cli';
+import { useIdesStore } from './ides';
+import { useUiStore } from './ui';
 
 interface MachinesStore {
   machines: MachineInfo[];
@@ -29,6 +32,7 @@ export const useMachinesStore = create<MachinesStore>()((set, get) => ({
     const stillValid = list.some(m => m.agentId === selectedAgentId);
     if (stillValid) {
       set({ machines: list, cliLatest: cliLatest ?? '' });
+      releaseCliTarget();
       return;
     }
     // No valid selection: restore the last machine first (even if offline — P8b does not jump to another machine);
@@ -44,6 +48,7 @@ export const useMachinesStore = create<MachinesStore>()((set, get) => ({
     set({ machines: list, cliLatest: cliLatest ?? '', selectedAgentId: first?.agentId ?? '' });
     if (first)
       socket.emit('machine:select', { agentId: first.agentId });
+    releaseCliTarget();
   },
 
   applyUplink: connected => set({ uplinkConnected: connected }),
@@ -53,6 +58,7 @@ export const useMachinesStore = create<MachinesStore>()((set, get) => ({
       return;
     set({ selectedAgentId: agentId });
     socket.emit('machine:select', { agentId });
+    releaseCliTarget();
   },
 
   reselect: () => {
@@ -61,3 +67,20 @@ export const useMachinesStore = create<MachinesStore>()((set, get) => ({
       socket.emit('machine:select', { agentId: selectedAgentId });
   },
 }));
+
+function releaseCliTarget(): void {
+  const { machines, selectedAgentId } = useMachinesStore.getState();
+  const machine = machines.find(item => item.agentId === selectedAgentId);
+  const allowed = visibleCliSources(machine);
+  const target = useUiStore.getState().activeTarget;
+  if (target.kind === 'cli-home') {
+    if (target.agentId !== selectedAgentId)
+      useUiStore.getState().showIde(useIdesStore.getState().selectedIde);
+    return;
+  }
+  if (target.kind !== 'cli')
+    return;
+  if (target.agentId === selectedAgentId && allowed.some(row => row.source === target.source))
+    return;
+  useUiStore.getState().showIde(useIdesStore.getState().selectedIde);
+}

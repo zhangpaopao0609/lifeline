@@ -19,7 +19,7 @@ import type {
   SelectorConfig,
 } from './types.js';
 import { EventEmitter } from 'node:events';
-import { extractWorkspaceName } from './cdp/bridge.js';
+import { extractWorkspaceIdentity } from './cdp/bridge.js';
 import { CdpClient } from './cdp/client.js';
 import {
 
@@ -513,11 +513,12 @@ export class WindowMonitor extends EventEmitter {
     try {
       await client.connect(win.wsUrl);
 
-      const workspaceName = await extractWorkspaceName(client, this.config.windowTitleQualifier);
-      const windowTitle = workspaceName ?? win.title;
-      if (workspaceName && workspaceName !== win.title) {
-        win.title = workspaceName;
-      }
+      const identity = await extractWorkspaceIdentity(client, this.config.windowTitleQualifier);
+      const windowTitle = identity?.name ?? win.title;
+      if (identity?.name && identity.name !== win.title)
+        win.title = identity.name;
+      if (identity)
+        this.publishWorkspacePath(win.id, identity.localPath ?? null);
 
       const state = await this.extractFromClientImpl(client, windowTitle);
       if (!state) {
@@ -649,7 +650,32 @@ export class WindowMonitor extends EventEmitter {
     }
   }
 
+  private publishWorkspacePath(windowId: string, localPath: string | null): void {
+    this.cdpBridge.rememberWorkspacePath(windowId, localPath);
+    this.stateManager.updateWindowWorkspacePath(windowId, localPath);
+  }
+
+  /** Workbench page, not the chat panel: that is where the folder uri lives. */
+  private async readWorkspacePath(win: CursorWindow): Promise<void> {
+    if (!win.wsUrl || win.kind === 'agents')
+      return;
+    const client = new CdpClient();
+    try {
+      await client.connect(win.wsUrl);
+      const identity = await extractWorkspaceIdentity(client, this.config.windowTitleQualifier);
+      if (identity)
+        this.publishWorkspacePath(win.id, identity.localPath ?? null);
+    }
+    catch {
+      // A missed read leaves the previous path in place.
+    }
+    finally {
+      client.disconnect();
+    }
+  }
+
   private async pollCodeBuddyWindow(win: CursorWindow): Promise<void> {
+    await this.readWorkspacePath(win);
     const targets = await this.listTargetsImpl();
     const panel = pickCodingCopilotTarget(targets, { workbenchId: win.id, requireUnique: true });
     if (!panel?.webSocketDebuggerUrl)

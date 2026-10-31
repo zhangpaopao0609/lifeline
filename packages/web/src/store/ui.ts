@@ -1,5 +1,7 @@
 import type { IdeKind } from '../net/protocol';
+import type { ActiveTarget } from './cli';
 import { create } from 'zustand';
+import { currentViewHint } from '../lib/view-state';
 
 export interface ToastItem {
   id: number;
@@ -53,6 +55,15 @@ interface UiStore {
   confirmPendingSwitch: (commandId: string, landedComposerId?: string) => void;
   /** Drop "switching"; with a commandId, only clear the matching one (so an old timer cannot clear a new switch). */
   clearPendingSwitch: (commandId?: string) => void;
+  /**
+   * What the main pane is driving. IDE keeps using `selectedIde` for its own state;
+   * this only chooses which pane is on screen.
+   */
+  activeTarget: ActiveTarget;
+  setActiveTarget: (target: ActiveTarget) => void;
+  showIde: (ide: IdeKind) => void;
+  showCliHome: (agentId: string) => void;
+  showCli: (target: Extract<ActiveTarget, { kind: 'cli' }>) => void;
 }
 
 let nextToastId = 1;
@@ -65,9 +76,21 @@ function stopPendingTimer(): void {
   }
 }
 
+function initialActiveTarget(): ActiveTarget {
+  const hint = currentViewHint();
+  if (hint.cli && hint.agentId)
+    return { kind: 'cli-home', agentId: hint.agentId };
+  return { kind: 'ide', ide: hint.ide ?? 'cursor' };
+}
+
 export const useUiStore = create<UiStore>()((set, get) => ({
   toasts: [],
   bottomNonce: 0,
+  activeTarget: initialActiveTarget(),
+  setActiveTarget: target => set({ activeTarget: target }),
+  showIde: ide => set({ activeTarget: { kind: 'ide', ide } }),
+  showCliHome: agentId => set({ activeTarget: { kind: 'cli-home', agentId } }),
+  showCli: target => set({ activeTarget: target }),
   requestScrollToBottom: () => set(s => ({ bottomNonce: s.bottomNonce + 1 })),
   pushToast: (text, kind = 'ok') => {
     const id = nextToastId++;

@@ -29,6 +29,7 @@ browser  --HTTP/WS-->  packages/server  <--outbound WS /agent-io + per-machine t
 | Session mirror / ledger | `packages/server/src/session-store.ts` |
 | Outbound connection | `packages/agent/src/uplink.ts` |
 | IDE adapters | `packages/agent/src/drivers/` (see [`ide-drivers.md`](docs/ide-drivers.md)) |
+| CLI ACP | `packages/agent/src/drivers/acp/` |
 | Shared wire types | `packages/protocol` (`@lifeline/protocol`) |
 | Auth exemption | `packages/server/src/public-paths.ts` (only `/public/*`, `/healthz`, `/agent-io`) |
 | Browser auth | `packages/server/src/auth/` (matrix in root `.env.example`) |

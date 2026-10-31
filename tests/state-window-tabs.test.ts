@@ -49,6 +49,15 @@ describe('StateManager window chatTabs', () => {
     assert.equal(last.windows?.[1].chatTabs?.[0].title, 'Arrived');
   });
 
+  it('patches one window\'s local workspace path and can clear it', () => {
+    const sm = new StateManager(10);
+    sm.updateWindows([win('home'), win('other')], 'home');
+    sm.updateWindowWorkspacePath('other', '/Users/me/proj');
+    assert.equal(sm.getCurrentState().windows[1].workspacePath, '/Users/me/proj');
+    sm.updateWindowWorkspacePath('other', null);
+    assert.equal(sm.getCurrentState().windows[1].workspacePath, undefined);
+  });
+
   it('ignores an empty extract so a background poll cannot wipe the sidebar', () => {
     const sm = new StateManager(10);
     sm.updateWindows([win('other', { chatTabs: [tab('Keep', 'other')] })], 'other');

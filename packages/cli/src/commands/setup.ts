@@ -8,7 +8,7 @@ import {
   cdpNotReachable,
   cdpSummary,
 } from '../cdp-argv-state.js';
-import { cliConfigPath, loadCliConfig, resolveAgentId, saveCliConfig } from '../config.js';
+import { cliConfigPath, codebuddyProviderEnv, loadCliConfig, lookupCliProvider, resolveAgentId, saveCliConfig, withPersistedCliProviders } from '../config.js';
 import { startCallbackServer } from '../setup-callback.js';
 import {
   createAsker,
@@ -135,7 +135,12 @@ async function finishSetup(base: string, agentToken: string, agentId: string): P
     includeProcess: existing?.includeProcess,
   });
   const codebuddy = applyCodeBuddyCdpArgv(cursor.config);
-  saveCliConfig(codebuddy.config);
+  saveCliConfig(withPersistedCliProviders({
+    config: codebuddy.config,
+    existing,
+    lookup: lookupCliProvider,
+    ...codebuddyProviderEnv(process.env),
+  }));
 
   const cdp = cdpSummary(cursor.state, codebuddy.state);
 
@@ -227,7 +232,12 @@ export async function cmdSetup(serverUrlFlag?: string, codeFlag?: string): Promi
       includeProcess: existing?.includeProcess,
     });
     const codebuddy = applyCodeBuddyCdpArgv(cursor.config);
-    saveCliConfig(codebuddy.config);
+    saveCliConfig(withPersistedCliProviders({
+      config: codebuddy.config,
+      existing,
+      lookup: lookupCliProvider,
+      ...codebuddyProviderEnv(process.env),
+    }));
 
     log('');
     row('config', shortPath(cliConfigPath()));

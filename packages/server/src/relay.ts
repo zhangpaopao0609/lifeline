@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { IdeKind } from '../../protocol/src/index.js';
-import type { StatePatchPayload } from './agent-hub.js';
+import type { AgentSocket, StatePatchPayload } from './agent-hub.js';
 import type { AuthProvider } from './auth/provider.js';
 import type { AgentIdesState } from './ide.js';
 import type { CommandPayload, ServerConfig } from './types.js';
@@ -9,7 +9,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Fastify from 'fastify';
 import { Server as SocketServer } from 'socket.io';
-import { COMMAND_EVENTS } from '../../protocol/src/index.js';
+import { ALL_COMMAND_EVENTS } from '../../protocol/src/index.js';
 import { exchangeBodySchema } from '../../protocol/src/schema.js';
 import { AgentHub, normalizeMachineName } from './agent-hub.js';
 import { createAuthProvider } from './auth/factory.js';
@@ -30,6 +30,67 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const SERVER_VERSION = readServerVersion();
+
+export interface MachineSelectState {
+  generation: number;
+  room?: string;
+}
+
+export interface CliViewerHost {
+  detachCliViewer: (viewer: AgentSocket) => void;
+  attachCliViewer: (viewer: AgentSocket, agentId: string) => void;
+}
+
+/** Relay registers this list. CLI commands stay out of the IDE `COMMAND_EVENTS` array. */
+export function browserCommandEventNames(): readonly string[] {
+  return ALL_COMMAND_EVENTS;
+}
+
+/**
+ * The browser's selected machine is the only agent id that may be synced.
+ * A payload agentId is ignored. Non-objects are rejected.
+ */
+export function resolveCliSyncRequest(
+  selectedAgentId: unknown,
+  payload: unknown,
+): { ok: true; agentId: string } | { ok: false; code: 'invalid-payload' } {
+  if (typeof selectedAgentId !== 'string' || selectedAgentId.length === 0)
+    return { ok: false, code: 'invalid-payload' };
+  if (payload !== undefined && (typeof payload !== 'object' || payload === null || Array.isArray(payload)))
+    return { ok: false, code: 'invalid-payload' };
+  return { ok: true, agentId: selectedAgentId };
+}
+
+/**
+ * Leave the previous machine room before joining the next one.
+ * A newer select invalidates an older in-flight switch, so a late join cannot
+ * attach the viewer to a machine they already left.
+ */
+export async function bindCliViewer(
+  directory: CliViewerHost,
+  viewer: AgentSocket,
+  agentId: string,
+  state: MachineSelectState,
+  rooms: { leave: (room: string) => Promise<void>; join: (room: string) => Promise<void> },
+): Promise<boolean> {
+  directory.detachCliViewer(viewer);
+  const generation = ++state.generation;
+  const previous = state.room;
+  state.room = undefined;
+  if (previous)
+    await rooms.leave(previous);
+  if (generation !== state.generation || !viewer.connected)
+    return false;
+  const room = machineRoom(agentId);
+  await rooms.join(room);
+  if (generation !== state.generation || !viewer.connected) {
+    await rooms.leave(room);
+    return false;
+  }
+  state.room = room;
+  directory.attachCliViewer(viewer, agentId);
+  return true;
+}
 
 const NON_PAGE_PREFIXES = ['/api', '/public', '/agent-io'] as const;
 
@@ -436,18 +497,26 @@ export class Relay {
         const known = this.agentHub.listMachines(viewer).some(m => m.agentId === agentId);
         if (!known)
           return;
-        const prev = typeof socket.data.machineRoom === 'string' ? socket.data.machineRoom : '';
-        if (prev)
-          void socket.leave(prev);
-        const room = machineRoom(agentId);
-        void socket.join(room);
-        socket.data.machineRoom = room;
+        const state = (socket.data.machineSelect ??= { generation: 0 });
+        // Commands follow the latest select immediately. CLI delivery waits until the room join commits.
         socket.data.agentId = agentId;
-        socket.emit('state:full', this.agentHub.getStateOrEmpty(agentId));
-        const sessions = this.agentHub.readSessionIndex(agentId);
-        if (sessions.length > 0) {
-          socket.emit('sessions:index', { sessions });
-        }
+        void bindCliViewer(this.agentHub, socket, agentId, state, {
+          leave: room => Promise.resolve(socket.leave(room)),
+          join: room => Promise.resolve(socket.join(room)),
+        }).then((ok) => {
+          if (!ok || !socket.connected || socket.data.agentId !== agentId || state.room !== machineRoom(agentId))
+            return;
+          socket.data.machineRoom = state.room;
+          socket.emit('state:full', this.agentHub.getStateOrEmpty(agentId));
+          const sessions = this.agentHub.readSessionIndex(agentId);
+          if (sessions.length > 0)
+            socket.emit('sessions:index', { sessions });
+          this.agentHub.requestCliSync(agentId);
+        }).catch((err: unknown) => {
+          console.warn(
+            `[relay] machine:select failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        });
       });
 
       socket.on('machine:forget', (payload: { agentId?: string }, ack?: (r: { ok: boolean }) => void) => {
@@ -502,19 +571,27 @@ export class Relay {
         },
       );
 
-      for (const event of COMMAND_EVENTS) {
-        socket.on(event, (payload: CommandPayload) => {
+      for (const event of browserCommandEventNames()) {
+        socket.on(event, (payload: unknown) => {
+          const command = payload && typeof payload === 'object' ? payload as CommandPayload : undefined;
           timingLog('relay:command', {
             event,
             agentId: socket.data.agentId,
-            commandId: payload.commandId,
-            ide: payload.ide,
-            chars: payload.text?.length,
-            preview: payload.text ? timingPreview(payload.text) : undefined,
+            commandId: command?.commandId,
+            ide: command?.ide,
+            chars: command?.text?.length,
+            preview: command?.text ? timingPreview(command.text) : undefined,
           });
-          this.agentHub.sendCommand(socket.data.agentId ?? '', event, payload, socket);
+          this.agentHub.ingestBrowserCommand(socket.data.agentId ?? '', event, payload, socket);
         });
       }
+
+      socket.on('cli:sync-request', (payload: unknown) => {
+        const resolved = resolveCliSyncRequest(socket.data.agentId, payload);
+        if (!resolved.ok)
+          return;
+        this.agentHub.requestCliSync(resolved.agentId);
+      });
 
       socket.on(
         'session:get',
@@ -534,6 +611,7 @@ export class Relay {
 
       socket.on('disconnect', (reason) => {
         console.log(`[relay] Client disconnected: ${socket.id} (${reason})`);
+        this.agentHub.releaseBrowser(socket);
       });
     });
   }
@@ -599,6 +677,7 @@ declare module 'socket.io' {
     userId?: string;
     agentId?: string;
     machineRoom?: string;
+    machineSelect?: MachineSelectState;
     agentOwner?: string;
     tokenAgentId?: string;
   }

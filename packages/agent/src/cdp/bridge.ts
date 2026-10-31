@@ -4,6 +4,7 @@ import type { ProbeResult } from './probe.js';
 import type { RelaunchResult } from './relaunch-engine.js';
 import { execFile } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import { isAbsolute } from 'node:path';
 import { createCursorCdpRelauncher, defaultCursorCdpRelaunchDeps } from '../drivers/cursor/relaunch.js';
 import { timingLog } from '../timing-log.js';
 import { CdpClient } from './client.js';
@@ -121,13 +122,35 @@ export function pickWorkbenchTarget(
   return namedWorkspace ?? pages[0];
 }
 
+export interface WorkspaceIdentity {
+  name: string;
+  /** Present only for a local absolute folder. Remote authorities omit it. */
+  localPath?: string;
+}
+
+/** Folder name for the window title, plus the local path used to prefill a CLI session. */
+export function workspaceIdentityFromUri(
+  input: { path?: unknown; authority?: unknown },
+  includeQualifier = true,
+): WorkspaceIdentity | null {
+  if (typeof input.path !== 'string' || !input.path)
+    return null;
+  const authority = typeof input.authority === 'string' ? input.authority : '';
+  const basename = input.path.split('/').filter(Boolean).pop() || input.path;
+  const qualifier = includeQualifier ? authorityToQualifier(authority) : '';
+  const name = qualifier ? `${basename} ${qualifier}` : basename;
+  if (authority || !isAbsolute(input.path))
+    return { name };
+  return { name, localPath: input.path };
+}
+
 /**
- * Extract the workspace folder name from a connected Cursor renderer page.
+ * Extract the workspace folder from a connected Cursor renderer page.
  * Uses vscode.context.configuration().workspace.uri which is available in every
  * Cursor/VS Code Electron renderer — stable across platforms and not affected
  * by the volatile document.title / CDP target title.
  */
-export async function extractWorkspaceName(client: CdpClient, includeQualifier = true): Promise<string | null> {
+export async function extractWorkspaceIdentity(client: CdpClient, includeQualifier = true): Promise<WorkspaceIdentity | null> {
   try {
     const raw = await client.evaluate(`
       (() => {
@@ -140,18 +163,17 @@ export async function extractWorkspaceName(client: CdpClient, includeQualifier =
     `, 3000);
     if (!raw || typeof raw !== 'string')
       return null;
-    const { path, authority } = JSON.parse(raw) as { path: string; authority: string };
-    if (!path)
-      return null;
-    const basename = path.split('/').filter(Boolean).pop() || path;
-    if (!includeQualifier)
-      return basename;
-    const qualifier = authorityToQualifier(authority);
-    return qualifier ? `${basename} ${qualifier}` : basename;
+    const parsed = JSON.parse(raw) as { path?: unknown; authority?: unknown };
+    return workspaceIdentityFromUri(parsed, includeQualifier);
   }
   catch {
     return null;
   }
+}
+
+export async function extractWorkspaceName(client: CdpClient, includeQualifier = true): Promise<string | null> {
+  const identity = await extractWorkspaceIdentity(client, includeQualifier);
+  return identity?.name ?? null;
 }
 
 export const DEFAULT_TITLE_SUFFIXES = [' - Cursor'];
@@ -349,6 +371,8 @@ export class CDPBridge extends EventEmitter {
   private _preferredTargetId = '';
   private _windows: CursorWindow[] = [];
   private _activeWorkspaceName: string | null = null;
+  /** Local project paths learned from a workbench page, keyed by CDP target id. */
+  private readonly workspacePaths = new Map<string, string>();
   private readonly relauncher: CdpRelauncher;
   private readonly titleSuffixes: string[];
   private readonly appNames: string[];
@@ -634,15 +658,19 @@ export class CDPBridge extends EventEmitter {
       this.client = client;
       this._activeTargetId = target.id;
 
-      this._activeWorkspaceName = await extractWorkspaceName(client, this.config.windowTitleQualifier);
+      const identity = await extractWorkspaceIdentity(client, this.config.windowTitleQualifier);
       if (generation !== this.connectGeneration)
         return;
-      if (this._activeWorkspaceName) {
-        const win = this._windows.find(w => w.id === target.id);
-        if (win)
-          win.title = this._activeWorkspaceName;
+      this._activeWorkspaceName = identity?.name ?? null;
+      this.rememberWorkspacePath(target.id, identity?.localPath ?? null);
+      this._windows = this._windows.map((win) => {
+        const stamped = this.stampWorkspace(win);
+        if (win.id === target.id && this._activeWorkspaceName)
+          return { ...stamped, title: this._activeWorkspaceName };
+        return stamped;
+      });
+      if (this._activeWorkspaceName)
         console.log(`[cdp-bridge] Workspace name: "${this._activeWorkspaceName}"`);
-      }
 
       client.on('disconnected', () => {
         if (!this.intentionalDisconnect && this.client === client) {
@@ -884,9 +912,39 @@ export class CDPBridge extends EventEmitter {
     return targets;
   }
 
+  /** Remember or clear the local folder for a CDP target. The next window list picks it up. */
+  rememberWorkspacePath(windowId: string, localPath: string | null): void {
+    if (!windowId)
+      return;
+    if (localPath && isAbsolute(localPath))
+      this.workspacePaths.set(windowId, localPath);
+    else
+      this.workspacePaths.delete(windowId);
+  }
+
+  private stampWorkspace(win: CursorWindow): CursorWindow {
+    if (win.kind === 'agents') {
+      this.workspacePaths.delete(win.id);
+      if (win.workspacePath === undefined)
+        return win;
+      const copy = { ...win };
+      delete copy.workspacePath;
+      return copy;
+    }
+    const workspacePath = this.workspacePaths.get(win.id);
+    if (!workspacePath) {
+      if (win.workspacePath === undefined)
+        return win;
+      const copy = { ...win };
+      delete copy.workspacePath;
+      return copy;
+    }
+    return win.workspacePath === workspacePath ? win : { ...win, workspacePath };
+  }
+
   private targetsToWindows(targets: CDPTarget[]): CursorWindow[] {
     const includeAgents = this.config.agentsWindow !== false;
-    return targets
+    const windows = targets
       .filter(t => isProjectWindowPage(t) || (includeAgents && isCursorAgentsWindow(t)))
       .map((t) => {
         // Agents overview window: no project workspace; title is our display name; behavior branches on kind
@@ -907,6 +965,12 @@ export class CDPBridge extends EventEmitter {
         // until they get polled with their own temporary CDP connection)
         return { id: t.id, title: parseCdpTitle(t.title, this.titleSuffixes), url: t.url, wsUrl: t.webSocketDebuggerUrl };
       });
+    const live = new Set(windows.map(win => win.id));
+    for (const id of this.workspacePaths.keys()) {
+      if (!live.has(id))
+        this.workspacePaths.delete(id);
+    }
+    return windows.map(win => this.stampWorkspace(win));
   }
 
   private handleDisconnect(): void {

@@ -1,4 +1,12 @@
 import type {
+  CliAppend,
+  CliApprovalEvent,
+  CliApprovalResolved,
+  CliFull,
+  CliSessionCreated,
+  CliSessionRemoved,
+  CliSnapshot,
+  CliStatus,
   CommandResult,
   CursorState,
   IdeKind,
@@ -11,6 +19,8 @@ import type {
   StatePatchWire,
   UserInfo,
 } from './protocol';
+import { noteUserSwitch } from '../lib/useViewState';
+import { dispatchCli, nextActiveTarget, setCliEffectHandler, useCliStore } from '../store/cli';
 import { useConnectionStore } from '../store/connection';
 import { isSyntheticComposerId, liveSessionKeyOf, pendingMatchesTab, useIdesStore } from '../store/ides';
 import { useMachinesStore } from '../store/machines';
@@ -129,20 +139,86 @@ function reconcilePendingSwitch(ide: IdeKind, state: CursorState | undefined): v
     ui.clearPendingSwitch(pending.commandId);
 }
 
+function cliAgentId(payload: unknown): string {
+  if (!payload || typeof payload !== 'object')
+    return '';
+  const agentId = (payload as { agentId?: unknown }).agentId;
+  return typeof agentId === 'string' ? agentId : '';
+}
+
+let cliTimer: ReturnType<typeof setTimeout> | undefined;
+
+function armCliTimer(): void {
+  if (cliTimer !== undefined)
+    clearTimeout(cliTimer);
+  cliTimer = undefined;
+  const cli = useCliStore.getState().cli;
+  if (!cli.connected)
+    return;
+  let soonest: number | null = null;
+  for (const [agentId, agent] of Object.entries(cli.agents)) {
+    if (agent.fullDeadlineAt == null)
+      continue;
+    if (cli.selectedAgentId && cli.selectedAgentId !== agentId)
+      continue;
+    if (soonest == null || agent.fullDeadlineAt < soonest)
+      soonest = agent.fullDeadlineAt;
+  }
+  if (soonest == null)
+    return;
+  cliTimer = setTimeout(() => {
+    cliTimer = undefined;
+    dispatchCli({ type: 'tick', now: Date.now() });
+  }, Math.max(0, soonest - Date.now()));
+}
+
 /** socket events → store write entry. Called once from main.tsx at startup. */
 export function bindSocket(): void {
   const connection = () => useConnectionStore.getState();
   const machines = () => useMachinesStore.getState();
   const sessions = () => useSessionsStore.getState();
 
+  setCliEffectHandler((before, after, effects) => {
+    const ide = useIdesStore.getState().selectedIde;
+    let target = useUiStore.getState().activeTarget;
+    for (const [agentId, agent] of Object.entries(after.agents)) {
+      const prev = before.agents[agentId]?.epoch ?? null;
+      if (prev && agent.epoch && prev !== agent.epoch)
+        target = nextActiveTarget(target, agentId, agent.epoch, ide);
+    }
+    if (target !== useUiStore.getState().activeTarget)
+      useUiStore.getState().setActiveTarget(target);
+    for (const effect of effects) {
+      if (effect.type === 'sync') {
+        socket.emit('cli:sync-request', {});
+      }
+      else if (effect.type === 'restart-notice') {
+        useUiStore.getState().pushToast(effect.text, 'error');
+      }
+      else if (effect.type === 'open-session') {
+        noteUserSwitch();
+        useUiStore.getState().showCli({
+          kind: 'cli',
+          agentId: effect.agentId,
+          epoch: effect.epoch,
+          source: effect.source,
+          sessionId: effect.sessionId,
+        });
+      }
+    }
+    armCliTimer();
+  });
+
   socket.on('connect', () => {
     connection().setStatus('online');
     machines().reselect();
+    dispatchCli({ type: 'reconnect', now: Date.now() });
     // Appends during the disconnect are not replayed — after reconnect, reconcile once (zero body transfer if consistent).
     ensureLiveBody({ verify: true });
   });
   socket.on('disconnect', (reason) => {
     connection().setStatus('offline');
+    dispatchCli({ type: 'disconnect' });
     // Server-initiated disconnect (deploy restart, disconnectSockets): socket.io sets active=false and
     // **stops auto-reconnect** (official semantics: you must connect() yourself). Without this, every server
     // deploy would pin already-open pages on the reconnect screen forever until refresh (reproduced 2026-09-15).
@@ -184,6 +260,64 @@ export function bindSocket(): void {
     sessions().applySessionPatch(payload, currentLiveKey());
   });
   socket.on('session:sync', (payload: SessionSyncPayload) => sessions().applySessionSync(payload));
+
+  socket.on('cli:snapshot', (payload: CliSnapshot & { agentId?: string }) => {
+    const agentId = cliAgentId(payload);
+    if (!agentId)
+      return;
+    dispatchCli({ type: 'snapshot', agentId, snapshot: payload, now: Date.now() });
+  });
+  socket.on('cli:full', (payload: CliFull & { agentId?: string }) => {
+    const agentId = cliAgentId(payload);
+    if (!agentId)
+      return;
+    dispatchCli({ type: 'full', agentId, full: payload, now: Date.now() });
+  });
+  socket.on('cli:append', (payload: CliAppend & { agentId?: string }) => {
+    const agentId = cliAgentId(payload);
+    if (!agentId)
+      return;
+    dispatchCli({ type: 'append', agentId, append: payload, now: Date.now() });
+  });
+  socket.on('cli:session-created', (payload: CliSessionCreated & { agentId?: string }) => {
+    const agentId = cliAgentId(payload);
+    if (!agentId)
+      return;
+    dispatchCli({ type: 'session-created', agentId, created: payload });
+  });
+  socket.on('cli:session-removed', (payload: CliSessionRemoved & { agentId?: string }) => {
+    const agentId = cliAgentId(payload);
+    if (!agentId)
+      return;
+    dispatchCli({ type: 'session-removed', agentId, removed: payload, now: Date.now() });
+    const target = useUiStore.getState().activeTarget;
+    if (
+      target.kind === 'cli'
+      && target.agentId === agentId
+      && target.source === payload.source
+      && target.sessionId === payload.sessionId
+    ) {
+      useUiStore.getState().showCliHome(agentId);
+    }
+  });
+  socket.on('cli:status', (payload: CliStatus & { agentId?: string }) => {
+    const agentId = cliAgentId(payload);
+    if (!agentId)
+      return;
+    dispatchCli({ type: 'status', agentId, status: payload });
+  });
+  socket.on('cli:approval', (payload: CliApprovalEvent & { agentId?: string }) => {
+    const agentId = cliAgentId(payload);
+    if (!agentId)
+      return;
+    dispatchCli({ type: 'approval', agentId, approval: payload });
+  });
+  socket.on('cli:approval-resolved', (payload: CliApprovalResolved & { agentId?: string }) => {
+    const agentId = cliAgentId(payload);
+    if (!agentId)
+      return;
+    dispatchCli({ type: 'approval-resolved', agentId, resolved: payload });
+  });
 
   socket.on('command:result', (result: CommandResult) => {
     // Await-result first (get_plan_full etc.); otherwise pendingSend reconcile.
@@ -234,6 +368,12 @@ export function bindSocket(): void {
     const sessions = useSessionsStore.getState();
     if (sessions.bodies[key] && !sessions.unavailable[key])
       ensureLiveBody({ verify: true });
+  });
+
+  useMachinesStore.subscribe((state, prev) => {
+    if (state.selectedAgentId === prev.selectedAgentId)
+      return;
+    dispatchCli({ type: 'select-agent', agentId: state.selectedAgentId });
   });
 }
 

@@ -1,6 +1,9 @@
+import type { CliAcpCapability } from '@lifeline/protocol';
 import type { Socket } from 'socket.io-client';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
+import { staticCliAcp } from '../packages/agent/src/cli-capability.js';
 import { Uplink } from '../packages/agent/src/uplink.js';
 
 /**
@@ -55,9 +58,11 @@ class FakeSocket {
   }
 }
 
-function makeUplink(thresholdMs = 25) {
+function makeUplink(thresholdMs = 25, instanceId?: string, cliAcp?: CliAcpCapability) {
   const sockets: FakeSocket[] = [];
   const uplink = new Uplink('http://server.test', 'token-1', 'machine-x', ['cursor'], false, {
+    ...(instanceId !== undefined ? { instanceId } : {}),
+    ...(cliAcp !== undefined ? { cliAcp } : {}),
     socketFactory: () => {
       const s = new FakeSocket();
       sockets.push(s);
@@ -152,6 +157,24 @@ describe('Uplink watchdog rebuild', () => {
  * `index.ts` as its own event, and it must **not** travel the `onAny` path that carries commands —
  * that path exists for command dispatch, and its listeners treat every event as a command.
  */
+describe('Uplink instanceId', () => {
+  it('registers the injected instanceId, including after a rebuild', async () => {
+    const instanceId = 'proc-shared-epoch';
+    const { uplink, sockets } = makeUplink(20, instanceId);
+    sockets[0]!.fire('connect');
+    const first = sockets[0]!.sent.find(entry => entry.event === 'agent:register');
+    assert.equal((first?.payload as { instanceId?: string }).instanceId, instanceId);
+
+    sockets[0]!.fire('disconnect', 'transport close');
+    await sleep(150);
+    assert.equal(sockets.length, 2);
+    sockets[1]!.fire('connect');
+    const second = sockets[1]!.sent.find(entry => entry.event === 'agent:register');
+    assert.equal((second?.payload as { instanceId?: string }).instanceId, instanceId);
+    uplink.disconnect();
+  });
+});
+
 describe('Uplink agent:superseded', () => {
   it('surfaces it as `superseded`, payload intact', () => {
     const { uplink, sockets } = makeUplink();
@@ -163,7 +186,7 @@ describe('Uplink agent:superseded', () => {
     assert.deepEqual(seen, [payload]);
   });
 
-  it('keeps it off the onAny forwarder, which carries only commands and session:get', () => {
+  it('keeps it off the onAny forwarder, which carries commands, session:get, and cli:sync', () => {
     const { uplink, sockets } = makeUplink();
     sockets[0]!.fire('connect');
     const raw: string[] = [];
@@ -174,5 +197,60 @@ describe('Uplink agent:superseded', () => {
     sockets[0]!.fire('command:ping', { commandId: 'c1' });
     assert.deepEqual(raw, [], 'the raw event name must not be re-emitted by onAny');
     assert.deepEqual(commands, ['command:ping'], 'command dispatch is untouched');
+  });
+});
+
+const DARWIN_CLI_ACP: CliAcpCapability = {
+  protocolVersion: 1,
+  platform: 'darwin',
+  sources: [{ source: 'cursor-cli' }, { source: 'codebuddy-cli' }],
+};
+
+describe('static cliAcp', () => {
+  it('declares both CLI sources on darwin and omits the field on linux and win32', () => {
+    assert.deepEqual(staticCliAcp('darwin', { LIFELINE_LINUX_CDP: '1' }), DARWIN_CLI_ACP);
+    assert.deepEqual(staticCliAcp('darwin', {}), DARWIN_CLI_ACP);
+    assert.equal(staticCliAcp('linux', { LIFELINE_LINUX_CDP: '1' }), undefined);
+    assert.equal(staticCliAcp('win32', { LIFELINE_LINUX_CDP: '1' }), undefined);
+    assert.equal(staticCliAcp('freebsd', { LIFELINE_LINUX_CDP: '1' }), undefined);
+  });
+
+  it('puts that capability on agent:register and leaves it off when absent', () => {
+    const cap = staticCliAcp('darwin', { LIFELINE_LINUX_CDP: '1' });
+    assert.ok(cap);
+    const declared = makeUplink(25, 'proc-1', cap);
+    declared.sockets[0]!.fire('connect');
+    const withCap = declared.sockets[0]!.sent.find(entry => entry.event === 'agent:register');
+    assert.deepEqual((withCap?.payload as { cliAcp?: CliAcpCapability }).cliAcp, cap);
+    declared.uplink.disconnect();
+
+    const plain = makeUplink();
+    plain.sockets[0]!.fire('connect');
+    const without = plain.sockets[0]!.sent.find(entry => entry.event === 'agent:register');
+    assert.equal('cliAcp' in (without?.payload as object), false);
+    plain.uplink.disconnect();
+  });
+
+  it('forwards cli:sync and still drops unrelated events', () => {
+    const { uplink, sockets } = makeUplink();
+    sockets[0]!.fire('connect');
+    const seen: string[] = [];
+    uplink.on('cli:sync', () => seen.push('cli:sync'));
+    uplink.on('session:get', () => seen.push('session:get'));
+    uplink.on('command:ping', () => seen.push('command:ping'));
+    uplink.on('cli:snapshot', () => seen.push('cli:snapshot'));
+    sockets[0]!.fire('cli:sync', {});
+    sockets[0]!.fire('session:get', { sessionId: 's1' });
+    sockets[0]!.fire('command:ping', { commandId: 'c1' });
+    sockets[0]!.fire('cli:snapshot', { epoch: 'e' });
+    assert.deepEqual(seen, ['cli:sync', 'session:get', 'command:ping']);
+    uplink.disconnect();
+  });
+
+  it('wires the live agent to register staticCliAcp and to follow uplink sync', () => {
+    const source = readFileSync(new URL('../packages/agent/src/index.ts', import.meta.url), 'utf8');
+    assert.match(source, /cliAcp:\s*staticCliAcp\(\)/);
+    assert.match(source, /attachCliUplinkSync\(/);
+    assert.doesNotMatch(source, /canControlIde\(\)[\s\S]{0,80}cliAcp/);
   });
 });

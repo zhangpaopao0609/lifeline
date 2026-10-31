@@ -1,3 +1,4 @@
+import type { CliAcpCapability } from './cli.js';
 import type { AgentPlatform, ChatElement, IdeKind } from './wire.js';
 
 export interface SessionRef {
@@ -137,4 +138,9 @@ export interface AgentRegisterPayload {
    * the slot". Old agents omit it, and then may only take a slot that nobody current is holding.
    */
   instanceId?: string;
+  /**
+   * Static ACP capability. Agents that do not speak CLI omit it.
+   * Dynamic credential state rides on `cli:capabilities`, not this field.
+   */
+  cliAcp?: CliAcpCapability;
 }

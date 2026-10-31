@@ -2,6 +2,9 @@ import type { Namespace, Socket, Server as SocketServer } from 'socket.io';
 import type {
   AgentPlatform,
   AgentRegisterPayload,
+  CliAcpCapability,
+  CliAvailability,
+  CliSource,
   DuplicateAgent,
   PatchSeqBaseline,
   SessionBodyPayload,
@@ -15,7 +18,26 @@ import type { AgentIdesState, IdeKind } from './ide.js';
 import type { ChatElement, ChatTab, CommandPayload, CommandResult, CursorState } from './types.js';
 import { EventEmitter } from 'node:events';
 import { join } from 'node:path';
-import { isIdeKind, MACHINE_NAME_MAX_LENGTH, SYNC_REASON_PATCH_GAP, toAgentPlatform } from '../../protocol/src/index.js';
+import {
+  agentRegisterSchema,
+  CLI_COMMAND_EVENTS,
+  cliAppendSchema,
+  cliApprovalEventSchema,
+  cliApprovalResolvedSchema,
+  cliFullSchema,
+  cliSessionCreatedSchema,
+  cliSessionRemovedSchema,
+  cliSnapshotSchema,
+  cliStatusSchema,
+  COMMAND_ERROR_CODES,
+  commandPayloadSchema,
+  isCliSource,
+  isIdeKind,
+  MACHINE_NAME_MAX_LENGTH,
+  SYNC_REASON_PATCH_GAP,
+  toAgentPlatform,
+  validateInbound,
+} from '../../protocol/src/index.js';
 import {
 
   applyIdePatch,
@@ -75,6 +97,11 @@ export interface MachineInfo {
    * the person looking at the page may be on a different OS. Default (old agent) = the page falls back to its own OS toggle.
    */
   platform?: AgentPlatform;
+  /**
+   * Coarse CLI availability. `unknown` is not `ready`. No credential, detail, or provider key.
+   * Absent when the agent did not declare static `cliAcp`.
+   */
+  cliSources?: Array<{ source: CliSource; availability: CliAvailability }>;
   /** Machine ownership (userId of whoever enrolled); normally always present — an agent whose ownership cannot be resolved cannot connect (see resolveOwner) */
   owner?: string;
   /**
@@ -148,6 +175,13 @@ interface AgentConn {
   patchTrack?: PatchTrack;
   /** Last time this server asked the agent to re-sync because of a patch gap (cooldown anchor). */
   lastGapSyncAt?: number;
+  /**
+   * Static CLI capability from `agent:register`. Cleared when a register omits it
+   * (an old agent took the slot). Not persisted.
+   */
+  cliAcp?: CliAcpCapability;
+  /** Latest dynamic availability. Not a gate, and not persisted. */
+  cliReported?: Map<CliSource, CliAvailability>;
 }
 
 interface PatchTrack {
@@ -162,6 +196,41 @@ interface PatchTrack {
  * milliseconds; this only stops a misbehaving agent from making the server ask on every ~1Hz patch.
  */
 const PATCH_GAP_SYNC_COOLDOWN_MS = 10 * 1000;
+
+/**
+ * Controller fill. The design says repeated CLI syncs merge and cool down, and does not
+ * give a duration. Default is 1000ms; tests inject a shorter window.
+ */
+export const CLI_SYNC_COOLDOWN_MS = 1000;
+
+/**
+ * Controller fill. A dropped inbound CLI/register record is at most this many characters.
+ * The whole packet is not written to the log.
+ */
+export const CLI_INBOUND_LOG_MAX_CHARS = 200;
+
+/** How long a browser command waits for `command:result` before the pending entry is dropped. */
+const COMMAND_PENDING_TTL_MS = 30 * 60 * 1000;
+
+const CLI_AVAILABILITY = new Set<CliAvailability>([
+  'unknown',
+  'ready',
+  'binary-missing',
+  'credential-required',
+  'error',
+]);
+
+export const CLI_AGENT_EVENTS = [
+  'cli:session-created',
+  'cli:snapshot',
+  'cli:full',
+  'cli:append',
+  'cli:status',
+  'cli:approval',
+  'cli:approval-resolved',
+  'cli:session-removed',
+  'cli:capabilities',
+] as const;
 
 /** Requester-registration TTL; once it expires without another look, content is no longer forwarded. */
 const SESSION_WATCH_TTL_MS = 30 * 60 * 1000;
@@ -185,9 +254,24 @@ export class AgentDirectory extends EventEmitter {
   private now: () => number;
   private agents = new Map<string, AgentConn>();
   private socketToAgent = new Map<string, string>();
-  private pending = new Map<string, { replyTo: AgentSocket; agentId: string }>();
+  private pending = new Map<string, {
+    replyTo: AgentSocket;
+    agentId: string;
+    commandId: string;
+    expiresAt: number;
+  }>();
+
+  private pendingTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private patchTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private sessionStore: SessionStore | null;
+  private cliSyncCooldownMs: number;
+  private pendingTtlMs: number;
+  /** agentId → browsers whose machine-room join has committed. */
+  private cliViewers = new Map<string, Set<AgentSocket>>();
+  /** socket id → machine it is currently allowed to receive CLI events for. */
+  private viewerMachine = new Map<string, string>();
+  private cliSync = new Map<string, { inFlight: boolean; sentAt: number; queued: boolean }>();
+  private cliSyncTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /**
    * Cross-machine content: (ide\0sessionId) → requester machine → expiry.
    * Session body/deltas are pushed by the "content machine", but browsing is the "requester machine"'s
@@ -207,6 +291,8 @@ export class AgentDirectory extends EventEmitter {
       persistDebounceMs?: number;
       now?: () => number;
       sessionStore?: SessionStore;
+      cliSyncCooldownMs?: number;
+      pendingTtlMs?: number;
     },
   ) {
     super();
@@ -214,6 +300,8 @@ export class AgentDirectory extends EventEmitter {
     this.persistDebounceMs = options?.persistDebounceMs ?? 1500;
     this.now = options?.now ?? Date.now;
     this.sessionStore = options?.sessionStore ?? null;
+    this.cliSyncCooldownMs = options?.cliSyncCooldownMs ?? CLI_SYNC_COOLDOWN_MS;
+    this.pendingTtlMs = options?.pendingTtlMs ?? COMMAND_PENDING_TTL_MS;
     for (const row of store.loadMachines()) {
       const conn: AgentConn = {
         agentId: row.agentId,
@@ -275,6 +363,7 @@ export class AgentDirectory extends EventEmitter {
           ...(contentIdes.length > 0 ? { contentIdes, contentOnly: isContentOnlyConn(conn) } : {}),
           ...(conn.cliVersion ? { cliVersion: conn.cliVersion } : {}),
           ...(conn.platform ? { platform: conn.platform } : {}),
+          ...cliSourcesField(conn),
           ...(conn.owner ? { owner: conn.owner } : {}),
           ...(conn.duplicateAgent ? { duplicateAgent: conn.duplicateAgent } : {}),
         };
@@ -518,6 +607,9 @@ export class AgentDirectory extends EventEmitter {
     const platform = toAgentPlatform(info.platform);
     if (platform)
       conn.platform = platform;
+    // Static capability is whatever this process declared. An old agent omits it; keep none of the previous process.
+    conn.cliAcp = info.cliAcp;
+    conn.cliReported = undefined;
     this.agents.set(agentId, conn);
     this.socketToAgent.set(socket.id, agentId);
     this.restoreContentIdes(conn);
@@ -531,6 +623,8 @@ export class AgentDirectory extends EventEmitter {
     this.persistNow(conn);
     this.emit('machines:changed');
     this.emit('uplink:changed', this.hasAgent());
+    // A new active socket needs its own CLI snapshot. Browser syncs stay on the cooldown.
+    this.requestCliSync(agentId, 'socket');
     return agentId;
   }
 
@@ -1339,6 +1433,7 @@ export class AgentDirectory extends EventEmitter {
       chars: payload.text?.length,
       preview: payload.text ? timingPreview(payload.text) : undefined,
     });
+    this.sweepPending();
     const conn = this.agents.get(agentId);
     if (!conn || !conn.socket?.connected) {
       timingLog('hub:offline', { agentId, event, commandId: payload.commandId });
@@ -1349,10 +1444,148 @@ export class AgentDirectory extends EventEmitter {
       } satisfies CommandResult);
       return;
     }
+    const cliSource = cliCommandSource(event, payload);
+    if (cliSource !== null && !cliStaticAllowed(conn, cliSource)) {
+      replyTo.emit('command:result', {
+        commandId: payload.commandId,
+        ok: false,
+        errorCode: 'cli-agent-incompatible',
+        error: 'CLI agent incompatible',
+      } satisfies CommandResult);
+      return;
+    }
     if (payload.commandId) {
-      this.pending.set(payload.commandId, { replyTo, agentId });
+      const key = pendingKey(agentId, payload.commandId);
+      if (this.pending.has(key)) {
+        replyTo.emit('command:result', {
+          commandId: payload.commandId,
+          ok: false,
+          error: 'Duplicate command',
+        } satisfies CommandResult);
+        return;
+      }
+      const expiresAt = this.now() + this.pendingTtlMs;
+      this.pending.set(key, { replyTo, agentId, commandId: payload.commandId, expiresAt });
+      this.armPending(key);
     }
     conn.socket.emit(event, payload);
+  }
+
+  /**
+   * Browser command boundary. Illegal payloads are answered and not forwarded.
+   * IDE commands that pass the schema keep the existing `sendCommand` path.
+   */
+  ingestBrowserCommand(agentId: string, event: string, payload: unknown, replyTo: AgentSocket): void {
+    const parsed = validateInbound(commandPayloadSchema, payload, 'invalid-payload');
+    if (!parsed.ok) {
+      replyTo.emit('command:result', {
+        commandId: readCommandId(payload),
+        ok: false,
+        errorCode: 'invalid-payload',
+        error: 'Invalid payload',
+      } satisfies CommandResult);
+      return;
+    }
+    this.sendCommand(agentId, event, parsed.data, replyTo);
+  }
+
+  /** Wire `agent:register`. A schema failure admits nothing. */
+  registerInbound(socket: AgentSocket, raw: unknown): string | null {
+    const parsed = validateInbound(agentRegisterSchema, raw, 'reject-register');
+    if (!parsed.ok) {
+      logDroppedInbound('agent:register', raw);
+      return null;
+    }
+    return this.register(socket, parsed.data);
+  }
+
+  /**
+   * Agent → viewers. Old sockets and agents without `cliAcp` are dropped.
+   * The outbound `agentId` is the connection's, never the payload's.
+   */
+  ingestAgentCli(socket: AgentSocket, event: string, payload: unknown): void {
+    if (!this.isActiveSocket(socket)) {
+      logDroppedInbound(event, payload);
+      return;
+    }
+    const agentId = this.socketToAgent.get(socket.id);
+    const conn = agentId ? this.agents.get(agentId) : undefined;
+    if (!conn?.cliAcp) {
+      logDroppedInbound(event, payload);
+      return;
+    }
+    if (event === 'cli:capabilities') {
+      this.applyCliCapabilities(conn, payload);
+      return;
+    }
+    const parsed = parseCliEvent(event, payload);
+    if (!parsed?.ok) {
+      logDroppedInbound(event, payload);
+      if (event === 'cli:snapshot')
+        this.finishCliSync(conn.agentId);
+      return;
+    }
+    this.deliverCli(conn.agentId, event, { ...parsed.data, agentId: conn.agentId });
+    if (event === 'cli:snapshot')
+      this.finishCliSync(conn.agentId);
+  }
+
+  attachCliViewer(viewer: AgentSocket, agentId: string): void {
+    this.detachCliViewer(viewer);
+    if (!this.agents.has(agentId))
+      return;
+    let viewers = this.cliViewers.get(agentId);
+    if (!viewers) {
+      viewers = new Set();
+      this.cliViewers.set(agentId, viewers);
+    }
+    viewers.add(viewer);
+    this.viewerMachine.set(viewer.id, agentId);
+  }
+
+  detachCliViewer(viewer: AgentSocket): void {
+    const agentId = this.viewerMachine.get(viewer.id);
+    if (!agentId)
+      return;
+    this.viewerMachine.delete(viewer.id);
+    const viewers = this.cliViewers.get(agentId);
+    viewers?.delete(viewer);
+    if (viewers && viewers.size === 0)
+      this.cliViewers.delete(agentId);
+  }
+
+  /** Browser disconnect: drop its pending commands and its CLI subscription. */
+  releaseRequester(socket: AgentSocket): void {
+    this.detachCliViewer(socket);
+    for (const [key, pending] of this.pending) {
+      if (pending.replyTo.id === socket.id)
+        this.deletePending(key);
+    }
+  }
+
+  /**
+   * Ask the agent for one CLI snapshot.
+   * `socket` skips the cooldown because the previous flight went to a socket that no longer owns the slot.
+   * Browser and select requests merge while one is in flight, and again inside the cooldown.
+   */
+  requestCliSync(agentId: string, reason: 'request' | 'socket' = 'request'): void {
+    const conn = this.agents.get(agentId);
+    if (!conn?.cliAcp || !conn.socket?.connected)
+      return;
+    const now = this.now();
+    const state = this.cliSync.get(agentId);
+    if (reason !== 'socket') {
+      if (state?.inFlight) {
+        state.queued = true;
+        return;
+      }
+      if (state && now - state.sentAt < this.cliSyncCooldownMs) {
+        state.queued = true;
+        this.armCliSyncFlush(agentId, this.cliSyncCooldownMs - (now - state.sentAt));
+        return;
+      }
+    }
+    this.emitCliSync(conn, now);
   }
 
   /** The machine currently registered for this socket; unregistered (rejected / not yet registered) → undefined. */
@@ -1367,11 +1600,20 @@ export class AgentDirectory extends EventEmitter {
    * Forged receipts are dropped; pending is left for the real machine to answer.
    */
   routeResult(result: CommandResult, sourceAgentId?: string): void {
+    this.sweepPending();
     if (!result?.commandId)
       return;
-    const target = this.pending.get(result.commandId);
-    if (!target)
+    if (result.errorCode !== undefined && !isCommandErrorCode(result.errorCode)) {
+      logDroppedInbound('command:result', result);
       return;
+    }
+    const key = sourceAgentId !== undefined ? pendingKey(sourceAgentId, result.commandId) : undefined;
+    const target = key ? this.pending.get(key) : this.pendingByCommand(result.commandId);
+    if (!target) {
+      if (sourceAgentId !== undefined)
+        this.warnForeignResult(result.commandId, sourceAgentId);
+      return;
+    }
     if (sourceAgentId !== undefined && target.agentId !== sourceAgentId) {
       console.warn(
         `[agent-hub] Ignored command:result from ${sourceAgentId} for ${target.agentId} (${result.commandId})`,
@@ -1383,7 +1625,7 @@ export class AgentDirectory extends EventEmitter {
       ok: result.ok,
       error: result.error,
     });
-    this.pending.delete(result.commandId);
+    this.deletePending(key ?? pendingKey(target.agentId, result.commandId));
     target.replyTo.emit('command:result', result);
   }
 
@@ -1395,12 +1637,12 @@ export class AgentDirectory extends EventEmitter {
   }
 
   private failPending(agentId: string, error: string): void {
-    for (const [commandId, pending] of this.pending) {
+    for (const [key, pending] of this.pending) {
       if (pending.agentId !== agentId)
         continue;
-      this.pending.delete(commandId);
+      this.deletePending(key);
       pending.replyTo.emit('command:result', {
-        commandId,
+        commandId: pending.commandId,
         ok: false,
         error,
       } satisfies CommandResult);
@@ -1416,6 +1658,133 @@ export class AgentDirectory extends EventEmitter {
     this.disposed = true;
     for (const timer of this.patchTimers.values()) clearTimeout(timer);
     this.patchTimers.clear();
+    for (const timer of this.pendingTimers.values()) clearTimeout(timer);
+    this.pendingTimers.clear();
+    for (const timer of this.cliSyncTimers.values()) clearTimeout(timer);
+    this.cliSyncTimers.clear();
+  }
+
+  private deliverCli(agentId: string, event: string, payload: Record<string, unknown>): void {
+    const viewers = this.cliViewers.get(agentId);
+    if (!viewers)
+      return;
+    for (const viewer of viewers) {
+      if (this.viewerMachine.get(viewer.id) !== agentId || !viewer.connected)
+        continue;
+      viewer.emit(event, payload);
+    }
+  }
+
+  private applyCliCapabilities(conn: AgentConn, payload: unknown): void {
+    const reported = readCliAvailability(payload);
+    if (!reported) {
+      logDroppedInbound('cli:capabilities', payload);
+      return;
+    }
+    conn.cliReported = reported;
+    this.emit('machines:changed');
+  }
+
+  private emitCliSync(conn: AgentConn, now: number): void {
+    this.cliSync.set(conn.agentId, { inFlight: true, sentAt: now, queued: false });
+    conn.socket?.emit('cli:sync');
+  }
+
+  private finishCliSync(agentId: string): void {
+    const state = this.cliSync.get(agentId);
+    if (!state)
+      return;
+    state.inFlight = false;
+    if (!state.queued)
+      return;
+    const wait = this.cliSyncCooldownMs - (this.now() - state.sentAt);
+    if (wait <= 0) {
+      state.queued = false;
+      const conn = this.agents.get(agentId);
+      if (conn?.cliAcp && conn.socket?.connected)
+        this.emitCliSync(conn, this.now());
+      return;
+    }
+    this.armCliSyncFlush(agentId, wait);
+  }
+
+  private armCliSyncFlush(agentId: string, wait: number): void {
+    const existing = this.cliSyncTimers.get(agentId);
+    if (existing)
+      clearTimeout(existing);
+    const timer = setTimeout(() => {
+      this.cliSyncTimers.delete(agentId);
+      const state = this.cliSync.get(agentId);
+      if (!state?.queued || state.inFlight)
+        return;
+      if (this.now() - state.sentAt < this.cliSyncCooldownMs)
+        return;
+      state.queued = false;
+      const conn = this.agents.get(agentId);
+      if (conn?.cliAcp && conn.socket?.connected)
+        this.emitCliSync(conn, this.now());
+    }, Math.max(0, wait));
+    timer.unref();
+    this.cliSyncTimers.set(agentId, timer);
+  }
+
+  private sweepPending(): void {
+    const now = this.now();
+    for (const [key, pending] of this.pending) {
+      if (now < pending.expiresAt)
+        continue;
+      this.deletePending(key);
+      pending.replyTo.emit('command:result', {
+        commandId: pending.commandId,
+        ok: false,
+        error: 'Command expired',
+      } satisfies CommandResult);
+    }
+  }
+
+  private armPending(key: string): void {
+    const timer = setTimeout(() => {
+      this.pendingTimers.delete(key);
+      const pending = this.pending.get(key);
+      if (!pending || this.now() < pending.expiresAt)
+        return;
+      this.pending.delete(key);
+      pending.replyTo.emit('command:result', {
+        commandId: pending.commandId,
+        ok: false,
+        error: 'Command expired',
+      } satisfies CommandResult);
+    }, this.pendingTtlMs);
+    timer.unref();
+    this.pendingTimers.set(key, timer);
+  }
+
+  private deletePending(key: string): void {
+    this.pending.delete(key);
+    const timer = this.pendingTimers.get(key);
+    if (!timer)
+      return;
+    clearTimeout(timer);
+    this.pendingTimers.delete(key);
+  }
+
+  private pendingByCommand(commandId: string): { replyTo: AgentSocket; agentId: string; commandId: string } | undefined {
+    for (const pending of this.pending.values()) {
+      if (pending.commandId === commandId)
+        return pending;
+    }
+    return undefined;
+  }
+
+  private warnForeignResult(commandId: string, sourceAgentId: string): void {
+    for (const pending of this.pending.values()) {
+      if (pending.commandId !== commandId || pending.agentId === sourceAgentId)
+        continue;
+      console.warn(
+        `[agent-hub] Ignored command:result from ${sourceAgentId} for ${pending.agentId} (${commandId})`,
+      );
+      return;
+    }
   }
 
   private persistNow(conn: AgentConn): void {
@@ -1504,9 +1873,21 @@ export class AgentHub extends EventEmitter {
     this.nsp.on('connection', (socket) => {
       console.log(`[agent-hub] Agent socket connected: ${socket.id}`);
 
-      socket.on('agent:register', (info: AgentRegisterPayload) => {
+      socket.on('agent:register', (info: unknown) => {
+        const parsed = validateInbound(agentRegisterSchema, info, 'reject-register');
+        if (!parsed.ok) {
+          logDroppedInbound('agent:register', info);
+          socket.emit('agent:rejected', { reason: 'reject-register' });
+          setTimeout(() => {
+            if (!this.directory.isActiveSocket(socket))
+              socket.disconnect(true);
+          }, 200);
+          return;
+        }
         const boundId = typeof socket.data.tokenAgentId === 'string' ? socket.data.tokenAgentId : '';
-        const reportedId = typeof info?.agentId === 'string' && info.agentId ? info.agentId : boundId;
+        const reportedId = typeof parsed.data.agentId === 'string' && parsed.data.agentId
+          ? parsed.data.agentId
+          : boundId;
         if (!boundId || reportedId !== boundId) {
           console.warn(
             `[agent-hub] Rejected agent registration (${socket.id}) - token bound to ${boundId || '(none)'}, reported ${reportedId || '(none)'}`,
@@ -1519,7 +1900,7 @@ export class AgentHub extends EventEmitter {
           return;
         }
         const agentId = this.directory.register(socket, {
-          ...(info ?? {}),
+          ...parsed.data,
           agentId: boundId,
           owner: typeof socket.data.agentOwner === 'string' ? socket.data.agentOwner : undefined,
         });
@@ -1539,10 +1920,16 @@ export class AgentHub extends EventEmitter {
         // registration, and printing both lines would make one attempt read like two machines.
         if (this.directory.isActiveSocket(socket)) {
           console.log(
-            `[agent-hub] Agent registered: ${agentId} (${info?.hostname ?? agentId})`,
+            `[agent-hub] Agent registered: ${agentId} (${parsed.data.hostname ?? agentId})`,
           );
         }
       });
+
+      for (const event of CLI_AGENT_EVENTS) {
+        socket.on(event, (payload: unknown) => {
+          this.directory.ingestAgentCli(socket, event, payload);
+        });
+      }
 
       socket.on('state:full', (state: unknown) => {
         if (!this.directory.isActiveSocket(socket))
@@ -1661,6 +2048,26 @@ export class AgentHub extends EventEmitter {
 
   sendCommand(agentId: string, event: string, payload: CommandPayload, replyTo: Socket): void {
     this.directory.sendCommand(agentId, event, payload, replyTo);
+  }
+
+  ingestBrowserCommand(agentId: string, event: string, payload: unknown, replyTo: Socket): void {
+    this.directory.ingestBrowserCommand(agentId, event, payload, replyTo);
+  }
+
+  requestCliSync(agentId: string): void {
+    this.directory.requestCliSync(agentId);
+  }
+
+  attachCliViewer(viewer: AgentSocket, agentId: string): void {
+    this.directory.attachCliViewer(viewer, agentId);
+  }
+
+  detachCliViewer(viewer: AgentSocket): void {
+    this.directory.detachCliViewer(viewer);
+  }
+
+  releaseBrowser(socket: AgentSocket): void {
+    this.directory.releaseRequester(socket);
   }
 
   forget(agentId: string): boolean {
@@ -1831,4 +2238,110 @@ function canSee(owner: string | undefined, userId?: string): boolean {
   if (userId === undefined)
     return true;
   return !!owner && owner === userId;
+}
+
+function pendingKey(agentId: string, commandId: string): string {
+  return `${agentId}\0${commandId}`;
+}
+
+/**
+ * `null` means this command is not CLI-targeted. A string (or `undefined` when the
+ * source was omitted) means it is. `payload.ide` is never consulted.
+ */
+function cliCommandSource(event: string, payload: CommandPayload): string | undefined | null {
+  const target = payload.target;
+  const cliEvent = (CLI_COMMAND_EVENTS as readonly string[]).includes(event);
+  if (!cliEvent && !(target && target.kind === 'cli'))
+    return null;
+  if (target && target.kind === 'cli')
+    return target.source;
+  return typeof payload.source === 'string' ? payload.source : undefined;
+}
+
+function cliStaticAllowed(conn: AgentConn, source: string | undefined): boolean {
+  const cap = conn.cliAcp;
+  if (!cap || cap.platform !== 'darwin' || !source)
+    return false;
+  return cap.sources.some(row => row.source === source);
+}
+
+function cliSourcesField(conn: AgentConn): { cliSources: NonNullable<MachineInfo['cliSources']> } | Record<string, never> {
+  if (!conn.cliAcp)
+    return {};
+  return {
+    cliSources: conn.cliAcp.sources.map(row => ({
+      source: row.source,
+      availability: conn.cliReported?.get(row.source) ?? 'unknown',
+    })),
+  };
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function readCommandId(payload: unknown): string {
+  if (!isPlainObject(payload) || typeof payload.commandId !== 'string')
+    return '';
+  return payload.commandId;
+}
+
+function readCliAvailability(payload: unknown): Map<CliSource, CliAvailability> | null {
+  if (!isPlainObject(payload) || payload.platform !== 'darwin' || !Array.isArray(payload.sources))
+    return null;
+  const reported = new Map<CliSource, CliAvailability>();
+  for (const row of payload.sources) {
+    if (!isPlainObject(row) || !isCliSource(row.source))
+      return null;
+    if (typeof row.availability !== 'string' || !CLI_AVAILABILITY.has(row.availability as CliAvailability))
+      return null;
+    reported.set(row.source, row.availability as CliAvailability);
+  }
+  return reported;
+}
+
+function parseCliEvent(
+  event: string,
+  payload: unknown,
+): { ok: true; data: Record<string, unknown> } | { ok: false } | null {
+  if (event === 'cli:snapshot')
+    return widenCli(validateInbound(cliSnapshotSchema, payload, 'drop-and-log'));
+  if (event === 'cli:append')
+    return widenCli(validateInbound(cliAppendSchema, payload, 'drop-and-log'));
+  if (event === 'cli:full')
+    return widenCli(validateInbound(cliFullSchema, payload, 'drop-and-log'));
+  if (event === 'cli:session-created')
+    return widenCli(validateInbound(cliSessionCreatedSchema, payload, 'drop-and-log'));
+  if (event === 'cli:status')
+    return widenCli(validateInbound(cliStatusSchema, payload, 'drop-and-log'));
+  if (event === 'cli:approval')
+    return widenCli(validateInbound(cliApprovalEventSchema, payload, 'drop-and-log'));
+  if (event === 'cli:approval-resolved')
+    return widenCli(validateInbound(cliApprovalResolvedSchema, payload, 'drop-and-log'));
+  if (event === 'cli:session-removed')
+    return widenCli(validateInbound(cliSessionRemovedSchema, payload, 'drop-and-log'));
+  return null;
+}
+
+function isCommandErrorCode(value: unknown): boolean {
+  return typeof value === 'string' && (COMMAND_ERROR_CODES as readonly string[]).includes(value);
+}
+
+function widenCli(
+  parsed: { ok: true; data: object } | { ok: false; code: string },
+): { ok: true; data: Record<string, unknown> } | { ok: false } {
+  if (!parsed.ok)
+    return { ok: false };
+  return { ok: true, data: { ...parsed.data } };
+}
+
+function logDroppedInbound(event: string, payload: unknown): void {
+  let text: string;
+  try {
+    text = typeof payload === 'string' ? payload : JSON.stringify(payload) ?? '';
+  }
+  catch {
+    text = '[unserializable]';
+  }
+  console.warn(`[agent-hub] dropped ${event}: ${text}`.slice(0, CLI_INBOUND_LOG_MAX_CHARS));
 }

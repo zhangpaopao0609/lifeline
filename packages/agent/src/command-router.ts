@@ -337,7 +337,15 @@ function enqueueCommands(
 }
 
 export function attachCommandHandlers(on: OnEvent, target: CommandTarget): void {
-  enqueueCommands(on, (event, payload) => handleCommand(event, payload, target));
+  enqueueCommands((event, handler) => {
+    on(event, (payload) => {
+      if (isCliCommandTarget(payload)) {
+        rejectCliTarget(event, payload, target.emitResult);
+        return;
+      }
+      return handler(payload);
+    });
+  }, (event, payload) => handleCommand(event, payload, target));
 }
 
 /**
@@ -351,6 +359,12 @@ export function attachIdeCommandHandlers(
   const tails: Partial<Record<IdeKind, Promise<void>>> = {};
   for (const event of COMMAND_EVENTS) {
     on(event, (payload) => {
+      if (isCliCommandTarget(payload)) {
+        const emit = Object.values(slots).find(slot => slot)?.emitResult;
+        if (emit)
+          rejectCliTarget(event, payload, emit);
+        return;
+      }
       const ide = parseIde(payload.ide);
       const target = slots[ide];
       if (!target) {
@@ -379,6 +393,30 @@ export function attachIdeCommandHandlers(
       return next;
     });
   }
+}
+
+/** Runtime kind check. A present target whose kind is not `cli` stays on the IDE path. */
+function isCliCommandTarget(payload: CommandPayload): boolean {
+  const kind = (payload.target as { kind?: unknown } | undefined)?.kind;
+  return kind === 'cli';
+}
+
+function rejectCliTarget(
+  event: string,
+  payload: CommandPayload,
+  emitResult: (result: CommandResult) => void,
+): void {
+  timingLog('router:fail', {
+    event,
+    commandId: payload.commandId ?? 'unknown',
+    error: 'wrong-target',
+  });
+  emitResult({
+    commandId: payload.commandId ?? 'unknown',
+    ok: false,
+    error: 'wrong-target',
+    errorCode: 'wrong-target',
+  });
 }
 
 /** Click/send first. Raise only when the control was missing (Mini 2026-09-14 probe). */

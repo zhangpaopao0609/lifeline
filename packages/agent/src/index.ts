@@ -1,12 +1,15 @@
 import type { SessionWatermark } from './content-watermark.js';
 import type { IdeSlot } from './ide-slot.js';
+import type { AgentLifecycle } from './lifecycle.js';
 import type { ContentSource } from './sources/content-source.js';
 import type { IdeKind } from './sources/types.js';
 import type { ChatElement, CursorState } from './types.js';
-import { hostname } from 'node:os';
+import { randomUUID } from 'node:crypto';
+import { homedir, hostname } from 'node:os';
 import { BUILD_VERSION } from '../../cli/src/build-version.js';
 import { includeProcessEnabled, loadCliConfig } from '../../cli/src/config.js';
 import { IDE_LABELS, SYNC_REASON_PATCH_GAP } from '../../protocol/src/index.js';
+import { staticCliAcp } from './cli-capability.js';
 import { attachIdeCommandHandlers } from './command-router.js';
 import { loadConfig, loadSelectors } from './config.js';
 import { applyContentSource, ContentLiveRuntime } from './content-runtime.js';
@@ -17,8 +20,12 @@ import {
   saveWatermarks,
 
 } from './content-watermark.js';
+import { cliCatalogPath } from './drivers/acp/catalog-disk.js';
+import { attachCliUplinkSync, attachLiveCliListeners, createLiveCliEntry, warmCursorModels } from './drivers/acp/live-entry.js';
+import { cliSessionLedgerPath } from './drivers/acp/session-ledger.js';
 import { registeredDrivers } from './drivers/index.js';
 import { createIdeSlot } from './ide-slot.js';
+import { createLifecycle } from './lifecycle.js';
 import { canControlIde, detectLiveIdes } from './live-ides.js';
 import { PatchSequencer } from './patch-sequencer.js';
 import { SessionIndexReporter } from './session-index-reporter.js';
@@ -39,6 +46,9 @@ import { Uplink } from './uplink.js';
  * file's fatal handler has always used. Declared before `main()` so that function's own doc block
  * stays attached to it.
  */
+/** Set once `main` has built the lifecycle, so a fatal throw can still shut down. */
+let shutdownLifecycle: AgentLifecycle | undefined;
+
 async function exitAfterFlush(code: number): Promise<never> {
   await new Promise<void>((resolve) => {
     setTimeout(resolve, 100);
@@ -112,7 +122,11 @@ async function main(): Promise<void> {
   console.log(
     `[agent] canControlIde=${control}  liveIdes: ${liveIdes.length ? liveIdes.join(',') : '(none)'}`,
   );
-  const uplink = new Uplink(config.remoteUrl, config.agentToken, agentId, liveIdes, !control);
+  const instanceId = randomUUID();
+  const uplink = new Uplink(config.remoteUrl, config.agentToken, agentId, liveIdes, !control, {
+    instanceId,
+    cliAcp: staticCliAcp(),
+  });
   // Handshake must finish before better-sqlite3's sync open/rebuild, or the
   // websocket connect timer expires and the machine stays offline.
   await new Promise<void>((resolve) => {
@@ -126,6 +140,43 @@ async function main(): Promise<void> {
       resolve();
     });
   });
+
+  // Filled in once slots exist. A stand-down during the sqlite open has nothing to stop yet.
+  let stopIde = async (): Promise<void> => {};
+  const cliFile = loadCliConfig();
+  const liveCli = createLiveCliEntry({
+    epoch: instanceId,
+    emit: (event, payload) => uplink.send(event, payload),
+    apiKey: cliFile?.codebuddyApiKey,
+    environment: cliFile?.codebuddyInternetEnvironment,
+    ledgerPath: cliSessionLedgerPath(),
+    catalogPath: cliCatalogPath(),
+  });
+  const cliSessions = liveCli.manager;
+  void cliSessions.restore();
+  warmCursorModels(process.env, cliCatalogPath());
+  // CodeBuddy has no `--list-models`. Read its catalog once at startup so the
+  // new-session dialog is not the process that waits on `session/new`.
+  if (process.platform === 'darwin')
+    void cliSessions.readCatalog({ source: 'codebuddy-cli', cwd: homedir() });
+  void liveCli.probe('cursor-cli');
+  void liveCli.probe('codebuddy-cli');
+  attachLiveCliListeners((event, handler) => {
+    uplink.on(event, handler);
+  }, liveCli);
+  attachCliUplinkSync((event, handler) => {
+    uplink.on(event, handler);
+  }, cliSessions, uplink.connected);
+  const lifecycle = createLifecycle({
+    claimAndEnqueueCancelled: () => cliSessions.claimAndEnqueueCancelled(),
+    enqueueCancels: () => cliSessions.enqueueCancels(),
+    closeCli: () => cliSessions.closeAll(),
+    closeIde: () => stopIde(),
+    disconnect: () => uplink.disconnect(),
+    releaseLock: () => releaseAgentLock(),
+    exit: code => exitAfterFlush(code),
+  });
+  shutdownLifecycle = lifecycle;
 
   /**
    * The server gave this machine's slot to another process. Subscribed **here**, right after the
@@ -154,18 +205,12 @@ async function main(): Promise<void> {
       print(line);
     if (!standDown)
       return;
-    // Close our socket first: for the ~100 ms the flush takes, a socket that dropped could reconnect
-    // and re-register — carrying our non-empty instanceId, which would tell the winner that *it* was
-    // superseded too and turn one takeover into a round of churn.
-    uplink.disconnect();
-    // Release before exiting: hand the machine back cleanly. A leftover record keeps `lifeline status`
-    // showing a pid that is already gone, and a reused pid whose command line probes as "unknown" makes
-    // the next start refuse.
-    releaseAgentLock();
-    void exitAfterFlush(1);
+    // Shared shutdown disconnects only after CLI and IDE close, then releases the lock, then exits.
+    // Doing those three here would drop the socket before the cancelled/cancel flush.
+    void lifecycle.shutdown(1);
   });
 
-  const includeProcess = includeProcessEnabled(loadCliConfig());
+  const includeProcess = includeProcessEnabled(cliFile);
   console.log(`[content-live] includeProcess=${includeProcess}`);
 
   // Watermark: one file, per-ide prefixes (do not stash in a closure; they
@@ -244,6 +289,15 @@ async function main(): Promise<void> {
     applyContentSource(diskAdapters[kind] ?? null, source =>
       slots[kind]!.stateManager.setContentSource(source));
   }
+
+  stopIde = async () => {
+    indexReporter.stop();
+    for (const { kind } of drivers) {
+      runtimes[kind]?.stop();
+      diskAdapters[kind]?.close?.();
+    }
+    await Promise.all(drivers.map(({ kind }) => slots[kind]!.stop()));
+  };
 
   attachIdeCommandHandlers(
     (event, handler) => uplink.on(event, handler),
@@ -344,22 +398,18 @@ async function main(): Promise<void> {
   }
   console.log('[agent] Running. Ctrl+C to stop.');
 
-  const shutdown = async () => {
+  process.on('SIGINT', () => {
+    if (lifecycle.shuttingDown)
+      return;
     console.log('\n[agent] Shutting down...');
-    indexReporter.stop();
-    for (const { kind } of drivers) {
-      runtimes[kind]?.stop();
-      diskAdapters[kind]?.close?.();
-    }
-    await Promise.all(drivers.map(({ kind }) => slots[kind]!.stop()));
-    uplink.disconnect();
-    // Only deletes our own record: if another agent already took the lock over, this is a no-op.
-    releaseAgentLock();
-    process.exit(0);
-  };
-
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+    void lifecycle.shutdown(0);
+  });
+  process.on('SIGTERM', () => {
+    if (lifecycle.shuttingDown)
+      return;
+    console.log('\n[agent] Shutting down...');
+    void lifecycle.shutdown(0);
+  });
   process.on('unhandledRejection', (reason) => {
     console.error(`[agent] Unhandled rejection: ${String(reason)}`);
   });
@@ -368,5 +418,9 @@ async function main(): Promise<void> {
 main().catch((err) => {
   const msg = `[agent] Fatal error: ${err instanceof Error ? err.message : String(err)}\n${err instanceof Error ? err.stack ?? '' : ''}`;
   console.error(msg);
-  void exitAfterFlush(1);
+  const lifecycle = shutdownLifecycle;
+  if (lifecycle)
+    void lifecycle.shutdown(1);
+  else
+    void exitAfterFlush(1);
 });

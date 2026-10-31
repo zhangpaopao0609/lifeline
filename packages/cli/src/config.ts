@@ -1,7 +1,7 @@
-import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, delimiter, dirname, isAbsolute, join } from 'node:path';
 
 export interface CliConfig {
   serverUrl: string;
@@ -18,7 +18,32 @@ export interface CliConfig {
   managedCodebuddyCdpArgv?: boolean;
   /** When true, project tool + thought. Missing/false = lean I/O timeline. */
   includeProcess?: boolean;
+  /** Absolute path of the Cursor ACP binary. Relative paths are not accepted. */
+  cursorCliPath?: string;
+  /** Absolute path of the CodeBuddy ACP binary. Relative paths are not accepted. */
+  codebuddyCliPath?: string;
+  /** CodeBuddy headless credential. Never log, wire, or put this in an error string. */
+  codebuddyApiKey?: string;
+  /** Value written to `CODEBUDDY_INTERNET_ENVIRONMENT` for the ACP child. */
+  codebuddyInternetEnvironment?: string;
 }
+
+const KNOWN_CONFIG_KEYS = new Set([
+  'serverUrl',
+  'agentToken',
+  'cdpUrl',
+  'pollIntervalMs',
+  'debounceMs',
+  'agentId',
+  'selectorsPath',
+  'managedCdpArgv',
+  'managedCodebuddyCdpArgv',
+  'includeProcess',
+  'cursorCliPath',
+  'codebuddyCliPath',
+  'codebuddyApiKey',
+  'codebuddyInternetEnvironment',
+]);
 
 export function includeProcessEnabled(
   raw: { includeProcess?: unknown } | null | undefined,
@@ -35,24 +60,18 @@ export function cliConfigPath(): string {
 }
 
 export function loadCliConfig(): CliConfig | null {
+  return readCliConfigFile(CONFIG_PATH);
+}
+
+/** Load one config file. Unknown JSON fields are copied through. */
+export function readCliConfigFile(filePath: string): CliConfig | null {
   try {
-    if (!existsSync(CONFIG_PATH))
+    if (!existsSync(filePath))
       return null;
-    const raw = JSON.parse(readFileSync(CONFIG_PATH, 'utf-8')) as Partial<CliConfig>;
-    if (!raw.serverUrl || !raw.agentToken)
+    const parsed: unknown = JSON.parse(readFileSync(filePath, 'utf8'));
+    if (!isRecord(parsed))
       return null;
-    return {
-      serverUrl: raw.serverUrl,
-      agentToken: raw.agentToken,
-      cdpUrl: raw.cdpUrl || 'http://127.0.0.1:9222',
-      pollIntervalMs: raw.pollIntervalMs || 500,
-      debounceMs: raw.debounceMs || 300,
-      agentId: raw.agentId,
-      selectorsPath: raw.selectorsPath,
-      managedCdpArgv: raw.managedCdpArgv,
-      managedCodebuddyCdpArgv: raw.managedCodebuddyCdpArgv,
-      includeProcess: includeProcessEnabled(raw),
-    };
+    return normalizeCliConfig(parsed);
   }
   catch {
     return null;
@@ -60,8 +79,23 @@ export function loadCliConfig(): CliConfig | null {
 }
 
 export function saveCliConfig(config: CliConfig): void {
-  mkdirSync(CONFIG_DIR, { recursive: true });
-  writeFileSync(CONFIG_PATH, `${JSON.stringify(config, null, 2)}\n`, 'utf-8');
+  writeCliConfigFile(config, CONFIG_PATH);
+}
+
+/**
+ * Atomic replace. The final file mode is `0600`.
+ * A relative provider path is refused and the previous file is left in place.
+ * The thrown message does not include credentials or the path value.
+ */
+export function writeCliConfigFile(config: CliConfig, filePath: string): void {
+  assertAbsoluteProviderPaths(config);
+  const dir = dirname(filePath);
+  mkdirSync(dir, { recursive: true });
+  const tmp = join(dir, `.${basename(filePath)}.${randomBytes(8).toString('hex')}.tmp`);
+  writeFileSync(tmp, `${JSON.stringify(config, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+  chmodSync(tmp, 0o600);
+  renameSync(tmp, filePath);
+  chmodSync(filePath, 0o600);
 }
 
 /**
@@ -96,4 +130,146 @@ export function ensureAgentId(
   const next = { ...config, agentId: resolveAgentId() };
   save(next);
   return next;
+}
+
+export type CliProviderSource = 'cursor-cli' | 'codebuddy-cli';
+
+const CLI_BINARY_NAMES: Record<CliProviderSource, string> = {
+  'cursor-cli': 'cursor-agent',
+  'codebuddy-cli': 'codebuddy',
+};
+
+export interface PersistedCliProviderInput {
+  config: CliConfig;
+  existing?: CliConfig | null;
+  lookup?: (source: CliProviderSource) => string | undefined;
+  codebuddyApiKey?: string;
+  codebuddyInternetEnvironment?: string;
+}
+
+/**
+ * Setup rebuilds a config object and would otherwise drop provider fields.
+ * Keep an existing absolute path, fill a missing one only from an absolute lookup,
+ * and copy the CodeBuddy key and environment from the argument or the previous file.
+ */
+/** Non-empty setup env values become helper arguments. Empty strings are omitted. */
+export function codebuddyProviderEnv(env: NodeJS.ProcessEnv): Pick<PersistedCliProviderInput, 'codebuddyApiKey' | 'codebuddyInternetEnvironment'> {
+  const out: Pick<PersistedCliProviderInput, 'codebuddyApiKey' | 'codebuddyInternetEnvironment'> = {};
+  const key = env.CODEBUDDY_API_KEY;
+  if (typeof key === 'string' && key.length > 0)
+    out.codebuddyApiKey = key;
+  const environment = env.CODEBUDDY_INTERNET_ENVIRONMENT;
+  if (typeof environment === 'string' && environment.length > 0)
+    out.codebuddyInternetEnvironment = environment;
+  return out;
+}
+
+export function withPersistedCliProviders(input: PersistedCliProviderInput): CliConfig {
+  const next: CliConfig = { ...input.config };
+  const cursorCliPath = chooseProviderPath(input.existing?.cursorCliPath, input.config.cursorCliPath, input.lookup?.('cursor-cli'));
+  const codebuddyCliPath = chooseProviderPath(input.existing?.codebuddyCliPath, input.config.codebuddyCliPath, input.lookup?.('codebuddy-cli'));
+  if (cursorCliPath)
+    next.cursorCliPath = cursorCliPath;
+  else
+    delete next.cursorCliPath;
+  if (codebuddyCliPath)
+    next.codebuddyCliPath = codebuddyCliPath;
+  else
+    delete next.codebuddyCliPath;
+  const key = input.codebuddyApiKey ?? input.existing?.codebuddyApiKey;
+  if (typeof key === 'string' && key.length > 0)
+    next.codebuddyApiKey = key;
+  else
+    delete next.codebuddyApiKey;
+  const environment = input.codebuddyInternetEnvironment ?? input.existing?.codebuddyInternetEnvironment;
+  if (typeof environment === 'string' && environment.length > 0)
+    next.codebuddyInternetEnvironment = environment;
+  else
+    delete next.codebuddyInternetEnvironment;
+  return next;
+}
+
+/** PATH search only. Does not execute the provider binary. */
+export function lookupCliProvider(source: CliProviderSource, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const pathValue = env.PATH;
+  if (typeof pathValue !== 'string' || pathValue.length === 0)
+    return undefined;
+  const base = CLI_BINARY_NAMES[source];
+  const names = process.platform === 'win32' ? [base, `${base}.exe`, `${base}.cmd`] : [base];
+  for (const dir of pathValue.split(delimiter)) {
+    if (!isAbsolute(dir))
+      continue;
+    for (const name of names) {
+      const candidate = join(dir, name);
+      if (isAbsolute(candidate) && existsSync(candidate))
+        return candidate;
+    }
+  }
+  return undefined;
+}
+
+function chooseProviderPath(existing: string | undefined, current: string | undefined, lookedUp: string | undefined): string | undefined {
+  return acceptedCliPath(existing) ?? acceptedCliPath(current) ?? acceptedCliPath(lookedUp);
+}
+
+export function acceptedCliPath(value: string | undefined): string | undefined {
+  if (typeof value !== 'string' || value.length === 0 || !isAbsolute(value))
+    return undefined;
+  return value;
+}
+
+function assertAbsoluteProviderPaths(config: CliConfig): void {
+  for (const value of [config.cursorCliPath, config.codebuddyCliPath]) {
+    if (value == null || value === '')
+      continue;
+    if (typeof value !== 'string' || !isAbsolute(value))
+      throw new Error('CLI provider path must be an absolute path');
+  }
+}
+
+function normalizeCliConfig(raw: Record<string, unknown>): CliConfig | null {
+  if (typeof raw.serverUrl !== 'string' || raw.serverUrl.length === 0)
+    return null;
+  if (typeof raw.agentToken !== 'string' || raw.agentToken.length === 0)
+    return null;
+  const config: CliConfig = {
+    serverUrl: raw.serverUrl,
+    agentToken: raw.agentToken,
+    cdpUrl: typeof raw.cdpUrl === 'string' && raw.cdpUrl.length > 0 ? raw.cdpUrl : 'http://127.0.0.1:9222',
+    pollIntervalMs: positiveNumber(raw.pollIntervalMs, 500),
+    debounceMs: positiveNumber(raw.debounceMs, 300),
+    includeProcess: includeProcessEnabled(raw),
+  };
+  if (typeof raw.agentId === 'string')
+    config.agentId = raw.agentId;
+  if (typeof raw.selectorsPath === 'string')
+    config.selectorsPath = raw.selectorsPath;
+  if (typeof raw.managedCdpArgv === 'boolean')
+    config.managedCdpArgv = raw.managedCdpArgv;
+  if (typeof raw.managedCodebuddyCdpArgv === 'boolean')
+    config.managedCodebuddyCdpArgv = raw.managedCodebuddyCdpArgv;
+  const cursorCliPath = acceptedCliPath(typeof raw.cursorCliPath === 'string' ? raw.cursorCliPath : undefined);
+  if (cursorCliPath)
+    config.cursorCliPath = cursorCliPath;
+  const codebuddyCliPath = acceptedCliPath(typeof raw.codebuddyCliPath === 'string' ? raw.codebuddyCliPath : undefined);
+  if (codebuddyCliPath)
+    config.codebuddyCliPath = codebuddyCliPath;
+  if (typeof raw.codebuddyApiKey === 'string' && raw.codebuddyApiKey.length > 0)
+    config.codebuddyApiKey = raw.codebuddyApiKey;
+  if (typeof raw.codebuddyInternetEnvironment === 'string' && raw.codebuddyInternetEnvironment.length > 0)
+    config.codebuddyInternetEnvironment = raw.codebuddyInternetEnvironment;
+  const stored = config as unknown as Record<string, unknown>;
+  for (const [key, value] of Object.entries(raw)) {
+    if (!KNOWN_CONFIG_KEYS.has(key))
+      stored[key] = value;
+  }
+  return config;
+}
+
+function positiveNumber(value: unknown, fallback: number): number {
+  return typeof value === 'number' && value > 0 ? value : fallback;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

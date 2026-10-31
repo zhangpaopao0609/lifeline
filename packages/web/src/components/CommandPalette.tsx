@@ -6,6 +6,7 @@ import { noteUserSwitch } from '../lib/useViewState';
 import { installCommand, setupCommand } from '../net/enroll';
 import { IDE_KINDS, IDE_LABELS } from '../net/protocol';
 import { sendCommand, sendCommandAwaitResult } from '../net/socket';
+import { cliSourceLabel, cliStatusLabel, paletteCliEntries, sessionsOf, useCliStore } from '../store/cli';
 import { activeTabOf, useIdesStore } from '../store/ides';
 import { useMachinesStore } from '../store/machines';
 import { useUiStore } from '../store/ui';
@@ -38,6 +39,9 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
   const setSelectedIde = useIdesStore(s => s.setSelectedIde);
   const applyStatePatch = useIdesStore(s => s.applyStatePatch);
   const pushToast = useUiStore(s => s.pushToast);
+  const showIde = useUiStore(s => s.showIde);
+  const showCli = useUiStore(s => s.showCli);
+  const cliAgent = useCliStore(s => selectedAgentId ? s.cli.agents[selectedAgentId] : undefined);
 
   const [query, setQuery] = useState('');
   const [active, setActive] = useState(0);
@@ -67,7 +71,7 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
       id: 'op:new-chat',
       group: '操作',
       label: '新会话',
-      run: finish(() => { noteUserSwitch(); sendCommand('command:new_chat', { ide: selectedIde }); }),
+      run: finish(() => { noteUserSwitch(); showIde(selectedIde); sendCommand('command:new_chat', { ide: selectedIde }); }),
     });
     out.push({
       id: 'op:copy-enroll',
@@ -91,6 +95,7 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
           if (tab.isActive && wid === state?.activeWindowId)
             return;
           noteUserSwitch();
+          showIde(selectedIde);
           sendCommand('command:switch_tab', {
             ide: selectedIde,
             tabTitle: tab.title,
@@ -107,7 +112,7 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
         group: '窗口',
         label: w.title || w.id,
         hint: w.id === state?.activeWindowId ? '当前' : undefined,
-        run: finish(() => sendCommand('command:switch_window', { ide: selectedIde, windowId: w.id })),
+        run: finish(() => { showIde(selectedIde); sendCommand('command:switch_window', { ide: selectedIde, windowId: w.id }); }),
       });
     }
 
@@ -117,7 +122,7 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
         group: 'IDE',
         label: IDE_LABELS[ide],
         hint: ide === selectedIde ? '当前' : undefined,
-        run: finish(() => setSelectedIde(ide)),
+        run: finish(() => { setSelectedIde(ide); showIde(ide); }),
       });
     });
 
@@ -175,9 +180,53 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
       });
     }
 
+    const selectedMachine = machines.find(item => item.agentId === selectedAgentId);
+    for (const entry of paletteCliEntries(selectedMachine)) {
+      out.push({
+        id: entry.id,
+        group: '命令行',
+        label: entry.label,
+        run: finish(() => {
+          const session = sessionsOf(cliAgent).find(row => row.source === entry.source);
+          if (!session) {
+            pushToast('还没有这个命令行会话');
+            return;
+          }
+          noteUserSwitch();
+          showCli({
+            kind: 'cli',
+            agentId: selectedAgentId,
+            epoch: session.epoch,
+            source: session.source,
+            sessionId: session.sessionId,
+          });
+        }),
+      });
+    }
+    for (const session of sessionsOf(cliAgent)) {
+      if (!paletteCliEntries(selectedMachine).some(entry => entry.source === session.source))
+        continue;
+      out.push({
+        id: `cli-session:${session.key}`,
+        group: '命令行',
+        label: session.title || session.cwd,
+        hint: `${cliSourceLabel(session.source)} · ${cliStatusLabel(session.status)}`,
+        run: finish(() => {
+          noteUserSwitch();
+          showCli({
+            kind: 'cli',
+            agentId: selectedAgentId,
+            epoch: session.epoch,
+            source: session.source,
+            sessionId: session.sessionId,
+          });
+        }),
+      });
+    }
+
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [machines, selectedAgentId, state, selectedIde, modelOptions]);
+  }, [machines, selectedAgentId, state, selectedIde, modelOptions, cliAgent, showCli, showIde, pushToast]);
 
   const q = query.trim().toLowerCase();
   const filtered = q ? items.filter(i => `${i.group} ${i.label}`.toLowerCase().includes(q)) : items;

@@ -683,12 +683,14 @@ body.is-col-resizing * {
 
 /* iOS Safari auto-zooms the whole page on focusing an input (and does not auto-zoom back); the threshold is control font-size < 16px.
    This project's body is 14px and the search box is 12.5px, both under the line; on touch / narrow screens lift them to 16px.
+   Form choices use FieldSelect, a button, so it is listed with the native controls.
    Do not block this with viewport maximum-scale — that would also disable pinch-zoom.
    This file sits outside Tailwind's @layer, so these rules outrank the text-[length:*] utilities in components. */
 @media (pointer: coarse), (max-width: 1023px) {
   input,
   textarea,
-  select {
+  select,
+  .field-select {
     font-size: 16px;
   }
 }
@@ -882,6 +884,40 @@ body.is-col-resizing * {
   background: var(--bg-3);
 }
 
+.sess-tab-open {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: inherit;
+  text-align: left;
+  padding: 0;
+}
+
+.sess-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  border: 0;
+  background: none;
+  color: var(--text-weak);
+  border-radius: var(--radius-sm);
+}
+
+.sess-close:hover,
+.sess-close:focus-visible {
+  color: var(--error);
+  background: var(--bg-2);
+}
+
 /* ------------------------------------------------------------
    Questionnaire card question area (Action Center): capped height + inner scroll.
 
@@ -1068,6 +1104,7 @@ body.is-col-resizing * {
 
 /* Composer: same background as the main pane; the input itself is a floating card (no more a spanning grey bar + hard divider) */
 .composer-dock {
+  flex-shrink: 0;
   background: var(--bg-0);
   padding: 8px 16px calc(8px + env(safe-area-inset-bottom));
 }

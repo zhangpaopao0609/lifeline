@@ -4,7 +4,7 @@
  * point at one copy — don't scatter string literals.
  *
  * - Landing lives at the root: opening the default domain is the site, no prefix
- * - Console lives at `/console`; "last viewed" hangs off its query (`?m=…&ide=…&s=…`, see view-state.ts)
+ * - Console lives at `/console`; "last viewed" hangs off its query (`?m=…&ide=…&s=…`, or `?m=…&cli=…`, see view-state.ts)
  */
 export const LANDING_PATH = '/';
 export const CONSOLE_PATH = '/console';

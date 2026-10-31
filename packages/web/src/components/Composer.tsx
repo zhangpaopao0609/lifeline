@@ -1,12 +1,24 @@
+import type { ActiveTarget } from '../store/cli';
 import { PaperPlaneRight, Square } from '@phosphor-icons/react';
 import { useEffect, useRef, useState } from 'react';
 import { cdpIssueCopy } from '../lib/cdp-issue-copy';
 import { IDE_LABELS } from '../net/protocol';
-import { sendUserMessage, stopSession } from '../net/send';
+import { selectCliModel, selectCliThinking, sendCliMessage, sendUserMessage, stopCliSession, stopSession } from '../net/send';
+import {
+  canSendForTarget,
+  cliCanStop,
+  cliComposeBlock,
+  cliSession,
+  composerDraftBucket,
+  readComposerDraft,
+  useCliStore,
+  writeComposerDraft,
+} from '../store/cli';
 import { activeTabOf, isActiveSessionWorking, isDraftTab, sendTargetOf, useIdesStore } from '../store/ides';
 import { useMachinesStore } from '../store/machines';
 import { useSessionsStore } from '../store/sessions';
 import { useUiStore } from '../store/ui';
+import { CliModelBar } from './CliModelBar';
 import { ModeModelPicker } from './ModeModelPicker';
 import { QueuePopover } from './QueuePopover';
 
@@ -14,6 +26,18 @@ const isTouchPrimary = () => window.matchMedia('(pointer: coarse)').matches;
 const CDP_BANNER_DELAY_MS = 3000;
 
 export function Composer() {
+  const target = useUiStore(s => s.activeTarget);
+  return (
+    <>
+      <div style={{ display: target.kind === 'ide' ? 'contents' : 'none' }}>
+        <IdeComposer />
+      </div>
+      {target.kind === 'cli' ? <CliComposer target={target} /> : null}
+    </>
+  );
+}
+
+function IdeComposer() {
   const ides = useIdesStore(s => s.ides);
   const selectedIde = useIdesStore(s => s.selectedIde);
   const selectedAgentId = useMachinesStore(s => s.selectedAgentId);
@@ -212,6 +236,142 @@ export function Composer() {
                 aria-label="停止生成"
                 title="停止生成"
                 onClick={() => { stopSession(); }}
+                className="send-btn bg-transparent text-[var(--text-primary)]"
+              >
+                <Square size={16} weight="fill" />
+              </button>
+            )
+          : (
+              <button
+                type="button"
+                aria-label="发送"
+                onClick={send}
+                disabled={!canSend}
+                className={`send-btn ${canSend ? 'bg-[var(--accent)] text-[var(--text-inverse)]' : 'bg-transparent text-[var(--text-weak)]'}`}
+              >
+                <PaperPlaneRight size={18} weight="fill" />
+              </button>
+            )}
+      </div>
+    </div>
+  );
+}
+
+let cliDrafts: Record<string, string> = {};
+
+function CliComposer({ target }: { target: Extract<ActiveTarget, { kind: 'cli' }> }) {
+  const bucket = composerDraftBucket(target);
+  const [draftBucket, setDraftBucket] = useState(bucket);
+  const [draft, setDraft] = useState(() => readComposerDraft(cliDrafts, target));
+  const taRef = useRef<HTMLTextAreaElement>(null);
+  const session = useCliStore(s => cliSession(s.cli, target.agentId, target.sessionId));
+  const uplinkConnected = useMachinesStore(s => s.uplinkConnected);
+  const machineConnected = useMachinesStore(s => s.machines.find(machine => machine.agentId === target.agentId)?.connected === true);
+  const requestScrollToBottom = useUiStore(s => s.requestScrollToBottom);
+  if (draftBucket !== bucket) {
+    setDraftBucket(bucket);
+    setDraft(readComposerDraft(cliDrafts, target));
+  }
+
+  const update = (text: string) => {
+    cliDrafts = writeComposerDraft(cliDrafts, target, text);
+    setDraft(text);
+  };
+  const autoGrow = () => {
+    const ta = taRef.current;
+    if (!ta)
+      return;
+    ta.style.height = 'auto';
+    ta.style.height = `${Math.min(ta.scrollHeight, 120)}px`;
+  };
+  const gate = {
+    draft,
+    ideConnected: false,
+    contentOnly: false,
+    machineOffline: !machineConnected,
+    uplinkConnected,
+    machineConnected,
+    pendingSwitch: false,
+    working: false,
+    hasIdeTarget: false,
+    cliStatus: session?.status ?? null,
+  };
+  const canSend = canSendForTarget(target, gate);
+  const canStop = cliCanStop(gate);
+  const block = cliComposeBlock(session?.status ?? null);
+  const placeholder = !uplinkConnected
+    ? '本机未连接，无法发送'
+    : !machineConnected
+        ? '机器已离线，无法发送'
+        : !session
+            ? '这条命令行会话已经不在了'
+            : block === 'busy'
+              ? (session.status === 'waiting_approval' ? '等待审批…' : '会话进行中…')
+              : session.status === 'starting'
+                ? '会话启动中…'
+                : session.status === 'error'
+                  ? '这条会话出错了'
+                  : session.status === 'idle'
+                    ? '发给命令行会话'
+                    : '这条会话已经结束';
+
+  const send = () => {
+    if (!canSend)
+      return;
+    if (!sendCliMessage({ kind: 'cli', source: target.source, sessionId: target.sessionId }, draft))
+      return;
+    update('');
+    requestAnimationFrame(autoGrow);
+    requestScrollToBottom();
+  };
+
+  // Cursor ACP writes ~/.cursor/acp-sessions/<id>. `cursor-agent --resume`
+  // reads ~/.cursor/chats/<cwd-hash>/<id>. Same id, two transcripts, so the
+  // copied command does not open this session. Leave the button off until
+  // there is a real handoff. CodeBuddy resume reads the file this session wrote.
+  const resumeCommand = target.source === 'cursor-cli' ? undefined : session?.resumeCommand;
+  return (
+    <div className="composer-dock">
+      {session && (session.catalog || resumeCommand)
+        ? (
+            <CliModelBar
+              catalog={session.catalog}
+              resumeCommand={resumeCommand}
+              showThinking={target.source !== 'cursor-cli'}
+              onModel={session.catalog && session.status === 'idle'
+                ? modelId => void selectCliModel(target, modelId)
+                : undefined}
+              onThinking={session.catalog && session.status === 'idle' && target.source !== 'cursor-cli'
+                ? thinking => void selectCliThinking(target, thinking)
+                : undefined}
+            />
+          )
+        : null}
+      <div className="content-col composer-box">
+        <textarea
+          ref={taRef}
+          value={draft}
+          rows={1}
+          onChange={(event) => { update(event.target.value); autoGrow(); }}
+          onKeyDown={(event) => {
+            if (event.key !== 'Enter' || event.shiftKey)
+              return;
+            if (event.metaKey || event.ctrlKey || !isTouchPrimary()) {
+              event.preventDefault();
+              send();
+            }
+          }}
+          placeholder={placeholder}
+          disabled={!uplinkConnected || !machineConnected || session?.status !== 'idle'}
+          className="min-w-0 flex-1 resize-none border-0 bg-transparent px-0 py-1.5 font-[inherit] text-[var(--text-primary)] outline-none disabled:opacity-60"
+        />
+        {canStop
+          ? (
+              <button
+                type="button"
+                aria-label="停止生成"
+                title="停止生成"
+                onClick={() => stopCliSession({ kind: 'cli', source: target.source, sessionId: target.sessionId })}
                 className="send-btn bg-transparent text-[var(--text-primary)]"
               >
                 <Square size={16} weight="fill" />

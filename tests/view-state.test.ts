@@ -46,6 +46,26 @@ describe('view query', () => {
     assert.deepEqual(parseViewQuery('?m=mac-1&ide=vscode&zzz=1'), { agentId: 'mac-1' });
   });
 
+  it('replaces the IDE query when the pane is Agent CLI', () => {
+    assert.equal(
+      formatViewQuery({ agentId: 'mac-1', cli: 'home' }),
+      '?m=mac-1&cli=home',
+    );
+    assert.equal(
+      formatViewQuery({ agentId: 'mac-1', cli: 'codebuddy-cli', sessionId: 'sess-1' }),
+      '?m=mac-1&cli=codebuddy-cli&cs=sess-1',
+    );
+    assert.deepEqual(parseViewQuery('?m=mac-1&cli=cursor-cli&cs=sess-2&ide=codebuddy&s=composer-9'), {
+      agentId: 'mac-1',
+      cli: 'cursor-cli',
+      sessionId: 'sess-2',
+    });
+    assert.deepEqual(parseViewQuery('?m=mac-1&cli=home&cs=leftover'), {
+      agentId: 'mac-1',
+      cli: 'home',
+    });
+  });
+
   it('returns nothing for an empty query', () => {
     assert.deepEqual(parseViewQuery(''), {});
     assert.deepEqual(parseViewQuery('?'), {});
@@ -62,6 +82,8 @@ describe('stored view', () => {
     const storage = memoryStorage();
     writeStoredView(storage, { agentId: 'mac-1', ide: 'cursor', sessionId: 'c1' });
     assert.deepEqual(readStoredView(storage), { agentId: 'mac-1', ide: 'cursor', sessionId: 'c1' });
+    writeStoredView(storage, { agentId: 'mac-1', cli: 'codebuddy-cli', sessionId: 'sess-1' });
+    assert.deepEqual(readStoredView(storage), { agentId: 'mac-1', cli: 'codebuddy-cli', sessionId: 'sess-1' });
   });
 
   it('survives garbage in localStorage', () => {
@@ -85,6 +107,16 @@ describe('resolveInitialView', () => {
     const storage = memoryStorage();
     writeStoredView(storage, { agentId: 'mac-1', ide: 'codebuddy', sessionId: 'c1' });
     assert.deepEqual(resolveInitialView('', storage), { agentId: 'mac-1', ide: 'codebuddy', sessionId: 'c1' });
+  });
+
+  it('prefers a shared CLI link over this browser\'s IDE history', () => {
+    const storage = memoryStorage();
+    writeStoredView(storage, { agentId: 'mac-old', ide: 'codebuddy', sessionId: 'c-old' });
+    assert.deepEqual(resolveInitialView('?m=mac-1&cli=cursor-cli&cs=sess-9', storage), {
+      agentId: 'mac-1',
+      cli: 'cursor-cli',
+      sessionId: 'sess-9',
+    });
   });
 
   it('does not mix a query machine with a stored session', () => {

@@ -1,8 +1,12 @@
+import type { CliSource } from '@lifeline/protocol';
+import type { ChildProcess } from 'node:child_process';
 import type { DaemonProbe } from '../commands/daemon.js';
 import type { DaemonOpts, DaemonOutcome } from '../ui.js';
-import { execSync } from 'node:child_process';
+import { execSync, spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { codebuddyAcpProfile, cursorAcpProfile } from '../../../agent/src/drivers/acp/profiles.js';
+import { buildChildEnv, withCliBinOnPath } from '../../../agent/src/drivers/acp/readiness.js';
 import { BUILD_VERSION } from '../build-version.js';
 import { applyCodeBuddyCdpArgv, applyCursorCdpArgv, revertCodeBuddyCdpArgvIfManaged, revertCursorCdpArgvIfManaged } from '../cdp-argv-state.js';
 import { loadCliConfig, LOG_DIR, saveCliConfig } from '../config.js';
@@ -406,4 +410,47 @@ export function cmdDaemonLaunchd(action: string, opts: DaemonOpts = {}, probe?: 
 
   console.error(`Unknown daemon action: ${action} (expected install | uninstall | status)`);
   process.exit(1);
+}
+
+export interface LaunchdProviderPlan {
+  command: string;
+  args: string[];
+  env: NodeJS.ProcessEnv;
+}
+
+/**
+ * launchd does not inherit an interactive PATH or API key.
+ * The spawn command is the absolute path saved at setup.
+ */
+export function planLaunchdProviderSpawn(input: {
+  source: CliSource;
+  command: string;
+  baseEnv: NodeJS.ProcessEnv;
+  apiKey?: string;
+  environment?: string;
+}): LaunchdProviderPlan {
+  if (!isAbsolute(input.command))
+    throw new Error('CLI provider path must be an absolute path');
+  const profile = input.source === 'cursor-cli' ? cursorAcpProfile : codebuddyAcpProfile;
+  const { env } = buildChildEnv({
+    source: input.source,
+    base: input.baseEnv,
+    apiKey: input.apiKey,
+    environment: input.environment,
+  });
+  return { command: input.command, args: [...profile.args], env: withCliBinOnPath(env, input.command) };
+}
+
+/** Spawn wrapper. Tests pass `spawnImpl`. Does not call `launchctl`. */
+export function spawnAbsoluteProvider(
+  plan: LaunchdProviderPlan,
+  spawnImpl: typeof spawn = spawn,
+): ChildProcess {
+  if (!isAbsolute(plan.command))
+    throw new Error('CLI provider path must be an absolute path');
+  return spawnImpl(plan.command, plan.args, {
+    detached: true,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: plan.env,
+  });
 }

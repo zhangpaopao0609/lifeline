@@ -2,6 +2,7 @@ import type { ViewHint } from './view-state';
 import { useEffect, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { sendCommand } from '../net/socket';
+import { sessionsOf, useCliStore } from '../store/cli';
 import { useIdesStore, viewedSessionIdOf } from '../store/ides';
 import { useMachinesStore } from '../store/machines';
 import { useUiStore } from '../store/ui';
@@ -38,7 +39,9 @@ export function useViewState(): void {
   const ides = useIdesStore(s => s.ides);
   const selectedIde = useIdesStore(s => s.selectedIde);
   const pendingSwitch = useUiStore(s => s.pendingSwitch);
+  const activeTarget = useUiStore(s => s.activeTarget);
   const pushToast = useUiStore(s => s.pushToast);
+  const cliAgents = useCliStore(s => s.cli.agents);
   const navigate = useNavigate();
 
   const state = ides[selectedIde];
@@ -56,7 +59,45 @@ export function useViewState(): void {
   const settled = useRef(false);
 
   useEffect(() => {
-    if (settled.current || userTookOver)
+    const agentId = target.agentId;
+    if (settled.current || userTookOver || !target.cli || !agentId)
+      return;
+    if (selectedAgentId !== agentId)
+      return;
+    if (deadlineRef.current === null)
+      deadlineRef.current = Date.now() + RESTORE_DEADLINE_MS;
+    const showHome = () => {
+      useUiStore.getState().showCliHome(agentId);
+      settled.current = true;
+    };
+    if (target.cli === 'home' || !target.sessionId) {
+      showHome();
+      return;
+    }
+    const agent = cliAgents[agentId];
+    if (!agent?.epoch) {
+      if (Date.now() > deadlineRef.current)
+        showHome();
+      return;
+    }
+    const source = target.cli;
+    const row = sessionsOf(agent).find(session => session.source === source && session.sessionId === target.sessionId);
+    if (!row) {
+      showHome();
+      return;
+    }
+    useUiStore.getState().showCli({
+      kind: 'cli',
+      agentId,
+      epoch: row.epoch,
+      source: row.source,
+      sessionId: row.sessionId,
+    });
+    settled.current = true;
+  }, [target, selectedAgentId, cliAgents]);
+
+  useEffect(() => {
+    if (settled.current || userTookOver || target.cli)
       return;
     if (!target.agentId || !target.ide || !target.sessionId)
       return;
@@ -95,15 +136,33 @@ export function useViewState(): void {
   }, [target, selectedAgentId, selectedIde, state, liveSessionId, pushToast]);
 
   useEffect(() => {
-    // No machine selected yet, or this IDE's state hasn't arrived: an empty sessionId here only means "don't know yet";
-    // overwriting with a partial record would actually lose "last viewed" on the next refresh.
-    if (!selectedAgentId || !state)
+    if (!selectedAgentId)
       return;
-    const view = { agentId: selectedAgentId, ide: selectedIde, sessionId: liveSessionId };
+    const onCli = (activeTarget.kind === 'cli' || activeTarget.kind === 'cli-home')
+      && activeTarget.agentId === selectedAgentId;
+    const showingLoadedSession = activeTarget.kind === 'cli'
+      && activeTarget.source === target.cli
+      && activeTarget.sessionId === target.sessionId;
+    // The loaded address names a CLI session. Leave it alone until that session is on screen,
+    // so IDE state cannot put `ide` and `s` back, and the home placeholder cannot drop `cs`.
+    if (target.cli && target.cli !== 'home' && target.sessionId && !settled.current && !userTookOver && !showingLoadedSession)
+      return;
+    let view: ViewHint;
+    if (onCli) {
+      view = activeTarget.kind === 'cli'
+        ? { agentId: selectedAgentId, cli: activeTarget.source, sessionId: activeTarget.sessionId }
+        : { agentId: selectedAgentId, cli: 'home' };
+    }
+    else {
+      // No machine's IDE state yet: an empty sessionId only means "don't know yet".
+      if (!state)
+        return;
+      view = { agentId: selectedAgentId, ide: selectedIde, sessionId: liveSessionId };
+    }
     writeStoredView(window.localStorage, view);
     const search = formatViewQuery(view);
     // replace: switching sessions must not push history (or extra Back). If the URL is already this, do nothing.
     if (window.location.search !== search)
       navigate({ search }, { replace: true });
-  }, [selectedAgentId, selectedIde, liveSessionId, state, navigate]);
+  }, [selectedAgentId, selectedIde, liveSessionId, state, navigate, activeTarget, target]);
 }

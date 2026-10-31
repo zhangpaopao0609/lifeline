@@ -37,6 +37,25 @@ export default defineConfig(({ mode }) => {
     plugins: [
       react(),
       tailwindcss(),
+      // The protocol barrel re-exports cli.ts, which calls node:path isAbsolute.
+      // The browser build has no Node builtins. CLI paths are POSIX (darwin only).
+      {
+        name: 'browser-node-path',
+        enforce: 'pre',
+        resolveId(id) {
+          if (id === 'node:path' || id === 'path')
+            return '\0browser-node-path';
+        },
+        load(id) {
+          if (id === '\0browser-node-path') {
+            return [
+              'export function isAbsolute(path) {',
+              '  return typeof path === "string" && path.length > 0 && path.charCodeAt(0) === 47;',
+              '}',
+            ].join('\n');
+          }
+        },
+      },
       {
         name: 'dev-banner',
         configureServer(server) {

@@ -31,8 +31,8 @@ export function FloatLayer({
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
   children: ReactNode;
-  /** Which side to float on: bottom = below, right = to the right (Radix flips if there isn't room). */
-  side?: 'bottom' | 'right';
+  /** Which side to float on. `top` keeps a bottom-edge menu on screen. Radix still flips when there is no room. */
+  side?: 'top' | 'bottom' | 'right';
   /** How to align with the trigger: horizontal when side=bottom; vertically top-aligned when side=right. */
   align?: 'left' | 'right';
   variant?: 'popover' | 'modal';

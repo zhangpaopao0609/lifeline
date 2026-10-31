@@ -1,5 +1,5 @@
-import type { ChatTab, CursorState, IdeKind } from '../net/protocol';
-import { isIdeKind } from '../net/protocol';
+import type { ChatTab, CliSource, CursorState, IdeKind } from '../net/protocol';
+import { isCliSource, isIdeKind } from '../net/protocol';
 
 /**
  * "Last viewed" = machine + IDE + session.
@@ -9,7 +9,9 @@ import { isIdeKind } from '../net/protocol';
  * server (a manual switch in the IDE is followed — see the one-shot restore in useViewState). Like window
  * order, it stays in this browser and never goes to the server.
  *
- * On the address bar it is the `/console?m=…&ide=…&s=…` query (the route owns pathname; this owns query).
+ * On the address bar it is the `/console` query (the route owns pathname; this owns query).
+ * An IDE pane is `?m=…&ide=…&s=…`. Agent CLI replaces that query:
+ * `?m=…&cli=home`, or `?m=…&cli=cursor-cli&cs=…` for one session.
  * Pure functions, no window — the environment entry is currentViewHint().
  */
 export const VIEW_STORAGE_KEY = 'ar:view';
@@ -20,8 +22,13 @@ export interface ViewState {
   sessionId: string;
 }
 
-/** A record may be partial: only a machine, only an IDE, or nothing. */
-export type ViewHint = Partial<ViewState>;
+/**
+ * A record may be partial: only a machine, only an IDE, or nothing.
+ * `cli` is set only while Agent CLI is the pane. `sessionId` is then that CLI session.
+ */
+export type ViewHint = Partial<ViewState> & {
+  cli?: 'home' | CliSource;
+};
 
 export type StorageLike = Pick<Storage, 'getItem' | 'setItem'>;
 
@@ -34,14 +41,28 @@ export function parseIdeParam(raw: unknown): IdeKind | null {
   return isIdeKind(raw) ? raw : null;
 }
 
-/** Query shaped `?m=<agentId>&ide=<ide>&s=<composerId>` (hung on `/console`); unrecognized fields are dropped. */
+/**
+ * Query hung on `/console`. Agent CLI owns the query when `cli` is present
+ * (`?m=…&cli=home` or `?m=…&cli=<source>&cs=<sessionId>`). Otherwise it is
+ * `?m=<agentId>&ide=<ide>&s=<composerId>`. Unrecognized fields are dropped.
+ */
 export function parseViewQuery(search: string): ViewHint {
   const raw = search.startsWith('?') ? search.slice(1) : search;
   if (!raw)
     return {};
   const params = new URLSearchParams(raw);
+  const agentId = params.get('m') || undefined;
+  const cli = parseCliParam(params.get('cli'));
+  if (cli) {
+    const out: ViewHint = { cli };
+    if (agentId)
+      out.agentId = agentId;
+    const sessionId = params.get('cs');
+    if (cli !== 'home' && sessionId)
+      out.sessionId = sessionId;
+    return out;
+  }
   const out: ViewHint = {};
-  const agentId = params.get('m');
   const sessionId = params.get('s');
   const ide = parseIdeParam(params.get('ide'));
   if (agentId)
@@ -53,17 +74,30 @@ export function parseViewQuery(search: string): ViewHint {
   return out;
 }
 
-/** Build the query hung after `/console` (`?m=…&ide=…&s=…`); empty if nothing is set. */
+/** Build the query hung after `/console`. Agent CLI does not keep the IDE fields. */
 export function formatViewQuery(view: ViewHint): string {
   const params = new URLSearchParams();
   if (view.agentId)
     params.set('m', view.agentId);
-  if (view.ide)
-    params.set('ide', view.ide);
-  if (view.sessionId)
-    params.set('s', view.sessionId);
+  if (view.cli) {
+    params.set('cli', view.cli);
+    if (view.cli !== 'home' && view.sessionId)
+      params.set('cs', view.sessionId);
+  }
+  else {
+    if (view.ide)
+      params.set('ide', view.ide);
+    if (view.sessionId)
+      params.set('s', view.sessionId);
+  }
   const query = params.toString();
   return query ? `?${query}` : '';
+}
+
+function parseCliParam(raw: string | null): ViewHint['cli'] | undefined {
+  if (raw === 'home')
+    return 'home';
+  return isCliSource(raw) ? raw : undefined;
 }
 
 export function readStoredView(storage: StorageLike): ViewHint {
@@ -79,6 +113,13 @@ export function readStoredView(storage: StorageLike): ViewHint {
       out.agentId = parsed.agentId;
     if (typeof parsed.sessionId === 'string' && parsed.sessionId)
       out.sessionId = parsed.sessionId;
+    const cli = parseCliParam(typeof parsed.cli === 'string' ? parsed.cli : null);
+    if (cli) {
+      out.cli = cli;
+      if (cli === 'home')
+        delete out.sessionId;
+      return out;
+    }
     const ide = parseIdeParam(parsed.ide);
     if (ide)
       out.ide = ide;
@@ -104,7 +145,7 @@ export function writeStoredView(storage: StorageLike, view: ViewHint): void {
  */
 export function resolveInitialView(search: string, storage: StorageLike): ViewHint {
   const fromUrl = parseViewQuery(search);
-  if (fromUrl.agentId || fromUrl.ide || fromUrl.sessionId)
+  if (fromUrl.agentId || fromUrl.ide || fromUrl.sessionId || fromUrl.cli)
     return fromUrl;
   return readStoredView(storage);
 }

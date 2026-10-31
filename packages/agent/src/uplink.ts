@@ -1,11 +1,12 @@
 import type { Socket } from 'socket.io-client';
-import type { IdeKind } from '../../protocol/src/index.js';
+import type { CliAcpCapability, IdeKind } from '../../protocol/src/index.js';
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { hostname } from 'node:os';
 import { io } from 'socket.io-client';
 import { BUILD_VERSION } from '../../cli/src/build-version.js';
 import { SOCKET_MAX_HTTP_BUFFER_SIZE, toAgentPlatform } from '../../protocol/src/index.js';
+import { readServerCommand } from './server-inbound.js';
 import { timingLastBubble, timingLog, timingPreview } from './timing-log.js';
 import { UplinkWatchdog } from './uplink-watchdog.js';
 
@@ -29,9 +30,26 @@ export interface UplinkOptions {
   /** Test seams; production defaults live in uplink-watchdog.ts. */
   watchdogThresholdMs?: number;
   watchdogMaxThresholdMs?: number;
+  /**
+   * Process identity for `agent:register`. index.ts mints this once and also uses it as the CLI
+   * epoch. When omitted, this Uplink mints its own so existing call sites stay valid.
+   */
+  instanceId?: string;
+  /**
+   * Static CLI capability for `agent:register`. Omit on linux and win32.
+   * Older servers ignore the field.
+   */
+  cliAcp?: CliAcpCapability;
 }
 
 const ts = () => new Date().toISOString();
+
+function invalidCommandResult(payload: unknown): { commandId: string; ok: false; errorCode: 'invalid-payload'; error: 'invalid-payload' } {
+  const commandId = payload != null && typeof payload === 'object' && 'commandId' in payload && typeof payload.commandId === 'string'
+    ? payload.commandId
+    : '';
+  return { commandId, ok: false, errorCode: 'invalid-payload', error: 'invalid-payload' };
+}
 
 export class Uplink extends EventEmitter {
   private socket: Socket;
@@ -43,11 +61,12 @@ export class Uplink extends EventEmitter {
   /** Whether this machine is content-source only (Linux). Older servers ignore it. */
   private contentSource: boolean | undefined;
   /**
-   * Process identity sent with every `agent:register`: minted once per process, so the server can
-   * tell this process reconnecting (a watchdog rebuild, a laptop wake) from a different process
-   * taking the machine's slot. Older servers ignore it.
+   * Process identity sent with every `agent:register`. Stable across watchdog rebuilds so a
+   * reconnect is not a new process. Older servers ignore it.
    */
-  private readonly instanceId = randomUUID();
+  private readonly instanceId: string;
+  /** Static CLI capability. Absent when this process does not speak CLI. */
+  private readonly cliAcp: CliAcpCapability | undefined;
   private watchdog: UplinkWatchdog;
 
   constructor(
@@ -65,6 +84,8 @@ export class Uplink extends EventEmitter {
     this.contentSource = contentSource;
     this.remoteUrl = remoteUrl.replace(/\/+$/, '');
     this.socketFactory = options?.socketFactory ?? io;
+    this.instanceId = options?.instanceId ?? randomUUID();
+    this.cliAcp = options?.cliAcp;
     this.socket = this.createSocket();
 
     this.watchdog = new UplinkWatchdog({
@@ -118,6 +139,7 @@ export class Uplink extends EventEmitter {
         // inventory" — that would misclassify a normal install as a content
         // source (review R1).
         ...(this.contentSource !== undefined ? { contentSource: this.contentSource } : {}),
+        ...(this.cliAcp !== undefined ? { cliAcp: this.cliAcp } : {}),
       });
       this.emit('connected');
       this.watchdog.notifyConnected();
@@ -137,21 +159,31 @@ export class Uplink extends EventEmitter {
       this.watchdog.notifyConnectError();
     });
 
-    // Forward inbound command:* and session:get so attachCommandHandlers / runtime
-    // can subscribe to this object like they do to a browser socket.
+    // Forward inbound command:*, session:get, and cli:sync so command handlers and the
+    // CLI manager can subscribe to this object like they do to a browser socket.
+    // Commands and cli:sync are checked here. A failed check is closed and is not emitted,
+    // so it never reaches IDE routing.
     socket.onAny((event, ...args) => {
-      if (typeof event === 'string' && (event.startsWith('command:') || event === 'session:get')) {
-        const payload = args[0] as { commandId?: string; ide?: string; text?: string; sessionId?: string } | undefined;
-        timingLog('uplink:in', {
-          event,
-          commandId: payload?.commandId,
-          ide: payload?.ide,
-          sessionId: payload?.sessionId,
-          chars: payload?.text?.length,
-          preview: payload?.text ? timingPreview(payload.text) : undefined,
-        });
-        this.emit(event, ...args);
+      if (typeof event !== 'string' || (!event.startsWith('command:') && event !== 'session:get' && event !== 'cli:sync'))
+        return;
+      if (event.startsWith('command:') || event === 'cli:sync') {
+        const read = readServerCommand(event, args[0]);
+        if (!read.ok) {
+          if (event.startsWith('command:'))
+            this.send('command:result', invalidCommandResult(args[0]));
+          return;
+        }
       }
+      const payload = args[0] as { commandId?: string; ide?: string; text?: string; sessionId?: string } | undefined;
+      timingLog('uplink:in', {
+        event,
+        commandId: payload?.commandId,
+        ide: payload?.ide,
+        sessionId: payload?.sessionId,
+        chars: payload?.text?.length,
+        preview: payload?.text ? timingPreview(payload.text) : undefined,
+      });
+      this.emit(event, ...args);
     });
 
     // Server asks for a fresh snapshot after this agent is promoted to active.
@@ -165,7 +197,7 @@ export class Uplink extends EventEmitter {
     });
 
     // The server gave this machine's slot to another process. Forwarded as its own event, not through
-    // `onAny` (which carries only `command:*` / `session:get`): the decision — stand down, or keep the
+    // `onAny` (which carries `command:*`, `session:get`, and `cli:sync`): the decision — stand down, or keep the
     // lock and wait for the next registration to take the slot back — belongs to `index.ts`, which
     // owns the lock (see superseded-outcome.ts).
     socket.on('agent:superseded', (payload?: unknown) => {

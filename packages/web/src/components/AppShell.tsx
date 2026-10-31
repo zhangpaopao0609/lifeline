@@ -1,4 +1,5 @@
 import type { CSSProperties } from 'react';
+import type { ActiveTarget } from '../store/cli';
 import { CaretDown, Warning, X } from '@phosphor-icons/react';
 import { useEffect, useRef, useState } from 'react';
 import { useLiveSessionKey } from '../hooks/useLiveSessionKey';
@@ -7,6 +8,7 @@ import { COLUMN_DEFAULT_WIDTH } from '../lib/column-width';
 import { machineLabel } from '../lib/machine-name';
 import { useColumnWidths } from '../lib/useColumnWidths';
 import { IDE_LABELS } from '../net/protocol';
+import { cliSession, cliSourceLabel, cliStatusLabel, cliTargetKey, useCliStore } from '../store/cli';
 import { useIdesStore, viewedWindowOf } from '../store/ides';
 import { useMachinesStore } from '../store/machines';
 import { useUiStore } from '../store/ui';
@@ -14,6 +16,8 @@ import { useUserStore } from '../store/user';
 import { AccountContent } from './AccountContent';
 import { ActionCenter } from './ActionCenter';
 import { Avatar } from './Avatar';
+import { CliActionBar } from './CliActionBar';
+import { CliTimeline } from './CliTimeline';
 import { CommandPalette } from './CommandPalette';
 import { Composer } from './Composer';
 import { MachineList } from './MachineList';
@@ -28,8 +32,66 @@ import { Timeline } from './Timeline';
  * state — no leaked window/read state across sessions (the core restores the position from its snapshot).
  */
 function TimelineSlot() {
+  const target = useUiStore(s => s.activeTarget);
   const liveKey = useLiveSessionKey();
+  if (target.kind === 'cli')
+    return <CliTimeline key={cliTargetKey(target)} target={target} />;
+  if (target.kind === 'cli-home')
+    return <CliHomePane />;
   return <Timeline key={liveKey || 'none'} />;
+}
+
+function TargetActionArea() {
+  const target = useUiStore(s => s.activeTarget);
+  if (target.kind === 'cli')
+    return <CliActionBar key={cliTargetKey(target)} target={target} />;
+  if (target.kind === 'cli-home')
+    return null;
+  return <ActionCenter />;
+}
+
+function CliTargetBar({ target }: { target: Extract<ActiveTarget, { kind: 'cli' }> }) {
+  const session = useCliStore(s => cliSession(s.cli, target.agentId, target.sessionId));
+  const title = session?.title || session?.cwd || '命令行会话';
+  return (
+    <div className="flex min-h-11 items-center gap-2.5 border-b border-[var(--hairline)] bg-[var(--bg-1)] px-4 py-2.5">
+      <div className="min-w-0 flex-1">
+        <div className="overflow-hidden text-ellipsis whitespace-nowrap font-semibold">{title}</div>
+        <div className="mono overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-[var(--text-weak)]">
+          {cliSourceLabel(target.source)}
+          {session ? ` · ${cliStatusLabel(session.status)}` : ''}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CliHomePane() {
+  return (
+    <div className="flex flex-1 items-center justify-center p-8 text-center text-[length:var(--text-chrome)] text-[var(--text-weak)]">
+      还没有打开的工作目录。在中间栏点 + 新建一个。
+    </div>
+  );
+}
+
+function CliHomeBar() {
+  return (
+    <div className="flex min-h-11 items-center gap-2.5 border-b border-[var(--hairline)] bg-[var(--bg-1)] px-4 py-2.5">
+      <div className="min-w-0 flex-1">
+        <div className="overflow-hidden text-ellipsis whitespace-nowrap font-semibold">Agent CLI</div>
+        <div className="text-[11px] text-[var(--text-weak)]">按工作目录</div>
+      </div>
+    </div>
+  );
+}
+
+function TargetSlot() {
+  const target = useUiStore(s => s.activeTarget);
+  if (target.kind === 'cli')
+    return <CliTargetBar target={target} />;
+  if (target.kind === 'cli-home')
+    return <CliHomeBar />;
+  return <TargetBar />;
 }
 
 function MobileSwitcher({ onClose }: { onClose: () => void }) {
@@ -129,10 +191,10 @@ function DesktopShell({ paletteOpen, onClosePalette }: { paletteOpen: boolean; o
         <SessionList />
       </div>
       <main className="shell-main">
-        <TargetBar />
+        <TargetSlot />
         <OfflineBanner />
         <TimelineSlot />
-        <ActionCenter />
+        <TargetActionArea />
         <Composer />
       </main>
       {/* Both seams are draggable; default widths stay, drag has bounds (see lib/column-width.ts);
@@ -180,7 +242,14 @@ function MobileShell({
   const ideLabel = IDE_LABELS[selectedIde];
   const ideState = ides[selectedIde];
   const pendingSwitch = useUiStore(s => s.pendingSwitch);
+  const activeTarget = useUiStore(s => s.activeTarget);
   const pendingHere = pendingSwitch && pendingSwitch.ide === selectedIde ? pendingSwitch : null;
+  const cliTitle = useCliStore((s) => {
+    if (activeTarget.kind !== 'cli')
+      return '';
+    const row = cliSession(s.cli, activeTarget.agentId, activeTarget.sessionId);
+    return row?.title || row?.cwd || '命令行会话';
+  });
   // The top bar is "machine · IDE · window" context (session name is in the next TargetBar):
   // machine / IDE read selected state; window is "the one being viewed" (the target window during an optimistic switch) — changes immediately on click, without waiting for state.
   const windowTitle = ideState ? viewedWindowOf(ideState, pendingHere)?.title : '';
@@ -197,25 +266,36 @@ function MobileShell({
               otherwise the icon is squeezed from 16px to ~12px and the whole label shifts left 4px;
               switching to a different-length window/session is a "top-bar jitter" (2026-09-16 feedback). */}
           <CaretDown size={16} className="shrink-0" />
-          <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap font-semibold">
-            {machineName}
-            {' '}
-            ·
-            {ideLabel}
-            {' '}
-            ·
-            {windowTitle || '（无窗口）'}
-          </span>
+          {activeTarget.kind === 'cli' || activeTarget.kind === 'cli-home'
+            ? (
+                <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap font-semibold">
+                  {machineName}
+                  {' '}
+                  · Agent CLI
+                  {activeTarget.kind === 'cli' ? ` · ${cliSourceLabel(activeTarget.source)} · ${cliTitle}` : ''}
+                </span>
+              )
+            : (
+                <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap font-semibold">
+                  {machineName}
+                  {' '}
+                  ·
+                  {ideLabel}
+                  {' '}
+                  ·
+                  {windowTitle || '（无窗口）'}
+                </span>
+              )}
         </button>
         <button type="button" aria-label="我的" onClick={() => setAccountOpen(true)} className="shrink-0 cursor-pointer border-0 bg-transparent p-0">
           <Avatar src={avatar} name={userId} size={28} />
         </button>
       </div>
 
-      <TargetBar />
+      <TargetSlot />
       <OfflineBanner />
       <TimelineSlot />
-      <ActionCenter />
+      <TargetActionArea />
       <Composer />
 
       {switcherOpen && <MobileSwitcher onClose={() => setSwitcherOpen(false)} />}

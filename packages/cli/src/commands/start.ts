@@ -1,8 +1,9 @@
+import type { CliConfig } from '../config.js';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { applyCodeBuddyCdpArgv, applyCursorCdpArgv } from '../cdp-argv-state.js';
-import { ensureAgentId, saveCliConfig } from '../config.js';
+import { acceptedCliPath, ensureAgentId, saveCliConfig } from '../config.js';
 import { detectServiceInvocation } from '../daemon/service-context.js';
 import { log, requireConfig } from '../ui.js';
 import { daemonProbe, ensureDaemon } from './daemon.js';
@@ -40,14 +41,12 @@ export async function runAgent(): Promise<void> {
 
   // The agent reads its settings from the environment (dotenv-style), so map
   // the CLI config onto process.env before importing it. The agent module's
-  // top-level main() takes over from here.
-  process.env.CDP_URL = config.cdpUrl;
-  process.env.REMOTE_URL = config.serverUrl;
-  process.env.AGENT_TOKEN = config.agentToken;
-  process.env.POLL_INTERVAL_MS = String(config.pollIntervalMs);
-  process.env.DEBOUNCE_MS = String(config.debounceMs);
-  if (config.agentId)
-    process.env.AGENT_ID = config.agentId;
+  // top-level main() takes over from here. Provider API keys stay in the
+  // 0600 config file; they are not copied into this process env.
+  const runtime = agentRuntimeEnv(config);
+  Object.assign(process.env, runtime);
+  delete process.env.CODEBUDDY_API_KEY;
+  delete process.env.CODEBUDDY_INTERNET_ENVIRONMENT;
 
   // Selectors: explicit config wins; otherwise use the packages/agent/selectors.json
   // shipped inside the package (launchd's cwd is "/", so the agent's cwd-relative
@@ -72,4 +71,32 @@ export async function runAgent(): Promise<void> {
   }
 
   await import('../../../agent/src/index.js');
+}
+
+/**
+ * Env for the agent process. Absolute CLI paths are forwarded.
+ * `CODEBUDDY_API_KEY` is never copied, even when the base env or the config has it.
+ */
+export function agentRuntimeEnv(config: CliConfig, base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...base };
+  env.CDP_URL = config.cdpUrl;
+  env.REMOTE_URL = config.serverUrl;
+  env.AGENT_TOKEN = config.agentToken;
+  env.POLL_INTERVAL_MS = String(config.pollIntervalMs);
+  env.DEBOUNCE_MS = String(config.debounceMs);
+  if (config.agentId)
+    env.AGENT_ID = config.agentId;
+  const cursor = acceptedCliPath(config.cursorCliPath);
+  const codebuddy = acceptedCliPath(config.codebuddyCliPath);
+  if (cursor)
+    env.LIFELINE_CURSOR_CLI = cursor;
+  else
+    delete env.LIFELINE_CURSOR_CLI;
+  if (codebuddy)
+    env.LIFELINE_CODEBUDDY_CLI = codebuddy;
+  else
+    delete env.LIFELINE_CODEBUDDY_CLI;
+  delete env.CODEBUDDY_API_KEY;
+  delete env.CODEBUDDY_INTERNET_ENVIRONMENT;
+  return env;
 }

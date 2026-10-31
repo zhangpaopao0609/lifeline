@@ -295,6 +295,30 @@ export class StateManager extends EventEmitter {
     this.emit('state:patch', { windows: merged, activeWindowId });
   }
 
+  /** Local folder for one project window. `null` clears a path that is no longer local. */
+  updateWindowWorkspacePath(windowId: string, workspacePath: string | null): void {
+    if (!windowId)
+      return;
+    const windows = this.currentState.windows;
+    const idx = windows.findIndex(w => w.id === windowId);
+    if (idx < 0)
+      return;
+    const nextPath = workspacePath || undefined;
+    if (windows[idx].workspacePath === nextPath)
+      return;
+    const next = windows.slice();
+    if (nextPath) {
+      next[idx] = { ...windows[idx], workspacePath: nextPath };
+    }
+    else {
+      const copy = { ...windows[idx] };
+      delete copy.workspacePath;
+      next[idx] = copy;
+    }
+    this.currentState = { ...this.currentState, windows: next };
+    this.emit('state:patch', { windows: next });
+  }
+
   /** Stamp one window's sidebar tabs without dropping the rest of the window list. */
   updateWindowChatTabs(windowId: string, chatTabs: CursorWindow['chatTabs']): void {
     if (!windowId || !Array.isArray(chatTabs) || chatTabs.length === 0)

@@ -86,6 +86,20 @@ describe('groupTabsByWindow', () => {
     });
     assert.deepEqual(groups.map(g => g.windowId), ['w1', 'w2']);
   });
+
+  it('carries a project window\'s local path and leaves agents windows without one', () => {
+    const groups = groupTabsByWindow({
+      activeWindowId: 'w1',
+      windows: [
+        { id: 'w1', title: 'proj', url: '', workspacePath: '/Users/me/proj' },
+        { id: 'agents', title: 'Agents', url: '', kind: 'agents', workspacePath: '/Users/me/proj' },
+      ],
+    });
+    assert.equal(groups[0].workspacePath, '/Users/me/proj');
+    assert.equal(groups[0].kind, undefined);
+    assert.equal(groups[1].kind, 'agents');
+    assert.equal(groups[1].workspacePath, undefined);
+  });
 });
 
 describe('orderGroups', () => {

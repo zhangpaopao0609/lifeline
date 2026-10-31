@@ -1,12 +1,15 @@
 import type { IdeKind } from '../net/protocol';
-import { ArrowCircleUp, Cpu, Database, Plus, WarningCircle } from '@phosphor-icons/react';
+import { ArrowCircleUp, Cpu, Database, Plus, TerminalWindow, WarningCircle } from '@phosphor-icons/react';
 import { useState } from 'react';
 import { machineNotice } from '../lib/duplicate-agent';
 import { machineLabel } from '../lib/machine-name';
+import { noteUserSwitch } from '../lib/useViewState';
 import { isOutdated } from '../lib/version';
 import { IDE_KINDS, IDE_LABELS } from '../net/protocol';
+import { cliRailDot, useCliStore, visibleCliSources } from '../store/cli';
 import { useIdesStore } from '../store/ides';
 import { useMachinesStore } from '../store/machines';
+import { useUiStore } from '../store/ui';
 import { EnrollDialog } from './EnrollDialog';
 import { MachineRowMenu } from './MachineRowMenu';
 
@@ -17,8 +20,10 @@ export function MachineList({ onNavigate }: { onNavigate?: () => void }) {
   const cliLatest = useMachinesStore(s => s.cliLatest);
   const selectMachine = useMachinesStore(s => s.selectMachine);
   const ides = useIdesStore(s => s.ides);
+  const cliAgents = useCliStore(s => s.cli.agents);
   const selectedIde = useIdesStore(s => s.selectedIde);
   const setSelectedIde = useIdesStore(s => s.setSelectedIde);
+  const activeTarget = useUiStore(s => s.activeTarget);
   const [enrollOpen, setEnrollOpen] = useState(false);
   // Content-only machines (remote dev boxes) don't occupy a machine slot: they have no live state, so they go in the "content sources" group, expandable to manage.
   const [showContentSources, setShowContentSources] = useState(false);
@@ -33,6 +38,9 @@ export function MachineList({ onNavigate }: { onNavigate?: () => void }) {
       {liveMachines.map((m) => {
         const selected = m.agentId === selectedAgentId;
         const notice = machineNotice(m);
+        const cliAgent = cliAgents[m.agentId];
+        const liveSessions = selected && cliAgent?.epoch ? cliAgent.order.length : undefined;
+        const cliDot = cliRailDot(m.connected, visibleCliSources(m), liveSessions);
         return (
           <div key={m.agentId}>
             {/* Don't absolutely-position ⋯ over the row: a 44px hit area would cover the trailing "offline / updatable"
@@ -100,12 +108,12 @@ export function MachineList({ onNavigate }: { onNavigate?: () => void }) {
                 const n = status?.pendingApprovals ?? 0;
                 // When the machine is offline, IDE status is frozen and a green dot would be a lie.
                 const ideOnline = m.connected && status?.connected === true;
-                const active = selected && ide === selectedIde;
+                const active = selected && activeTarget.kind === 'ide' && ide === selectedIde;
                 return (
                   <button
                     key={ide}
                     type="button"
-                    onClick={() => { selectMachine(m.agentId); setSelectedIde(ide); onNavigate?.(); }}
+                    onClick={() => { noteUserSwitch(); selectMachine(m.agentId); setSelectedIde(ide); useUiStore.getState().showIde(ide); onNavigate?.(); }}
                     className={`ml-5 flex w-[calc(100%-20px)] items-center gap-2 rounded-[var(--radius-md)] border-0 px-2.5 py-1.5 text-left text-[length:var(--text-chrome)] text-[var(--text-secondary)] ${
                       active ? 'bg-[var(--bg-3)]' : 'bg-transparent'
                     }`}
@@ -125,6 +133,26 @@ export function MachineList({ onNavigate }: { onNavigate?: () => void }) {
                   </button>
                 );
               })}
+              <button
+                type="button"
+                onClick={() => {
+                  noteUserSwitch();
+                  selectMachine(m.agentId);
+                  useUiStore.getState().showCliHome(m.agentId);
+                  onNavigate?.();
+                }}
+                className={`ml-5 flex w-[calc(100%-20px)] items-center gap-2 rounded-[var(--radius-md)] border-0 px-2.5 py-1.5 text-left text-[length:var(--text-chrome)] text-[var(--text-secondary)] ${
+                  selected && (activeTarget.kind === 'cli' || activeTarget.kind === 'cli-home') && activeTarget.agentId === m.agentId
+                    ? 'bg-[var(--bg-3)]'
+                    : 'bg-transparent'
+                }`}
+              >
+                <TerminalWindow size={14} />
+                <span className="flex-1">Agent CLI</span>
+                {cliDot !== 'hidden' && (
+                  <span className={`dot-sm ${cliDot === 'on' ? 'bg-[var(--ok)]' : 'bg-[var(--text-weak)]'}`} />
+                )}
+              </button>
             </div>
           </div>
         );
@@ -152,10 +180,12 @@ export function MachineList({ onNavigate }: { onNavigate?: () => void }) {
             // so you could never see this machine's sessions. Also switch to an IDE it actually has content for,
             // otherwise the list filters by the current IDE → it looks like "this machine has no sessions".
             const onSelect = () => {
+              noteUserSwitch();
               const ide = m.contentIdes?.[0];
               if (ide && !m.contentIdes?.includes(selectedIde))
                 setSelectedIde(ide);
               selectMachine(m.agentId);
+              useUiStore.getState().showIde(ide ?? selectedIde);
               onNavigate?.();
             };
             return (

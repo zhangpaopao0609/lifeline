@@ -52,6 +52,9 @@ export interface TabGroup {
   windowId: string;
   title: string;
   tabs: ChatTab[];
+  kind?: CursorWindow['kind'];
+  /** Local project folder. Agents windows never carry one. */
+  workspacePath?: string;
 }
 
 /**
@@ -84,11 +87,17 @@ export function groupTabsByWindow(state: Pick<CursorState, 'chatTabs' | 'windows
       ids.push(id);
   }
 
-  return ids.map(windowId => ({
-    windowId,
-    title: windows.find(w => w.id === windowId)?.title ?? '当前窗口',
-    tabs: buckets.get(windowId) ?? [],
-  }));
+  return ids.map((windowId) => {
+    const win = windows.find(w => w.id === windowId);
+    const workspacePath = win?.kind === 'agents' ? undefined : win?.workspacePath;
+    return {
+      windowId,
+      title: win?.title ?? '当前窗口',
+      tabs: buckets.get(windowId) ?? [],
+      ...(win?.kind ? { kind: win.kind } : {}),
+      ...(workspacePath ? { workspacePath } : {}),
+    };
+  });
 }
 
 /**
