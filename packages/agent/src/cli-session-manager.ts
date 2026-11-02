@@ -31,6 +31,7 @@ import { AcpTimelineAssembler } from './drivers/acp/assemble.js';
 import { catalogFreshness, readStoredCatalog, writeStoredCatalog } from './drivers/acp/catalog-disk.js';
 import { codebuddyProjectSlug, createCodebuddyCliFollow, projectCodebuddyCliGrowth, readCodebuddyCliGrowth } from './drivers/acp/codebuddy-cli-transcript.js';
 import { peekCursorModels } from './drivers/acp/cursor-models.js';
+import { describeDshToolUpdate } from './drivers/acp/dsh-update.js';
 import { JsonlRpcError } from './drivers/acp/jsonl-rpc.js';
 import { acpProfileFor } from './drivers/acp/profiles.js';
 import { currentModelLabel, cursorEffortOf, cursorListedId, cursorListIdFromParameters, cursorModelFamily, impliedCursorEffort, readCursorParameters, readSessionCatalog, readSessionConfigIds, resolveCursorListSelection, rewriteCursorEffort } from './drivers/acp/session-catalog.js';
@@ -907,6 +908,9 @@ export class CliSessionManager {
   /** A rejected prompt ends the turn. Only an unexpected `exit` is a crash. */
   private failPrompt(session: LiveSession): void {
     this.finishPrompt(session);
+    if (session.source === 'dsh-cli' && !session.closed && !session.crashed) {
+      this.setStatus(session, 'idle', 'DeepSeek Harness 请求失败，请检查本机模型凭据和服务配置后重试。');
+    }
   }
 
   private crashSession(session: LiveSession): void {
@@ -1131,7 +1135,8 @@ export class CliSessionManager {
       return;
     if (event.type === 'update') {
       this.publish(session, () => {
-        session.assembler.apply(event.update, session.capturingHistory ? { replayUser: true } : undefined);
+        const update = session.source === 'dsh-cli' ? describeDshToolUpdate(event.update) : event.update;
+        session.assembler.apply(update, session.capturingHistory ? { replayUser: true } : undefined);
       });
       return;
     }

@@ -66,8 +66,12 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     result(id, { configOptions: configOptions() });
   }
   else if (method === 'session/prompt') {
+    if (params.prompt[0]?.text === '__FAIL__') {
+      send({ jsonrpc: '2.0', id, error: { code: -32603, message: 'turn failed: local test authentication error' } });
+      return;
+    }
     prompt = id;
-    update({ sessionUpdate: 'tool_call', toolCallId: 'tool-1', title: 'Run project tests', kind: 'execute', status: 'pending' });
+    update({ sessionUpdate: 'tool_call', toolCallId: 'tool-1', title: 'bash', kind: 'other', status: 'pending', rawInput: { description: 'Run project tests', command: 'npm test', justification: 'Run tests in the temporary workspace.' } });
     send({
       jsonrpc: '2.0',
       id: 'permission-1',

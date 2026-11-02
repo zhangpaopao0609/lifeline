@@ -750,8 +750,7 @@ function applyStatus(state: CliState, agentId: string, status: CliStatus): void 
     session.catalog = copyCatalog(status.catalog);
   if (status.resumeCommand !== undefined)
     session.resumeCommand = status.resumeCommand;
-  if (status.error !== undefined)
-    session.error = status.error;
+  session.error = status.error;
 }
 
 function copyCatalog(catalog: CliModelCatalog): CliModelCatalog {

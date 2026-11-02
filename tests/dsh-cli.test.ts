@@ -7,6 +7,7 @@ import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { commandPayloadSchema } from '@lifeline/protocol';
 import { AcpClient } from '../packages/agent/src/drivers/acp/client.js';
+import { describeDshToolUpdate } from '../packages/agent/src/drivers/acp/dsh-update.js';
 import { buildLiveAcpClientOptions, createLiveCliEntry, openLiveAcpClient } from '../packages/agent/src/drivers/acp/live-entry.js';
 import { acpProfileFor, dshAcpProfile } from '../packages/agent/src/drivers/acp/profiles.js';
 import { cliResumeCommand, readCliSessionLedger } from '../packages/agent/src/drivers/acp/session-ledger.js';
@@ -91,6 +92,15 @@ describe('DeepSeek Harness CLI', () => {
     assert.equal(dshAcpProfile.mapOptionKind('allow_always'), 'unknown');
   });
 
+  it('describes real DSH tool arguments while bounding the approval preview', () => {
+    const raw = { sessionUpdate: 'tool_call', title: 'bash', rawInput: { description: 'Write marker', command: 'printf ok > marker.txt', justification: 'Write inside the test workspace.' } };
+    const result = describeDshToolUpdate(raw) as typeof raw;
+    assert.equal(result.title, 'Write marker\nprintf ok > marker.txt\nWrite inside the test workspace.');
+    assert.equal(raw.title, 'bash');
+    assert.equal((describeDshToolUpdate({ ...raw, rawInput: { command: 'x'.repeat(5000) } }) as typeof raw).title.length, 4000);
+    assert.equal(describeDshToolUpdate({ sessionUpdate: 'tool_call', title: 'tool' }) != null, true);
+  });
+
   for (const decision of ['allow-once', 'reject-once', 'cancelled'] as const) {
     it(`writes a ${decision} permission response and closes through session/close`, async () => {
       const dir = mkdtempSync(join(tmpdir(), 'lifeline-dsh-permission-'));
@@ -160,7 +170,7 @@ describe('DeepSeek Harness CLI', () => {
       assert.equal(readCliSessionLedger(ledger)[0]?.thinking, 'high');
       assert.deepEqual(entry.manager.prompt({ ...target, text: 'Run tests', clientMessageId: 'message-1' }), { ok: true });
       const approval = await until(() => emitted.find(item => item.event === 'cli:approval')?.payload.approval);
-      assert.equal(approval.title, 'Run project tests');
+      assert.equal(approval.title, 'Run project tests\nnpm test\nRun tests in the temporary workspace.');
       assert.deepEqual(approval.options.map((option: { kind: string }) => option.kind), ['allow_once', 'reject_once']);
       assert.deepEqual(await entry.manager.respond({ ...target, approvalId: approval.approvalId, response: { outcome: 'selected', optionId: 'allow-once' } }), { ok: true });
       await until(() => status()?.status === 'idle' ? true : undefined);
@@ -169,6 +179,10 @@ describe('DeepSeek Harness CLI', () => {
       await until(() => status()?.status === 'waiting_approval' ? true : undefined);
       assert.deepEqual(await entry.manager.stop(target), { ok: true });
       await until(() => status()?.status === 'idle' ? true : undefined);
+      assert.deepEqual(entry.manager.prompt({ ...target, text: '__FAIL__', clientMessageId: 'message-fail' }), { ok: true });
+      await until(() => status()?.error ? true : undefined);
+      assert.equal(status().status, 'idle');
+      assert.match(status().error, /DeepSeek Harness 请求失败/);
       await entry.manager.closeAll();
       restored = createLiveCliEntry({ ...options, epoch: '22222222-2222-4222-8222-222222222222' });
       await restored.manager.restore();

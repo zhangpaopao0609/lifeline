@@ -38,6 +38,15 @@ import {
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 
+it('clears a recovered prompt error when a new CLI status arrives', () => {
+  let state = createCliState();
+  ({ state } = applyCliEvent(state, snapshotEvent('agent-a', snap('epoch-a', [snapSession()]), 0)));
+  ({ state } = applyCliEvent(state, { type: 'status', agentId: 'agent-a', status: { epoch: 'epoch-a', source: 'cursor-cli', sessionId: 'sess-1', status: 'idle', error: 'Request failed' } }));
+  assert.equal(cliSession(state, 'agent-a', 'sess-1')?.error, 'Request failed');
+  ({ state } = applyCliEvent(state, { type: 'status', agentId: 'agent-a', status: { epoch: 'epoch-a', source: 'cursor-cli', sessionId: 'sess-1', status: 'running' } }));
+  assert.equal(cliSession(state, 'agent-a', 'sess-1')?.error, undefined);
+});
+
 function readSource(rel: string): string {
   try {
     return readFileSync(join(root, rel), 'utf8');
