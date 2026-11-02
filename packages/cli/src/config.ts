@@ -22,6 +22,8 @@ export interface CliConfig {
   cursorCliPath?: string;
   /** Absolute path of the CodeBuddy ACP binary. Relative paths are not accepted. */
   codebuddyCliPath?: string;
+  /** Absolute path of DeepSeek Harness (`dsh --profile acp`). */
+  dshCliPath?: string;
   /** CodeBuddy headless credential. Never log, wire, or put this in an error string. */
   codebuddyApiKey?: string;
   /** Value written to `CODEBUDDY_INTERNET_ENVIRONMENT` for the ACP child. */
@@ -41,6 +43,7 @@ const KNOWN_CONFIG_KEYS = new Set([
   'includeProcess',
   'cursorCliPath',
   'codebuddyCliPath',
+  'dshCliPath',
   'codebuddyApiKey',
   'codebuddyInternetEnvironment',
 ]);
@@ -132,11 +135,12 @@ export function ensureAgentId(
   return next;
 }
 
-export type CliProviderSource = 'cursor-cli' | 'codebuddy-cli';
+export type CliProviderSource = 'cursor-cli' | 'codebuddy-cli' | 'dsh-cli';
 
 const CLI_BINARY_NAMES: Record<CliProviderSource, string> = {
   'cursor-cli': 'cursor-agent',
   'codebuddy-cli': 'codebuddy',
+  'dsh-cli': 'dsh',
 };
 
 export interface PersistedCliProviderInput {
@@ -168,6 +172,7 @@ export function withPersistedCliProviders(input: PersistedCliProviderInput): Cli
   const next: CliConfig = { ...input.config };
   const cursorCliPath = chooseProviderPath(input.existing?.cursorCliPath, input.config.cursorCliPath, input.lookup?.('cursor-cli'));
   const codebuddyCliPath = chooseProviderPath(input.existing?.codebuddyCliPath, input.config.codebuddyCliPath, input.lookup?.('codebuddy-cli'));
+  const dshCliPath = chooseProviderPath(input.existing?.dshCliPath, input.config.dshCliPath, input.lookup?.('dsh-cli'));
   if (cursorCliPath)
     next.cursorCliPath = cursorCliPath;
   else
@@ -176,6 +181,10 @@ export function withPersistedCliProviders(input: PersistedCliProviderInput): Cli
     next.codebuddyCliPath = codebuddyCliPath;
   else
     delete next.codebuddyCliPath;
+  if (dshCliPath)
+    next.dshCliPath = dshCliPath;
+  else
+    delete next.dshCliPath;
   const key = input.codebuddyApiKey ?? input.existing?.codebuddyApiKey;
   if (typeof key === 'string' && key.length > 0)
     next.codebuddyApiKey = key;
@@ -219,7 +228,7 @@ export function acceptedCliPath(value: string | undefined): string | undefined {
 }
 
 function assertAbsoluteProviderPaths(config: CliConfig): void {
-  for (const value of [config.cursorCliPath, config.codebuddyCliPath]) {
+  for (const value of [config.cursorCliPath, config.codebuddyCliPath, config.dshCliPath]) {
     if (value == null || value === '')
       continue;
     if (typeof value !== 'string' || !isAbsolute(value))
@@ -254,6 +263,9 @@ function normalizeCliConfig(raw: Record<string, unknown>): CliConfig | null {
   const codebuddyCliPath = acceptedCliPath(typeof raw.codebuddyCliPath === 'string' ? raw.codebuddyCliPath : undefined);
   if (codebuddyCliPath)
     config.codebuddyCliPath = codebuddyCliPath;
+  const dshCliPath = acceptedCliPath(typeof raw.dshCliPath === 'string' ? raw.dshCliPath : undefined);
+  if (dshCliPath)
+    config.dshCliPath = dshCliPath;
   if (typeof raw.codebuddyApiKey === 'string' && raw.codebuddyApiKey.length > 0)
     config.codebuddyApiKey = raw.codebuddyApiKey;
   if (typeof raw.codebuddyInternetEnvironment === 'string' && raw.codebuddyInternetEnvironment.length > 0)

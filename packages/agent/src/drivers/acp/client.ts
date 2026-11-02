@@ -36,6 +36,7 @@ export class AcpClient {
   private readonly permissionWaiters: PermissionWaiter[] = [];
   private providerSessionId: string | undefined;
   private exitEmitted = false;
+  private closePromise?: Promise<void>;
 
   constructor(options: AcpClientOptions) {
     this.profile = options.profile;
@@ -94,12 +95,13 @@ export class AcpClient {
    * Reattach a CLI session after this process died.
    * History arrives as `session/update` before this resolves. The id we asked
    * for stays the provider id when the CLI does not echo one.
+   * DSH's `session/resume` restores context without replaying history.
    */
   async sessionLoad(input: { cwd: string; sessionId: string }): Promise<AcpSessionNewResult> {
-    const result = await this.capture(this.rpc.sendRequest('session/load', {
+    const result = await this.capture(this.rpc.sendRequest(this.profile.sessionLoadMethod ?? 'session/load', {
       cwd: input.cwd,
       sessionId: input.sessionId,
-      mcpServers: [],
+      ...(this.profile.sessionLoadMethod ? {} : { mcpServers: [] }),
     }).response);
     if (!isRecord(result))
       throw new JsonlRpcError('provider-error', 'session/load missing result');
@@ -139,7 +141,21 @@ export class AcpClient {
   }
 
   close(): Promise<void> {
-    return this.rpc.close();
+    this.closePromise ??= this.closeSession();
+    return this.closePromise;
+  }
+
+  private async closeSession(): Promise<void> {
+    if (this.profile.sessionCloseMethod && this.providerSessionId && !this.exitEmitted) {
+      // Let a permission-blocked prompt settle before DSH drains and persists it.
+      for (const waiter of this.permissionWaiters)
+        settleWaiter(waiter, { outcome: { outcome: 'cancelled' } });
+      this.permissionWaiters.length = 0;
+      await this.rpc.sendRequest(this.profile.sessionCloseMethod, {
+        sessionId: this.providerSessionId,
+      }, { timeoutMs: 2000 }).response.catch(() => {});
+    }
+    await this.rpc.close();
   }
 
   private requireProviderSession(): string {

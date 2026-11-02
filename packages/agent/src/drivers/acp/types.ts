@@ -11,6 +11,9 @@ export interface AcpProfile {
   readonly source: CliSource;
   readonly command: string;
   readonly args: readonly string[];
+  /** DSH resumes context without replaying the previous transcript. */
+  readonly sessionLoadMethod?: 'session/resume';
+  readonly sessionCloseMethod?: 'session/close';
   mapOptionKind: (kind: string) => CliApprovalOptionKind;
   /**
    * `approvalId` and `sessionId` are caller-supplied Lifeline ids.

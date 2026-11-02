@@ -50,6 +50,14 @@ lifeline setup --server-url http://<your-lifeline-server>
 
 `lifeline status` 会与最新版比对，落后即提示 `lifeline update`。
 
+## DeepSeek Harness 命令行（macOS）
+
+Lifeline 也支持通过 ACP profile 创建和控制 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 会话。请先在本机安装 `dsh` 并配置好它的模型服务凭据。`lifeline setup` 会从 PATH 自动发现 `dsh`；已安装的用户也可以在 `~/.lifeline/config.json` 中设置绝对路径 `dshCliPath`，再运行 `lifeline start`。
+
+在控制台新建 CLI 会话，选择 **DeepSeek Harness**，填写工作目录的绝对路径，即可选择模型和推理强度、查看回答与工具活动、单次允许或拒绝操作、停止任务。agent 在本机启动 `dsh --profile acp`，凭据沿用本地 DSH 配置。
+
+Lifeline agent 重启后会通过 `session/resume` 恢复 DSH 的模型上下文。DSH 的 ACP 接口不回放历史消息，因此恢复后的网页时间线从空白开始显示后续活动。DSH 不提供终端恢复命令按钮。此功能沿用 Lifeline 现有的 macOS CLI 控制范围。
+
 ## 卸载
 
 ```bash

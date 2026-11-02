@@ -17,7 +17,7 @@ export function CliApprovalCard({
     <fieldset disabled={card.disabled} className="m-0 min-w-0 border-0 p-0">
       <div className="rounded-[var(--radius-md)] border border-[var(--hairline)] bg-[var(--bg-2)] px-3.5 py-2.5">
         <div className="eyebrow mb-1 !text-[var(--warning)]">待审批</div>
-        <div className="text-[length:var(--text-body)] text-[var(--text-primary)]">{approval.title}</div>
+        <div className="whitespace-pre-wrap break-words text-[length:var(--text-body)] text-[var(--text-primary)]">{approval.title}</div>
         {card.notice === 'already-resolved' && (
           <p className="mt-1 text-[length:var(--text-chrome)] text-[var(--text-secondary)]">该审批已处理</p>
         )}

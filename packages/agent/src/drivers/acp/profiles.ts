@@ -1,4 +1,4 @@
-import type { CliApproval, CliApprovalOptionKind } from '@lifeline/protocol';
+import type { CliApproval, CliApprovalOptionKind, CliSource } from '@lifeline/protocol';
 import type { AcpEnvInput, AcpProfile } from './types.js';
 
 const CURSOR_KINDS = new Map<string, CliApprovalOptionKind>([
@@ -11,6 +11,11 @@ const CODEBUDDY_KINDS = new Map<string, CliApprovalOptionKind>([
   ['allow_always', 'allow_always'],
   ['allow', 'allow_once'],
   ['reject', 'reject_once'],
+]);
+
+const DSH_KINDS = new Map<string, CliApprovalOptionKind>([
+  ['allow_once', 'allow_once'],
+  ['reject_once', 'reject_once'],
 ]);
 
 export type { AcpProfile } from './types.js';
@@ -44,6 +49,27 @@ export const codebuddyAcpProfile: AcpProfile = {
     return codebuddyEnv(input);
   },
 };
+
+export const dshAcpProfile: AcpProfile = {
+  source: 'dsh-cli',
+  command: 'dsh',
+  args: ['--profile', 'acp'],
+  sessionLoadMethod: 'session/resume',
+  sessionCloseMethod: 'session/close',
+  mapOptionKind: kind => mapKind(DSH_KINDS, kind),
+  toCliApproval: (raw, approvalId, sessionId) => buildCliApproval(DSH_KINDS, raw, approvalId, sessionId),
+  childEnv: input => omitCodebuddyEnv(input?.base),
+};
+
+const ACP_PROFILES: Record<CliSource, AcpProfile> = {
+  'cursor-cli': cursorAcpProfile,
+  'codebuddy-cli': codebuddyAcpProfile,
+  'dsh-cli': dshAcpProfile,
+};
+
+export function acpProfileFor(source: CliSource): AcpProfile {
+  return ACP_PROFILES[source];
+}
 
 function mapKind(table: ReadonlyMap<string, CliApprovalOptionKind>, kind: string): CliApprovalOptionKind {
   return table.get(kind) ?? 'unknown';

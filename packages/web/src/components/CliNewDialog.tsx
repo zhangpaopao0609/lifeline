@@ -51,7 +51,7 @@ export function CliNewDialog({
   }, [source]);
 
   useEffect(() => {
-    if (source !== 'codebuddy-cli' || !trimmed.startsWith('/'))
+    if (!source || source === 'cursor-cli' || !trimmed.startsWith('/'))
       return;
     return watchCatalog(source, trimmed, source, setLoaded);
   }, [source, trimmed]);

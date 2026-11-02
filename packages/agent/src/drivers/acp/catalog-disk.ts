@@ -2,6 +2,7 @@ import type { CliModelCatalog, CliModelChoice, CliSource, CliThinkingLevel } fro
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { CLI_SOURCES } from '@lifeline/protocol';
 
 /**
  * How long a saved list is answered as-is. Past this, opening the dialog also
@@ -65,7 +66,7 @@ function readFile(path: string): Partial<Record<CliSource, StoredCatalog>> {
   if (!isRecord(parsed) || !isRecord(parsed.sources))
     return {};
   const rows: Partial<Record<CliSource, StoredCatalog>> = {};
-  for (const source of ['cursor-cli', 'codebuddy-cli'] as const) {
+  for (const source of CLI_SOURCES) {
     const row = readRow(parsed.sources[source]);
     if (row)
       rows[source] = row;
