@@ -90,6 +90,8 @@ export interface JsonlRpcExitInfo {
 
 export interface JsonlRpcOptions {
   command: string;
+  /** Codex app-server uses JSON-RPC messages without the jsonrpc member. */
+  omitJsonrpc?: boolean;
   args?: readonly string[];
   cwd?: string;
   env?: NodeJS.ProcessEnv;
@@ -116,6 +118,7 @@ interface Pending {
  * `response` resolves when the matching id comes back.
  */
 export class JsonlRpc {
+  private readonly omitJsonrpc: boolean;
   readonly killGraceMs: number;
 
   private readonly command: string;
@@ -139,6 +142,7 @@ export class JsonlRpc {
   private failed = false;
 
   constructor(options: JsonlRpcOptions) {
+    this.omitJsonrpc = options.omitJsonrpc === true;
     this.killGraceMs = options.killGraceMs ?? DEFAULT_KILL_GRACE_MS;
     this.command = options.command;
     this.args = [...(options.args ?? [])];
@@ -336,6 +340,8 @@ export class JsonlRpc {
   }
 
   private writeMessage(body: Record<string, unknown>): Promise<void> {
+    if (this.omitJsonrpc)
+      delete body.jsonrpc;
     return this.enqueueWrite(`${JSON.stringify(body)}\n`);
   }
 

@@ -161,6 +161,7 @@ async function main(): Promise<void> {
     void cliSessions.readCatalog({ source: 'codebuddy-cli', cwd: homedir() });
   void liveCli.probe('cursor-cli');
   void liveCli.probe('codebuddy-cli');
+  void liveCli.probe('codex-cli');
   attachLiveCliListeners((event, handler) => {
     uplink.on(event, handler);
   }, liveCli);

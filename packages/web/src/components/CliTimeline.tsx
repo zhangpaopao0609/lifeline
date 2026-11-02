@@ -50,6 +50,11 @@ export function CliTimeline({ target }: { target: Extract<ActiveTarget, { kind: 
           </button>
         </div>
       )}
+      {session?.error && (
+        <div role="alert" className="content-col px-4 pt-3 text-[length:var(--text-chrome)] text-[var(--error)]">
+          {session.error}
+        </div>
+      )}
       {!session && (
         <div className="tl-hint">这条命令行会话已经不在了。</div>
       )}

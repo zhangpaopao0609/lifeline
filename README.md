@@ -49,6 +49,14 @@ lifeline setup --server-url http://<your-lifeline-server>
 
 `lifeline status` compares against the latest; if you are behind it tells you to run `lifeline update`.
 
+## Codex CLI (macOS)
+
+Install the official [Codex CLI](https://developers.openai.com/codex/cli) and run `codex login` on the controlled machine. `lifeline setup` discovers `codex` on PATH; existing installations can set an absolute `codexCliPath` in `~/.lifeline/config.json` and run `lifeline start` after upgrading the agent and server.
+
+In Agent CLI, create a session with **Codex** and an absolute working directory. Lifeline uses the native `codex app-server --listen stdio://` protocol and the CLI's local authentication and sandbox settings. It reuses the existing model/effort picker, timeline, one-shot command/file approvals, stop button, and restart recovery. Closing a session unsubscribes and stops its process without archiving the saved Codex thread. The terminal resume command uses `codex resume`.
+
+Use a Codex CLI version that supports app-server v2 and `thread/resume`; paginated history also requires `thread/items/list`. Model catalogs describe the CLI's available choices, not guaranteed account access. Only one-shot command/file approvals are exposed; persistent grants and unsupported interactive tool requests are not accepted automatically. This retains Lifeline's existing macOS CLI control scope.
+
 ## Uninstall
 
 ```bash
