@@ -60,7 +60,10 @@ export function writeCliSessionLedger(path: string, records: readonly CliSession
  * One shell line for the machine's terminal. CodeBuddy gets `--model` and
  * `--effort`. Cursor gets `--model` with the effort already in the id.
  */
-export function cliResumeCommand(record: CliSessionRecord, platform: NodeJS.Platform = process.platform): string {
+export function cliResumeCommand(record: CliSessionRecord, platform: NodeJS.Platform = process.platform): string | undefined {
+  // DSH is a profile launcher; it has no terminal `--resume <id>` command.
+  if (record.source === 'dsh-cli')
+    return undefined;
   const quote = platform === 'win32' ? cmdQuote : posixQuote;
   const cd = platform === 'win32' ? `cd /d ${quote(record.cwd)}` : `cd ${quote(record.cwd)}`;
   const args = record.source === 'cursor-cli'

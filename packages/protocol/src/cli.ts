@@ -1,7 +1,7 @@
 import type { ChatElement } from './wire.js';
 import { isAbsolute } from 'node:path';
 
-export const CLI_SOURCES = ['cursor-cli', 'codebuddy-cli'] as const;
+export const CLI_SOURCES = ['cursor-cli', 'codebuddy-cli', 'dsh-cli'] as const;
 export type CliSource = (typeof CLI_SOURCES)[number];
 
 export const CLI_UNAVAILABLE_REASONS = ['binary-missing', 'credential-required', 'error'] as const;

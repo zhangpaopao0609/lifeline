@@ -49,6 +49,14 @@ lifeline setup --server-url http://<your-lifeline-server>
 
 `lifeline status` compares against the latest; if you are behind it tells you to run `lifeline update`.
 
+## DeepSeek Harness CLI (macOS)
+
+Lifeline can also create and control [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) sessions through its ACP profile. Install `dsh` on your machine and configure its provider credentials locally first. `lifeline setup` discovers `dsh` on PATH; an existing installation can set the absolute `dshCliPath` in `~/.lifeline/config.json` and run `lifeline start`.
+
+In the console, create a CLI session, choose **DeepSeek Harness**, and enter an absolute working directory. You can select the model and reasoning effort, read replies and tool activity, allow or reject individual operations, and stop work. The agent launches `dsh --profile acp`; credentials stay in your local DSH configuration.
+
+After the Lifeline agent restarts, DSH restores the session's model context through `session/resume`. DSH does not replay its previous transcript over ACP, so the restored web timeline starts empty and fills with new activity. There is no terminal resume-command button for DSH. This uses Lifeline's existing macOS CLI control support.
+
 ## Uninstall
 
 ```bash

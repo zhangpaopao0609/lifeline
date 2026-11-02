@@ -4,19 +4,20 @@ import type { CheckedAtState, ReadinessClient, ReadinessReport } from './readine
 import type { AcpClientOptions } from './types.js';
 import { tmpdir } from 'node:os';
 import { isAbsolute } from 'node:path';
-import { assertCliCatalog, assertCliStart, assertCliTarget } from '@lifeline/protocol';
+import { assertCliCatalog, assertCliStart, assertCliTarget, CLI_SOURCES } from '@lifeline/protocol';
 import { CliSessionManager } from '../../cli-session-manager.js';
 import { readServerCommand } from '../../server-inbound.js';
 import { AcpClient } from './client.js';
 import { listCursorModels } from './cursor-models.js';
 import { JsonlRpcError, JsonlRpcRemoteError } from './jsonl-rpc.js';
-import { codebuddyAcpProfile, cursorAcpProfile } from './profiles.js';
+import { acpProfileFor } from './profiles.js';
 import { acpSpawnAllowed, buildChildEnv, probeReadiness, takeCheckedAt, withCliBinOnPath } from './readiness.js';
 import { isCursorModelId } from './session-catalog.js';
 
-const COMMAND_ENV: Record<CliSource, 'LIFELINE_CURSOR_CLI' | 'LIFELINE_CODEBUDDY_CLI'> = {
+const COMMAND_ENV: Record<CliSource, string> = {
   'cursor-cli': 'LIFELINE_CURSOR_CLI',
   'codebuddy-cli': 'LIFELINE_CODEBUDDY_CLI',
+  'dsh-cli': 'LIFELINE_DSH_CLI',
 };
 
 export interface LiveAcpClientInput {
@@ -106,7 +107,7 @@ export function attachLiveCliListeners(
  * The returned env is the only place a CodeBuddy key is copied.
  */
 export function buildLiveAcpClientOptions(input: LiveAcpClientInput): AcpClientOptions {
-  const profile = input.source === 'cursor-cli' ? cursorAcpProfile : codebuddyAcpProfile;
+  const profile = acpProfileFor(input.source);
   const command = savedCommand(input.env, input.source);
   if (command == null)
     throw new JsonlRpcError('binary-missing', 'binary-missing');
@@ -201,7 +202,7 @@ export function createLiveCliEntry(options: LiveCliEntryOptions): LiveCliEntry {
 
   function orderedCapabilityRows(): CliSourceAvailability[] {
     const ordered: CliSourceAvailability[] = [];
-    for (const source of ['cursor-cli', 'codebuddy-cli'] as const) {
+    for (const source of CLI_SOURCES) {
       const row = capabilityRows.get(source);
       if (row)
         ordered.push(row);
@@ -299,10 +300,10 @@ export function createLiveCliEntry(options: LiveCliEntryOptions): LiveCliEntry {
     });
   }
 
-  async function readCodebuddyCatalog(cwd: string | undefined) {
+  async function readSessionCatalog(source: CliSource, cwd: string | undefined) {
     if (!cwd)
       return { ok: false as const, errorCode: 'invalid-cwd' as const };
-    return manager.readCatalog({ source: 'codebuddy-cli' as const, cwd });
+    return manager.readCatalog({ source, cwd });
   }
 
   async function acceptCatalog(payload: unknown): Promise<void> {
@@ -325,7 +326,7 @@ export function createLiveCliEntry(options: LiveCliEntryOptions): LiveCliEntry {
       }
       const result = asked.source === 'cursor-cli'
         ? await readCursorCatalog()
-        : await readCodebuddyCatalog(asked.cwd);
+        : await readSessionCatalog(asked.source, asked.cwd);
       options.emit('command:result', result.ok
         ? { commandId: asked.commandId, ok: true, data: result.data }
         : { commandId: asked.commandId, ok: false, errorCode: result.errorCode, error: result.errorCode });

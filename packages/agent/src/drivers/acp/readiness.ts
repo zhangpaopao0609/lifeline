@@ -1,10 +1,9 @@
 import type { CliAvailability, CliCapabilities, CliSource, CommandErrorCode } from '@lifeline/protocol';
-import type { AcpProfile } from './types.js';
 import { statSync } from 'node:fs';
 import { dirname, isAbsolute } from 'node:path';
 import { AcpClient } from './client.js';
 import { JsonlRpcError, JsonlRpcRemoteError } from './jsonl-rpc.js';
-import { codebuddyAcpProfile, cursorAcpProfile } from './profiles.js';
+import { acpProfileFor } from './profiles.js';
 
 const DETAIL_MAX = 160;
 
@@ -95,7 +94,7 @@ export function buildChildEnv(input: ChildEnvInput): { env: NodeJS.ProcessEnv; h
   const base: NodeJS.ProcessEnv = { ...input.base };
   delete base.AGENT_TOKEN;
   delete base.REMOTE_URL;
-  const env = profileFor(input.source).childEnv({
+  const env = acpProfileFor(input.source).childEnv({
     base,
     apiKey: input.apiKey,
     environment: input.environment,
@@ -255,7 +254,7 @@ async function collect(input: ReadinessInput, session: boolean): Promise<{ verdi
 }
 
 function openDefault(input: ReadinessInput, env: NodeJS.ProcessEnv): ReadinessClient {
-  const profile = profileFor(input.source);
+  const profile = acpProfileFor(input.source);
   return new AcpClient({
     profile,
     command: input.command,
@@ -343,8 +342,4 @@ function sanitizeCliDetail(text: string, secrets: readonly string[]): string {
   if (out.length > DETAIL_MAX)
     out = out.slice(0, DETAIL_MAX);
   return out.trim() || text;
-}
-
-function profileFor(source: CliSource): AcpProfile {
-  return source === 'cursor-cli' ? cursorAcpProfile : codebuddyAcpProfile;
 }

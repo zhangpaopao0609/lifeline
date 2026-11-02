@@ -7,7 +7,7 @@ import {
   CLI_THINKING_VALUE_MAX,
 } from '@lifeline/protocol';
 
-const EFFORT_KEYS = new Set(['effort', 'thought_level']);
+const EFFORT_KEYS = new Set(['effort', 'thought_level', 'reasoning_effort']);
 
 /**
  * Reads the model list and the session's thinking levels from one `session/new` result.
@@ -440,7 +440,11 @@ function readConfigModels(result: Record<string, unknown>): { models: CliModelCh
   if (!option)
     return { models: [] };
   return {
-    models: readModelEntries(option.options, 'value'),
+    // Standard ACP select options may be grouped by provider (DSH uses this
+    // shape). Only leaf values are model ids; group names are display labels.
+    models: readModelEntries(Array.isArray(option.options)
+      ? option.options.flatMap(entry => isRecord(entry) && Array.isArray(entry.options) ? entry.options : [entry])
+      : [], 'value'),
     currentId: firstText(option.currentValue, option.current_value),
   };
 }

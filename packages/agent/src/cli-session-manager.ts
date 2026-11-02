@@ -32,8 +32,8 @@ import { catalogFreshness, readStoredCatalog, writeStoredCatalog } from './drive
 import { codebuddyProjectSlug, createCodebuddyCliFollow, projectCodebuddyCliGrowth, readCodebuddyCliGrowth } from './drivers/acp/codebuddy-cli-transcript.js';
 import { peekCursorModels } from './drivers/acp/cursor-models.js';
 import { JsonlRpcError } from './drivers/acp/jsonl-rpc.js';
-import { codebuddyAcpProfile, cursorAcpProfile } from './drivers/acp/profiles.js';
-import { currentModelLabel, cursorEffortOf, cursorListedId, cursorListIdFromParameters, cursorModelFamily, impliedCursorEffort, readCursorParameters, resolveCursorListSelection, rewriteCursorEffort } from './drivers/acp/session-catalog.js';
+import { acpProfileFor } from './drivers/acp/profiles.js';
+import { currentModelLabel, cursorEffortOf, cursorListedId, cursorListIdFromParameters, cursorModelFamily, impliedCursorEffort, readCursorParameters, readSessionCatalog, readSessionConfigIds, resolveCursorListSelection, rewriteCursorEffort } from './drivers/acp/session-catalog.js';
 import { cliResumeCommand, readCliSessionLedger, writeCliSessionLedger } from './drivers/acp/session-ledger.js';
 
 const SYNC_RETRY_AFTER_MS = 120_000;
@@ -273,6 +273,8 @@ export class CliSessionManager {
       if (created.catalog)
         this.adoptCursorList(session, created.catalog);
       await applyRequestedSelection(client, created, input, session);
+      session.modelConfigId = created.modelConfigId;
+      session.thinkingConfigId = created.thinkingConfigId;
       if (session.closed)
         return { ok: false, errorCode: 'shutting-down' };
       session.providerSessionId = created.sessionId;
@@ -601,7 +603,9 @@ export class CliSessionManager {
           return { ok: false, errorCode: 'provider-error' };
       }
       else {
-        await client.setConfigOption(session.modelConfigId, input.modelId);
+        const result = await client.setConfigOption(session.modelConfigId, input.modelId);
+        if (session.source === 'dsh-cli')
+          refreshDshCatalog(session, result);
       }
     }
     catch {
@@ -656,7 +660,9 @@ export class CliSessionManager {
         return { ok: false, errorCode: 'invalid-payload' };
       if (input.thinking !== (model?.thinking?.current ?? catalog?.thinking?.current)) {
         try {
-          await client.setConfigOption(session.thinkingConfigId, input.thinking);
+          const result = await client.setConfigOption(session.thinkingConfigId, input.thinking);
+          if (session.source === 'dsh-cli')
+            refreshDshCatalog(session, result);
         }
         catch {
           return { ok: false, errorCode: 'provider-error' };
@@ -1072,7 +1078,9 @@ export class CliSessionManager {
       if (!related || !session.modelConfigId)
         return false;
       try {
-        await client.setConfigOption(session.modelConfigId, record.modelId);
+        const result = await client.setConfigOption(session.modelConfigId, record.modelId);
+        if (session.source === 'dsh-cli')
+          refreshDshCatalog(session, result);
       }
       catch {
         return false;
@@ -1087,7 +1095,7 @@ export class CliSessionManager {
       if (label)
         session.modelLabel = label;
     }
-    if (session.source === 'codebuddy-cli' && record.thinking) {
+    if (session.source !== 'cursor-cli' && record.thinking) {
       const chosen = catalog.models.find(model => model.id === catalog.currentModelId);
       const levels = chosen?.thinking?.levels ?? catalog.thinking?.levels;
       const current = chosen?.thinking?.current ?? catalog.thinking?.current;
@@ -1095,7 +1103,9 @@ export class CliSessionManager {
         return !record.modelId || catalog.currentModelId === record.modelId;
       if (record.thinking !== current) {
         try {
-          await client.setConfigOption(session.thinkingConfigId, record.thinking);
+          const result = await client.setConfigOption(session.thinkingConfigId, record.thinking);
+          if (session.source === 'dsh-cli')
+            refreshDshCatalog(session, result);
         }
         catch {
           return false;
@@ -1135,8 +1145,15 @@ export class CliSessionManager {
   private onPermission(session: LiveSession, event: AcpPermissionEvent): void {
     if (session.closed || session.crashed || !session.ready)
       return;
-    const profile = session.source === 'cursor-cli' ? cursorAcpProfile : codebuddyAcpProfile;
+    const profile = acpProfileFor(session.source);
     const approval = profile.toCliApproval(event.raw, randomUUID(), session.sessionId);
+    // DSH permission requests only carry a toolCallId. Its preceding tool update
+    // has the title; reuse it so the person can see which operation is pending.
+    if (session.source === 'dsh-cli' && !approval.title) {
+      const toolCallId = permissionToolCallId(event.raw);
+      const tool = session.assembler.snapshot().messages.find(item => item.type === 'tool' && item.toolCallId === toolCallId);
+      approval.title = tool?.type === 'tool' ? tool.action : 'Tool permission';
+    }
     session.approvals.push({ ...approval, respond: event.respond });
     this.emitIncremental('cli:approval', {
       epoch: this.options.epoch,
@@ -1305,6 +1322,37 @@ export class CliSessionManager {
   }
 }
 
+/** DSH returns a complete config state after a write; effort depends on the selected model. */
+function refreshDshCatalog(
+  target: { catalog?: CliModelCatalog; modelConfigId?: string; thinkingConfigId?: string },
+  result: unknown,
+): void {
+  const catalog = readSessionCatalog(result);
+  if (!catalog)
+    return;
+  if (target.catalog) {
+    // Keep callers' catalog reference while replacing all provider-owned fields.
+    delete target.catalog.thinking;
+    delete target.catalog.currentModelId;
+    Object.assign(target.catalog, catalog);
+  }
+  else {
+    target.catalog = catalog;
+  }
+  const ids = readSessionConfigIds(result);
+  target.modelConfigId = ids.modelConfigId;
+  target.thinkingConfigId = ids.thinkingConfigId;
+}
+
+function permissionToolCallId(raw: unknown): string | undefined {
+  if (raw == null || typeof raw !== 'object' || !('toolCall' in raw))
+    return undefined;
+  const tool = raw.toolCall;
+  if (tool == null || typeof tool !== 'object' || !('toolCallId' in tool))
+    return undefined;
+  return typeof tool.toolCallId === 'string' ? tool.toolCallId : undefined;
+}
+
 function freezeSession(session: LiveSession): FrozenSession {
   const view = session.assembler.trim();
   return {
@@ -1385,7 +1433,7 @@ function fullPayload(epoch: string, snapshotId: string, session: LiveSession) {
 function recordedSelection(session: LiveSession): { modelId?: string; thinking?: string } {
   const modelId = session.catalog?.currentModelId;
   const model = session.catalog?.models.find(item => item.id === modelId);
-  const thinking = session.source === 'codebuddy-cli'
+  const thinking = session.source !== 'cursor-cli'
     ? (model?.thinking?.current ?? session.catalog?.thinking?.current)
     : undefined;
   return {
@@ -1404,7 +1452,7 @@ function sessionResumeCommand(session: LiveSession): string | undefined {
     providerSessionId,
     ...recordedSelection(session),
   });
-  if (command.length > CLI_RESUME_COMMAND_MAX)
+  if (!command || command.length > CLI_RESUME_COMMAND_MAX)
     return undefined;
   return command;
 }
@@ -1501,7 +1549,9 @@ async function applyRequestedSelection(
         throw new JsonlRpcError('provider-error', 'cursor model was not applied');
     }
     else {
-      await client.setConfigOption(created.modelConfigId, input.modelId);
+      const result = await client.setConfigOption(created.modelConfigId, input.modelId);
+      if (input.source === 'dsh-cli')
+        refreshDshCatalog(created, result);
     }
     catalog.currentModelId = input.modelId;
   }
@@ -1515,7 +1565,9 @@ async function applyRequestedSelection(
     && levels.some(level => level.value === input.thinking)
   ) {
     try {
-      await client.setConfigOption(created.thinkingConfigId, input.thinking);
+      const result = await client.setConfigOption(created.thinkingConfigId, input.thinking);
+      if (input.source === 'dsh-cli')
+        refreshDshCatalog(created, result);
       if (catalog.thinking)
         catalog.thinking.current = input.thinking;
     }
