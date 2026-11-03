@@ -1,3 +1,4 @@
+export * from './attachments.js';
 export * from './cli.js';
 export * from './commands.js';
 export * from './empty.js';

@@ -309,6 +309,7 @@ async function main(): Promise<void> {
           {
             commandExecutor: slot.executor,
             cdpBridge: slot.cdp,
+            uploadDir: config.uploadDir,
             pauseLive: () => slot.pauseLive(),
             resumeLive: () => slot.resumeLive(),
             waitUntilReady: () => slot.waitUntilReady(),

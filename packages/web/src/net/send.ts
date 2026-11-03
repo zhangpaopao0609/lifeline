@@ -1,4 +1,4 @@
-import type { CliPermissionResponse, CliSource, CliTarget, CommandEvent, CommandPayload, CommandResult } from './protocol';
+import type { CliPermissionResponse, CliSource, CliTarget, CommandEvent, CommandPayload, CommandResult, MessageAttachment } from './protocol';
 import { dispatchCli, useCliStore } from '../store/cli';
 import { isSyntheticComposerId, liveSessionKeyOf, sendTargetOf, useIdesStore, viewedTabOf } from '../store/ides';
 import { useSessionsStore } from '../store/sessions';
@@ -11,10 +11,13 @@ let stopping = false;
 /**
  * Send a user message: derive target → optimistic bubble → command:send_message.
  * Shared by Composer and failure retry; lives in the net layer to avoid cyclic store deps.
+ *
+ * `attachments` are the files picked in the composer. Their bytes ride in the payload — the agent
+ * writes them to the IDE machine's disk and types their paths (protocol/src/attachments.ts).
  */
-export function sendUserMessage(text: string): boolean {
+export function sendUserMessage(text: string, attachments: MessageAttachment[] = []): boolean {
   const trimmed = text.trim();
-  if (!trimmed)
+  if (!trimmed && attachments.length === 0)
     return false;
   const { ides, selectedIde } = useIdesStore.getState();
   const state = ides[selectedIde];
@@ -34,8 +37,14 @@ export function sendUserMessage(text: string): boolean {
         return id && !isSyntheticComposerId(id) ? `${selectedIde}:${id}` : '';
       })();
   if (optimisticKey)
-    useSessionsStore.getState().echoPendingSend(trimmed, commandId, optimisticKey);
-  sendCommand('command:send_message', { commandId, text: trimmed, ...target, ide: selectedIde });
+    useSessionsStore.getState().echoPendingSend(trimmed, commandId, optimisticKey, attachments);
+  sendCommand('command:send_message', {
+    commandId,
+    text: trimmed,
+    ...target,
+    ide: selectedIde,
+    ...(attachments.length > 0 ? { attachments } : {}),
+  });
   return true;
 }
 
@@ -240,12 +249,12 @@ export function sendCliPermission(
   return sendCliCommand('command:cli_permission_response', { target, approvalId, response });
 }
 
-/** Failure retry: drop the old bubble and meta, resend the original text (new commandId). */
+/** Failure retry: drop the old bubble and meta, resend the original text **and files** (new commandId). */
 export function retryUserMessage(failedCommandId: string): boolean {
   const sessions = useSessionsStore.getState();
   const info = sessions.pendingSends[failedCommandId];
   if (!info)
     return false;
   sessions.removePendingBubble(failedCommandId);
-  return sendUserMessage(info.text);
+  return sendUserMessage(info.text, info.attachments ?? []);
 }

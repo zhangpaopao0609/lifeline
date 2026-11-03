@@ -2,6 +2,7 @@ import type { AssistantMessage, HumanMessage } from '../net/protocol';
 import type { PendingSendInfo } from '../store/sessions';
 import { X } from '@phosphor-icons/react';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { splitAttachmentMentions } from '../lib/attachment-mentions';
 import { retryUserMessage } from '../net/send';
 import { isPendingSend, useSessionsStore } from '../store/sessions';
 import { renderMarkdown } from './markdown';
@@ -81,6 +82,12 @@ export function HumanBubble({ msg, meta }: { msg: HumanMessage; meta?: PendingSe
    * if parsing yields structure, draw the card; otherwise fall back to the raw text — see questionAnswer.ts.
    */
   const qa = useMemo(() => parseQuestionAnswer(msg.text), [msg.text]);
+  /**
+   * A native attachment comes back from the IDE as `@<absolute path>` (image or dropped file). The IDE
+   * draws a chip; on a phone the raw path is unreadable, so lift it out and label it by file name.
+   */
+  const split = useMemo(() => splitAttachmentMentions(msg.text), [msg.text]);
+  const attachmentChips = msg.attachments && msg.attachments.length > 0 ? msg.attachments : split.files;
 
   return (
     <div className={`flex flex-col items-end ${meta?.state === 'sending' ? 'opacity-70' : ''}`}>
@@ -88,6 +95,15 @@ export function HumanBubble({ msg, meta }: { msg: HumanMessage; meta?: PendingSe
         {msg.quoted?.text && (
           <div className="mb-1.5 overflow-hidden border-l-2 border-[var(--hairline-strong)] pl-2.5 text-[length:var(--text-chrome)] text-[var(--text-secondary)] [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2]">
             {msg.quoted.text}
+          </div>
+        )}
+        {attachmentChips.length > 0 && (
+          <div className="mb-1 flex flex-wrap gap-1">
+            {attachmentChips.map((name, i) => (
+              <span key={`${name}-${i}`} className="rounded-[var(--radius-sm)] bg-[var(--bg-3)] px-1.5 py-px text-[length:var(--text-chrome)] text-[var(--text-secondary)]">
+                {name}
+              </span>
+            ))}
           </div>
         )}
         {msg.mentions?.length > 0 && (
@@ -106,7 +122,7 @@ export function HumanBubble({ msg, meta }: { msg: HumanMessage; meta?: PendingSe
             )
           : (
               <span className="whitespace-pre-wrap break-words">
-                {msg.text}
+                {split.text}
                 {meta?.state === 'sending' && <span className="ml-1.5 text-[var(--text-weak)]">…</span>}
                 {meta?.state === 'delivered' && !unconfirmed && <span className="ml-1.5 text-[var(--ok)]">✓</span>}
               </span>

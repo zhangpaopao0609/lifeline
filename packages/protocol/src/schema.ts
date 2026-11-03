@@ -13,6 +13,7 @@ import {
   CLI_THINKING_VALUE_MAX,
 } from './cli.js';
 import { COMMAND_EVENTS } from './commands.js';
+import { MAX_ATTACHMENTS } from './limits.js';
 import { AGENT_PLATFORMS, IDE_KINDS } from './wire.js';
 
 const KIB = 1024;
@@ -109,6 +110,11 @@ export const commandPayloadSchema = z.object({
   commandId: z.string().min(1),
   type: z.string().optional(),
   text: z.string().optional(),
+  /** Composer attachments (base64 bodies): the agent writes them to disk and types their paths. */
+  attachments: z
+    .array(z.object({ name: z.string().min(1), size: z.number().nonnegative(), data: z.string().min(1) }))
+    .max(MAX_ATTACHMENTS)
+    .optional(),
   approvalId: z.string().optional(),
   actionType: z.string().optional(),
   selectorPath: z.string().optional(),

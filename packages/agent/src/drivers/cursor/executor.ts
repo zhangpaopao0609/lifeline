@@ -1,6 +1,8 @@
+import type { PasteFile } from '../../attach-files.js';
 import type { CdpClient } from '../../cdp/client.js';
-import type { CommandResult, PlanModelOption, SelectorConfig, SwitchTabTarget } from '../../types.js';
+import type { CommandResult, PlanModelOption, SelectorConfig, SendMessageOptions, SwitchTabTarget } from '../../types.js';
 import type { WindowSessionTab } from '../../window-session.js';
+import { interpretPasteAttach, pasteAttachmentsExpression } from '../../attach-files.js';
 import { timingLog, timingPreview } from '../../timing-log.js';
 import { pickWindowSession } from '../../window-session.js';
 import { isPlaceholderComposerId, sameNameIdsFor } from './tab-identity.js';
@@ -741,7 +743,32 @@ export class CommandExecutor {
     return this.windowKind() === 'agents' ? AGENTS_INPUT_STRATEGIES : this.selectors.chatInput.strategies;
   }
 
-  async sendMessage(commandId: string, text: string): Promise<CommandResult> {
+  /**
+   * Hand files to the composer as a real paste so the IDE owns the attachment (chip / multimodal
+   * image) — see `attach-files.ts`. `ok: false` is not fatal: the router then types the local paths.
+   */
+  async attachFiles(commandId: string, files: PasteFile[]): Promise<CommandResult> {
+    if (!this.client || !this.client.isConnected())
+      return { commandId, ok: false, error: 'Not connected to Cursor' };
+    try {
+      const value = await this.client.evaluate(pasteAttachmentsExpression(files));
+      const outcome = interpretPasteAttach(value);
+      timingLog('cursor-attach', {
+        commandId,
+        n: files.length,
+        ok: outcome.ok,
+        error: outcome.error,
+      });
+      return { commandId, ...outcome };
+    }
+    catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      timingLog('cursor-attach', { commandId, n: files.length, ok: false, error });
+      return { commandId, ok: false, error };
+    }
+  }
+
+  async sendMessage(commandId: string, text: string, options: SendMessageOptions = {}): Promise<CommandResult> {
     const sent = await this.withRetry(commandId, async (client) => {
       const started = Date.now();
       timingLog('cursor-send:begin', { commandId, chars: text.length, preview: timingPreview(text) });
@@ -793,10 +820,22 @@ export class CommandExecutor {
       // sends it) — leave it alone and submit. Select-all + retype would wipe
       // @file refs / images and other rich text in the draft; pointless churn.
       const alreadyTyped = (result.currentText ?? '').trim();
-      const sameAsTarget = text.trim().length > 0 && alreadyTyped === text.trim();
+      const wanted = text.trim();
+      const sameAsTarget = wanted.length > 0 && alreadyTyped === wanted;
       const agentsWindow = this.windowKind() === 'agents';
-      if (sameAsTarget) {
+      // A native attachment (`attachFiles`) lives in this composer as a chip / image node. Select-all +
+      // delete would take it with the text, so keep the composer and only add the words.
+      const keepComposer = options.preserveComposer === true;
+      const alreadyHoldsText = keepComposer && wanted.length > 0 && alreadyTyped.includes(wanted);
+      if (sameAsTarget || alreadyHoldsText) {
         timingLog('cursor-send:skip-rewrite', { commandId, chars: text.length });
+      }
+      else if (keepComposer) {
+        // Nothing to add (a files-only send): go straight to submit and leave the attachment alone.
+        if (wanted.length > 0)
+          await client.typeText(text);
+        await sleep(150);
+        timingLog('cursor-send:keep-composer', { commandId, chars: text.length });
       }
       else {
         // Clear any existing text via Ctrl/Cmd+A then Delete (CDP Input domain)

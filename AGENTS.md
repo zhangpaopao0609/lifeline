@@ -29,6 +29,7 @@ browser  --HTTP/WS-->  packages/server  <--outbound WS /agent-io + per-machine t
 | Session mirror / ledger | `packages/server/src/session-store.ts` |
 | Outbound connection | `packages/agent/src/uplink.ts` |
 | IDE adapters | `packages/agent/src/drivers/` (see [`ide-drivers.md`](docs/ide-drivers.md)) |
+| Composer attachments | `packages/agent/src/attachments.ts` (write) + `attach-files.ts` (native paste), text contract in `packages/protocol/src/attachments.ts` |
 | CLI ACP | `packages/agent/src/drivers/acp/` |
 | Shared wire types | `packages/protocol` (`@lifeline/protocol`) |
 | Auth exemption | `packages/server/src/public-paths.ts` (only `/public/*`, `/healthz`, `/agent-io`) |
@@ -67,5 +68,6 @@ Read the matching code and topic doc before touching these. Criteria only:
 - Windows: approval-shortcut character classes must include `^` (Ctrl glyph). A full `lifeline start` reinstall restarts an IDE that has no debug port — during development, do not do that on CodeBuddy without one. **Running the repo agent directly (`pnpm run agent`) has the same effect**: `cdp-bridge` quits and relaunches the IDE (measured 2026-10-11, CodeBuddy), so no manual agent run on a machine whose IDE is in use.
 - One agent per machine: the machine lock (`single-instance.ts`) plus the registration rule (`register-outcome.ts`) plus `agent:superseded` (a displaced process stands down only for a superseder that names itself, `superseded-outcome.ts`). Do not make the server disconnect a displaced socket, do not let a newcomer without an `instanceId` displace a connected current process, and keep `lifelinePidsExcept` recognizing the dev/built entry points on every platform. Never let two machines share one `agentId` — the lock cannot see the other machine (see `docs/agent-lifecycle.md`).
 - CDP self-heal must stand down while the IDE updater (ShipIt) is resident, or it resurrects the old `.app` mid-swap and aborts every update (see `docs/ide-drivers.md`).
+- Composer attachments ride **inside** `command:send_message` (base64) — no upload endpoint, no file state on the server. `commandPayloadSchema` is a plain `z.object`, so an old server or agent silently strips `attachments` (text arrives, files vanish): server + agent + web move together. A failed disk write must fail the whole send rather than type a prompt pointing at missing files; native paste must be verified by the composer's attachment-node count growing, never by `preventDefault`; and `preserveComposer` must not be turned back into select-all + retype (that deletes the attachment).
 
 Probes live in `scripts/probes/` (some burn model quota). `temp/` is throwaway.

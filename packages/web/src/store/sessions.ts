@@ -3,14 +3,16 @@ import type {
   CommandResult,
   HumanMessage,
   IdeKind,
+  MessageAttachment,
   SessionBodyPayload,
   SessionMissingPayload,
   SessionPatchPayload,
   SessionSyncPayload,
 } from '../net/protocol';
 import { create } from 'zustand';
+import { splitAttachmentMentions } from '../lib/attachment-mentions';
 import { mergeById, mergeEarlierPage, mergeTailPage } from '../lib/session-page';
-import { parseIde } from '../net/protocol';
+import { parseIde, stripAttachmentBlock } from '../net/protocol';
 
 /**
  * sessionBodies cache + pendingSend reconcile.
@@ -64,11 +66,26 @@ export function isPendingSend(msg: ChatElement | undefined | null): boolean {
   return !!msg && msg.type === 'human' && msg.id.startsWith('pending-send:');
 }
 
+/**
+ * Texts a pending bubble can reconcile against.
+ *
+ * Files reach the IDE in one of two shapes, neither of which is text-equal to the bubble we drew:
+ * the path route appends an "attachment paths block" (the agent builds it before typing), and the
+ * native route leaves an `@/abs/path` mention on the IDE side. Register both stripped forms too —
+ * exact match stays the rule, this only lets the same message match itself.
+ */
 function realHumanTexts(list: ChatElement[]): Set<string> {
   const real = new Set<string>();
   for (const m of list) {
-    if (m && m.type === 'human' && !isPendingSend(m))
+    if (m && m.type === 'human' && !isPendingSend(m)) {
       real.add(m.text);
+      const stripped = stripAttachmentBlock(m.text);
+      if (stripped !== m.text)
+        real.add(stripped);
+      const withoutPath = splitAttachmentMentions(m.text).text;
+      if (withoutPath !== m.text)
+        real.add(withoutPath);
+    }
   }
   return real;
 }
@@ -128,6 +145,8 @@ export interface PendingSendInfo {
   id: string;
   text: string;
   key: string;
+  /** Files this send carried, kept so "重试" resends the same bytes (the composer already cleared them). */
+  attachments?: MessageAttachment[];
   /** Tri-state (spec §7 send flow): … sending → ✓ delivered → reconcile pops / 10s unconfirmed badge; failure red border. */
   state: PendingSendState;
   deliveredAt: number;
@@ -184,7 +203,7 @@ interface SessionsStore {
   beginEarlier: (key: string) => { before: number } | null;
   /** seq check passed: only advance the reconcile point, don't touch the body. */
   applySessionSync: (payload: SessionSyncPayload) => void;
-  echoPendingSend: (text: string, commandId: string, key: string) => void;
+  echoPendingSend: (text: string, commandId: string, key: string, attachments?: MessageAttachment[]) => void;
   /** command:result reconcile: ok → delivered, wait to pop; fail → failed + pendingRestore. */
   resolveCommandResult: (result: CommandResult) => void;
   /** Drop the pending bubble and its meta (used after retry / restore). */
@@ -360,7 +379,7 @@ export const useSessionsStore = create<SessionsStore>()((set, get) => ({
     set(s => ({ bodySeq: nextBodySeq(s.bodySeq, key, seq) }));
   },
 
-  echoPendingSend: (text, commandId, key) => {
+  echoPendingSend: (text, commandId, key, attachments = []) => {
     const pending: HumanMessage = {
       type: 'human',
       id: `pending-send:${commandId}`,
@@ -368,12 +387,21 @@ export const useSessionsStore = create<SessionsStore>()((set, get) => ({
       text,
       mentions: [],
       pending: true,
+      // Client-only chips: the file names are what the user recognizes; the bytes live on the wire.
+      ...(attachments.length > 0 ? { attachments: attachments.map(a => a.name) } : {}),
     };
     set(s => ({
       bodies: { ...s.bodies, [key]: [...(s.bodies[key] ?? []), pending] },
       pendingSends: {
         ...s.pendingSends,
-        [commandId]: { id: pending.id, text, key, state: 'sending' as const, deliveredAt: 0 },
+        [commandId]: {
+          id: pending.id,
+          text,
+          key,
+          state: 'sending' as const,
+          deliveredAt: 0,
+          ...(attachments.length > 0 ? { attachments } : {}),
+        },
       },
     }));
   },

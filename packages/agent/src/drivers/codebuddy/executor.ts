@@ -1,6 +1,8 @@
+import type { PasteFile } from '../../attach-files.js';
 import type { CdpClient } from '../../cdp/client.js';
-import type { CommandResult, SwitchTabTarget } from '../../types.js';
+import type { CommandResult, SendMessageOptions, SwitchTabTarget } from '../../types.js';
 import type { WindowSessionTab } from '../../window-session.js';
+import { interpretPasteAttach, pasteAttachmentsExpression } from '../../attach-files.js';
 import { timingLog, timingPreview } from '../../timing-log.js';
 import { pickWindowSession } from '../../window-session.js';
 import {
@@ -141,7 +143,35 @@ export class CodeBuddyExecutor {
     return client;
   }
 
-  async sendMessage(commandId: string, text: string): Promise<CommandResult> {
+  /**
+   * Paste files into the CodeBuddy composer (the IDE takes them as native attachments, images become
+   * multimodal parts). Failure just means the router types the local paths instead.
+   */
+  async attachFiles(commandId: string, files: PasteFile[]): Promise<CommandResult> {
+    const client = this.requireClient();
+    if (!('evaluate' in client))
+      return { commandId, ...client };
+    try {
+      const value = await client.evaluate(pasteAttachmentsExpression(files));
+      const outcome = interpretPasteAttach(value);
+      timingLog('codebuddy-attach', {
+        commandId,
+        n: files.length,
+        ok: outcome.ok,
+        // Partial: the IDE kept some of the files — that is why the send falls back to path text.
+        attached: outcome.attached,
+        error: outcome.error,
+      });
+      return { commandId, ...outcome };
+    }
+    catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      timingLog('codebuddy-attach', { commandId, n: files.length, ok: false, error });
+      return { commandId, ok: false, error };
+    }
+  }
+
+  async sendMessage(commandId: string, text: string, options: SendMessageOptions = {}): Promise<CommandResult> {
     const client = this.requireClient();
     if (!('evaluate' in client)) {
       return { commandId, ...client };
@@ -151,9 +181,12 @@ export class CodeBuddyExecutor {
       const started = Date.now();
       timingLog('codebuddy-send:begin', { commandId, chars: text.length, preview: timingPreview(text) });
       const insertStarted = Date.now();
-      const inserted = await client.evaluate(fiberInsertExpression(text)) as
-        | { ok?: boolean; err?: string }
-        | null;
+      // `preserveComposer` means a native attachment already sits in the editor. Inserting "" would
+      // only drop an empty text leaf next to it, so a files-only send goes straight to Enter.
+      const skipInsert = options.preserveComposer === true && text.trim().length === 0;
+      let inserted: { ok?: boolean; err?: string } | null = { ok: true };
+      if (!skipInsert)
+        inserted = await client.evaluate(fiberInsertExpression(text)) as { ok?: boolean; err?: string } | null;
       timingLog('codebuddy-send:insert', {
         commandId,
         ms: Date.now() - insertStarted,

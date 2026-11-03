@@ -18,6 +18,8 @@ export interface HumanMessage {
   quoted?: { text: string };
   /** Client optimistic-bubble marker (not a wire field): pending-send state */
   pending?: boolean;
+  /** Client marker (not a wire field): names of the files this message carried — drawn as chips until the disk projection replaces the bubble. */
+  attachments?: string[];
   /** Bubble time. Used to label a turn "Worked for 18m". Seconds or milliseconds. */
   createdAt?: number;
 }
@@ -515,10 +517,28 @@ export interface CommandResult {
   data?: unknown;
 }
 
+/**
+ * One file the console composer attached to a user message.
+ *
+ * The browser has no route to the IDE machine, so the bytes ride along in the command payload
+ * (base64) and the agent writes them to a local file before typing the prompt; the typed text then
+ * carries the local paths. That keeps the server stateless (nothing to store, expire, or authorize)
+ * and needs no new HTTP surface — see `packages/agent/src/attachments.ts`.
+ */
+export interface MessageAttachment {
+  /** Original file name, used only for the local copy's name (sanitized on the agent). */
+  name: string;
+  /** Raw byte length (for the receiving side's own limit check; base64 below is authoritative). */
+  size: number;
+  /** base64 body, no `data:` prefix. */
+  data: string;
+}
+
 export interface CommandPayload {
   commandId: string;
   type?: string;
   text?: string;
+  attachments?: MessageAttachment[];
   approvalId?: string;
   actionType?: string;
   selectorPath?: string;

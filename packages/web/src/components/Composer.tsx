@@ -1,9 +1,10 @@
+import type { MessageAttachment } from '../net/protocol';
 import type { ActiveTarget } from '../store/cli';
-import { PaperPlaneRight, Square } from '@phosphor-icons/react';
+import { Paperclip, PaperPlaneRight, Square, X } from '@phosphor-icons/react';
 import { useEffect, useRef, useState } from 'react';
 import { usePendingNewChat } from '../hooks/usePendingNewChat';
 import { cdpIssueCopy } from '../lib/cdp-issue-copy';
-import { IDE_LABELS } from '../net/protocol';
+import { IDE_LABELS, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, MAX_ATTACHMENTS_TOTAL_BYTES } from '../net/protocol';
 import { selectCliModel, selectCliThinking, sendCliMessage, sendUserMessage, stopCliSession, stopSession } from '../net/send';
 import {
   canSendForTarget,
@@ -25,6 +26,34 @@ import { QueuePopover } from './QueuePopover';
 
 const isTouchPrimary = () => window.matchMedia('(pointer: coarse)').matches;
 const CDP_BANNER_DELAY_MS = 3000;
+
+const MB = 1024 * 1024;
+
+function formatSize(bytes: number): string {
+  if (bytes >= MB)
+    return `${(bytes / MB).toFixed(1)}MB`;
+  if (bytes >= 1024)
+    return `${Math.round(bytes / 1024)}KB`;
+  return `${bytes}B`;
+}
+
+/** One picked file → wire attachment (base64 body; the `data:` prefix is dropped). */
+function readAttachment(file: File): Promise<MessageAttachment> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const url = typeof reader.result === 'string' ? reader.result : '';
+      const comma = url.indexOf(',');
+      if (comma === -1) {
+        reject(new Error(`无法读取：${file.name}`));
+        return;
+      }
+      resolve({ name: file.name, size: file.size, data: url.slice(comma + 1) });
+    };
+    reader.onerror = () => reject(reader.error ?? new Error(`无法读取：${file.name}`));
+    reader.readAsDataURL(file);
+  });
+}
 
 export function Composer() {
   const target = useUiStore(s => s.activeTarget);
@@ -48,7 +77,20 @@ function IdeComposer() {
   const takePendingRestore = useSessionsStore(s => s.takePendingRestore);
   const clearPendingRestore = useSessionsStore(s => s.clearPendingRestore);
   const [draft, setDraft] = useState('');
+  /** Files picked but not sent yet (bytes already read: the send path stays synchronous). */
+  const [files, setFiles] = useState<MessageAttachment[]>([]);
+  /**
+   * The same list, readable synchronously. Reading is async, so two picks in flight would both decide
+   * against the pre-pick count and could exceed the limit — every mutation goes through `commitFiles`.
+   */
+  const filesRef = useRef<MessageAttachment[]>([]);
+  const commitFiles = (next: MessageAttachment[]) => {
+    filesRef.current = next;
+    setFiles(next);
+  };
   const taRef = useRef<HTMLTextAreaElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const pushToast = useUiStore(s => s.pushToast);
 
   useEffect(() => {
     if (pendingRestore !== null && draft.trim() === '') {
@@ -97,8 +139,11 @@ function IdeComposer() {
   // run (row spinner). Input stays usable — same as the IDE composer — with a hint.
   const backgroundRunning = !working && tab?.isActive === true && tab?.backgroundRunning === true;
   const ideConnected = state?.connected === true;
+  /** Same gate as the textarea: a file can only be attached when the machine can take a send. */
+  const attachDisabled = !ideConnected || machineOffline || machineContentOnly || working;
+  // Files alone are enough to send (a bare screenshot is a normal message).
   const canSend
-    = draft.trim().length > 0 && !!target && !machineOffline && !machineContentOnly && !pendingHere && !pendingNewHere && !working && ideConnected;
+    = (draft.trim().length > 0 || files.length > 0) && !!target && !machineOffline && !machineContentOnly && !pendingHere && !pendingNewHere && !working && ideConnected;
   // While generating, the send key becomes a stop key (same place, same action as the one in the IDE).
   // Both IDEs are enrolled: CodeBuddy uses fiber onCancel; Cursor uses the composer's
   // `[data-stop-button="true"]` / `aria-label="Stop generation"` (when not generating the agent returns
@@ -146,12 +191,54 @@ function IdeComposer() {
 
   const requestScrollToBottom = useUiStore(s => s.requestScrollToBottom);
 
-  const send = () => {
-    if (!draft.trim() || !target || !state || machineContentOnly || pendingHere || pendingNewHere || working || !state.connected)
+  /**
+   * Pick files: limits are the protocol's (the agent re-checks them) and are reported as toasts rather
+   * than silently dropping the pick. Bytes are read here, so `send` stays synchronous and the same
+   * payload is reusable by "重试".
+   */
+  const addFiles = (picked: FileList | null) => {
+    if (!picked || picked.length === 0)
       return;
-    if (!sendUserMessage(draft))
+    const incoming = Array.from(picked);
+    /** Same three checks, against whatever the list holds *now* (a pick may still be reading). */
+    const rejectOver = (current: MessageAttachment[]): boolean => {
+      if (current.length + incoming.length > MAX_ATTACHMENTS) {
+        pushToast(`附件最多 ${MAX_ATTACHMENTS} 个`, 'error');
+        return true;
+      }
+      const oversized = incoming.find(f => f.size > MAX_ATTACHMENT_BYTES);
+      if (oversized) {
+        pushToast(`「${oversized.name}」超过 ${Math.round(MAX_ATTACHMENT_BYTES / MB)}MB`, 'error');
+        return true;
+      }
+      const total = current.reduce((sum, f) => sum + f.size, 0) + incoming.reduce((sum, f) => sum + f.size, 0);
+      if (total > MAX_ATTACHMENTS_TOTAL_BYTES) {
+        pushToast(`附件总大小超过 ${Math.round(MAX_ATTACHMENTS_TOTAL_BYTES / MB)}MB`, 'error');
+        return true;
+      }
+      return false;
+    };
+    if (rejectOver(filesRef.current))
+      return;
+    void Promise.all(incoming.map(readAttachment))
+      .then((next) => {
+        if (rejectOver(filesRef.current))
+          return;
+        commitFiles([...filesRef.current, ...next]);
+      })
+      .catch((err: unknown) => {
+        pushToast(err instanceof Error ? err.message : String(err), 'error');
+      });
+  };
+
+  const send = () => {
+    const current = filesRef.current;
+    if ((!draft.trim() && current.length === 0) || !target || !state || machineContentOnly || pendingHere || pendingNewHere || working || !state.connected)
+      return;
+    if (!sendUserMessage(draft, current))
       return;
     setDraft('');
+    commitFiles([]);
     requestAnimationFrame(autoGrow);
     requestScrollToBottom();
   };
@@ -227,7 +314,49 @@ function IdeComposer() {
         <ModeModelPicker />
         <QueuePopover />
       </div>
+      {files.length > 0 && (
+        <div className="content-col mb-1.5 flex flex-wrap items-center gap-1.5">
+          {files.map((f, i) => (
+            <span
+              key={`${f.name}-${i}`}
+              className="inline-flex max-w-[220px] items-center gap-1 rounded-[var(--radius-sm)] bg-[var(--bg-3)] py-0.5 pr-1 pl-2 text-[length:var(--text-chrome)] text-[var(--text-secondary)]"
+            >
+              <span className="truncate">{f.name}</span>
+              <span className="shrink-0 text-[var(--text-weak)]">{formatSize(f.size)}</span>
+              <button
+                type="button"
+                aria-label={`移除 ${f.name}`}
+                onClick={() => commitFiles(filesRef.current.filter((_, index) => index !== i))}
+                className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-weak)] hover:text-[var(--text-primary)]"
+              >
+                <X size={12} />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
       <div className="content-col composer-box">
+        <input
+          ref={fileRef}
+          type="file"
+          multiple
+          className="hidden"
+          onChange={(e) => {
+            addFiles(e.target.files);
+            // Reset so picking the same file again still fires onChange.
+            e.target.value = '';
+          }}
+        />
+        <button
+          type="button"
+          aria-label="添加文件"
+          title={`添加文件（最多 ${MAX_ATTACHMENTS} 个，单个 ${Math.round(MAX_ATTACHMENT_BYTES / MB)}MB）`}
+          onClick={() => fileRef.current?.click()}
+          disabled={attachDisabled}
+          className="send-btn bg-transparent text-[var(--text-weak)] hover:text-[var(--text-primary)] disabled:opacity-40"
+        >
+          <Paperclip size={16} />
+        </button>
         <textarea
           ref={taRef}
           value={draft}
@@ -235,7 +364,7 @@ function IdeComposer() {
           onChange={(e) => { setDraft(e.target.value); autoGrow(); }}
           onKeyDown={onKeyDown}
           placeholder={placeholder}
-          disabled={!ideConnected || machineOffline || machineContentOnly || working}
+          disabled={attachDisabled}
           className="min-w-0 flex-1 resize-none border-0 bg-transparent px-0 py-1.5 font-[inherit] text-[var(--text-primary)] outline-none disabled:opacity-60"
         />
         {canStop

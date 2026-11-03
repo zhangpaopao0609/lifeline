@@ -14,6 +14,7 @@ Your code, IDE, and environment stay on that computer. Lifeline only projects th
 - **Watch the session**: a live projection of the on-disk session (messages, code, tool calls, plan progress) — not a separate cloud chat
 - **Approve / reject**: every button on approval cards (shell, file edits, MCP, mode switches) is drawn on the page
 - **Answer questionnaires, send new prompts, stop anytime**: send has three states (delivered / confirmed / failed-retryable); stop is the same key as in the IDE
+- **Send files**: the bytes ride inside the message (nothing is stored server-side); the agent drops them on the IDE machine and hands them to the IDE — images arrive as multimodal parts, anything else as an `@`-file chip. Up to 4 files, 5MB each
 - **Many machines, two slots**: machines under your account; Cursor and CodeBuddy shown and controlled separately
 - **Offline machines stay readable**: last mirror, read-only — no blank screen
 

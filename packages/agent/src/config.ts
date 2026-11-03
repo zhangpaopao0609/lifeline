@@ -2,6 +2,7 @@ import 'dotenv/config';
 import type { AgentConfig, SelectorConfig } from './types.js';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { defaultUploadDir } from './attachments.js';
 
 export function loadConfig(): AgentConfig {
   const dataDir = process.env.DATA_DIR ?? resolve(process.cwd(), 'data');
@@ -16,6 +17,7 @@ export function loadConfig(): AgentConfig {
     logLevel: (process.env.LOG_LEVEL as AgentConfig['logLevel']) ?? 'info',
     windowTitleQualifier: process.env.WINDOW_TITLE_QUALIFIER !== 'false',
     dataDir,
+    uploadDir: defaultUploadDir(),
     remoteUrl: process.env.REMOTE_URL ?? '',
     agentToken: process.env.AGENT_TOKEN ?? '',
     agentsWindow: process.env.AGENTS_WINDOW !== '0',

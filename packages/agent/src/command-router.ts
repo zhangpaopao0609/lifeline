@@ -1,7 +1,10 @@
+import type { MaterializedAttachment } from './attachments.js';
 import type { CDPBridge } from './cdp/bridge.js';
 import type { CommandExecutor } from './drivers/cursor/executor.js';
 import type { CommandPayload, CommandResult, IdeKind } from './types.js';
-import { COMMAND_EVENTS, IDE_LABELS } from '../../protocol/src/index.js';
+import { COMMAND_EVENTS, IDE_LABELS, withAttachmentPaths } from '../../protocol/src/index.js';
+import { mimeOfFile, NATIVE_ATTACH_MAX_BYTES } from './attach-files.js';
+import { defaultUploadDir, materializeAttachments, totalAttachmentBytes } from './attachments.js';
 import { readPlanFile } from './drivers/cursor/plan-files.js';
 import { DRIVERS } from './drivers/index.js';
 import { timingLog, timingPreview } from './timing-log.js';
@@ -13,6 +16,7 @@ export { COMMAND_EVENTS };
 export type CommandExecutorApi = Pick<
   CommandExecutor,
   | 'sendMessage'
+  | 'attachFiles'
   | 'clickApproval'
   | 'approveAll'
   | 'reject'
@@ -34,6 +38,8 @@ export interface CommandTarget {
   cdpBridge: CDPBridge;
   /** Deliver the result back to whoever issued the command. */
   emitResult: (result: CommandResult) => void;
+  /** Where send_message attachments land on this machine (default: `~/.lifeline/uploads`). */
+  uploadDir?: string;
   /** Pause content ticks + extractor polls so a send is not queued behind sqlite/CDP. */
   pauseLive?: () => void;
   resumeLive?: () => void;
@@ -112,9 +118,14 @@ async function dispatchCommand(
 
   switch (event) {
     case 'command:send_message': {
-      if (!payload.commandId || !payload.text)
+      const attachments = payload.attachments ?? [];
+      // Text alone is the classic send; attachments may stand alone (a bare screenshot).
+      if (!payload.commandId || (!payload.text && attachments.length === 0))
         return fail(payload.commandId, 'Missing commandId or text');
       const execStarted = Date.now();
+      // Land on the chat the console is looking at **before** touching the composer. The attachment
+      // route pastes into whatever composer is in front, so switching tabs afterwards would leave the
+      // file in the previous session and ship the words without it.
       if (payload.windowId || payload.tabTitle || payload.selectorPath) {
         const land = await landOnOpenChat(commandExecutor, cdpBridge, commandId, ide, payload, waitUntilReady);
         if (land && !land.ok) {
@@ -123,8 +134,51 @@ async function dispatchCommand(
           return;
         }
       }
+      // Attachments are written **before** anything is typed: the IDE cannot fetch them, so the
+      // prompt carries local paths (attachments.ts). A failed write fails the send — typing a prompt
+      // that points at files which are not there is worse than a red bubble.
+      let text = payload.text ?? '';
+      let native = false;
+      if (attachments.length > 0) {
+        try {
+          const materialized = materializeAttachments(attachments, target.uploadDir ?? defaultUploadDir());
+          const bytes = totalAttachmentBytes(materialized);
+          // Images first try the IDE's native pipeline (a real paste → attachment chip / multimodal
+          // part) so the bubble looks like one composed in the IDE; anything the IDE refuses — or a
+          // payload too big to inline in a CDP expression — falls back to typing the local paths.
+          // The composer only exists in the DOM while its window is up front (an occluded IDE tears the
+          // chat panel down), so raise before pasting — otherwise the paste target is simply not there.
+          // Any file type is worth the attempt: the IDE decides (an image becomes a multimodal part, a
+          // text/json file becomes a file chip), and a refusal simply falls through to the path text.
+          if (bytes <= NATIVE_ATTACH_MAX_BYTES) {
+            try {
+              await cdpBridge.raiseActiveWindow();
+            }
+            catch { /* raising is best-effort; the paste itself reports whether it landed */ }
+            native = (await attachNatively(commandExecutor, commandId, materialized)).ok;
+          }
+          text = native ? text : withAttachmentPaths(text, materialized.map(a => a.path));
+          timingLog('router:attachments', {
+            commandId,
+            ide,
+            n: materialized.length,
+            bytes,
+            native,
+          });
+        }
+        catch (err) {
+          timingLog('router:attachments', {
+            commandId,
+            ide,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          return fail(payload.commandId, err instanceof Error ? err.message : String(err));
+        }
+      }
+      // A native attachment now lives in the composer: the send must add the words without the
+      // select-all + retype that would delete it.
       const result = await withRaiseFallback(cdpBridge, commandId, ide, () =>
-        commandExecutor.sendMessage(payload.commandId!, payload.text!));
+        commandExecutor.sendMessage(payload.commandId!, text, native ? { preserveComposer: true } : undefined));
       timingLog('router:executed', { commandId, ide, ok: result.ok, ms: Date.now() - execStarted });
       done(result);
       return;
@@ -301,6 +355,27 @@ async function dispatchCommand(
       break;
     }
     default:
+  }
+}
+
+/**
+ * Try the IDE's own attachment pipeline (paste, see attach-files.ts). Never throws: a refusal is
+ * just "type the paths instead", and a nicer bubble must never cost a delivered message.
+ */
+async function attachNatively(
+  executor: CommandExecutorApi,
+  commandId: string,
+  files: MaterializedAttachment[],
+): Promise<CommandResult> {
+  try {
+    return await executor.attachFiles(commandId, files.map(file => ({
+      name: file.name,
+      mime: mimeOfFile(file.name),
+      base64: file.bytes.toString('base64'),
+    })));
+  }
+  catch (err) {
+    return { commandId, ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
 

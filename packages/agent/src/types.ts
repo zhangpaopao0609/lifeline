@@ -69,6 +69,17 @@ export interface SelectorConfig {
   [key: string]: SelectorStrategy;
 }
 
+/**
+ * How a send should treat the composer it types into.
+ *
+ * `preserveComposer`: the composer already holds something that must survive the words — a native
+ * attachment pasted by `attachFiles` (a chip / image node the IDE owns). Clearing it the way a plain
+ * send does would delete the file, so the driver only adds text.
+ */
+export interface SendMessageOptions {
+  preserveComposer?: boolean;
+}
+
 /** Loopback CDP + poll config for the local agent. Not a server config. */
 export interface AgentConfig {
   cdpUrl: string;
@@ -79,6 +90,8 @@ export interface AgentConfig {
   logLevel: 'debug' | 'info' | 'warn' | 'error';
   windowTitleQualifier: boolean;
   dataDir: string;
+  /** Where composer attachments are written on this machine (`LIFELINE_UPLOAD_DIR`, default `~/.lifeline/uploads`). */
+  uploadDir: string;
   remoteUrl: string;
   agentsWindow: boolean;
   agentToken: string;
