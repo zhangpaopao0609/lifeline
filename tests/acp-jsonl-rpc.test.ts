@@ -41,8 +41,11 @@ describe('JsonlRpc', { concurrency: 1, timeout: 20_000 }, () => {
       assert.equal(resolveTimeoutMs('initialize', 0), 0);
     });
 
-    it('times out initialize, session/new, and other methods at 15000ms without timing out prompt or permission', { timeout: 30_000 }, async () => {
-      await withRpc('silent', {}, async (rpc) => {
+    it('times out initialize, session/new, and other methods by default without timing out prompt or permission', { timeout: 30_000 }, async () => {
+      // The 15000ms default itself is pinned by the unit test above; this one only needs the behaviour, so the
+      // deadline is injected (same trick as killGraceMs). Waiting the real fifteen seconds put the whole file
+      // at the edge of its own 20s budget — under load it got cancelled and every suite after it was discarded.
+      await withRpc('silent', { requestTimeoutMs: 300 }, async (rpc) => {
         const started = Date.now();
         const init = rpc.sendRequest('initialize', {});
         const created = rpc.sendRequest('session/new', {});
@@ -63,8 +66,8 @@ describe('JsonlRpc', { concurrency: 1, timeout: 20_000 }, () => {
         ]);
         await timedOut;
         const elapsed = Date.now() - started;
-        assert.ok(elapsed >= 14_000, `elapsed ${elapsed}`);
-        assert.ok(elapsed < 20_000, `elapsed ${elapsed}`);
+        assert.ok(elapsed >= 250, `elapsed ${elapsed}`);
+        assert.ok(elapsed < 5_000, `elapsed ${elapsed}`);
         const raced = await Promise.race([
           stillPending,
           delay(200).then(() => 'pending' as const),
@@ -501,6 +504,7 @@ describe('JsonlRpc', { concurrency: 1, timeout: 20_000 }, () => {
 interface OpenOptions {
   extraArgs?: string[];
   killGraceMs?: number;
+  requestTimeoutMs?: number;
   onRequest?: (request: { id: number | string; method: string; params?: unknown }) => unknown;
   onNotification?: (notification: JsonlRpcNotification) => void;
 }
@@ -510,6 +514,7 @@ async function withRpc(mode: string, options: OpenOptions, fn: (rpc: JsonlRpc) =
     command: process.execPath,
     args: [fixturePath, '--mode', mode, ...(options.extraArgs ?? [])],
     killGraceMs: options.killGraceMs ?? 200,
+    requestTimeoutMs: options.requestTimeoutMs,
     onRequest: options.onRequest,
     onNotification: options.onNotification,
   });

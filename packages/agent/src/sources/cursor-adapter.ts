@@ -69,6 +69,13 @@ export interface ComposerData {
   subagentComposerIds?: string[];
   generatingBubbleIds?: string[];
   fullConversationHeadersOnly?: HeaderEntry[];
+  /** Newer builds only: where the message headers live (`composerConvHeaders:<id>:<chunk>`). */
+  headerLog?: {
+    chunkSize?: number;
+    chunkCount?: number;
+    count?: number;
+    generation?: string;
+  };
 }
 
 interface HeaderEntry {
@@ -247,12 +254,51 @@ export class CursorAdapter implements ContentSource {
   }
 
   /**
+   * Message headers for one chat. Older builds keep them inline in `composerData.fullConversationHeadersOnly`;
+   * current Cursor (Agents Window, measured 2026-10-31 on `_v: 18`) leaves that array empty and stores the
+   * headers in `composerConvHeaders:<sessionId>:<chunk>` rows, with `composerData.headerLog` counting them.
+   * The chat still enumerates from `composerHeaders`, so reading the inline array alone reads as an empty session.
+   */
+  private readHeaders(sessionId: string, cd: ComposerData | null): HeaderEntry[] {
+    const inline = cd?.fullConversationHeadersOnly ?? [];
+    const chunkCount = cd?.headerLog?.chunkCount ?? 0;
+    if (inline.length > 0 && chunkCount <= 0)
+      return inline;
+    // A torn write can name chunks that are not there yet; the inline copy is then all we have.
+    const chunked = this.readHeaderChunks(sessionId, chunkCount);
+    return chunked.length > 0 ? chunked : inline;
+  }
+
+  /** Concatenate the chunks in key order: the index is zero-padded, so it sorts oldest chunk first. */
+  private readHeaderChunks(sessionId: string, chunkCount: number): HeaderEntry[] {
+    const rows = this.db
+      .prepare('SELECT value FROM cursorDiskKV WHERE key LIKE ? ORDER BY key')
+      .all(`composerConvHeaders:${sessionId}:%`) as { value: string | null }[];
+    // Stale chunks past headerLog.chunkCount survive a trim in place; trust the count when it is there.
+    const use = chunkCount > 0 ? rows.slice(0, chunkCount) : rows;
+    const out: HeaderEntry[] = [];
+    for (const row of use) {
+      if (!row.value)
+        continue;
+      try {
+        const parsed = JSON.parse(row.value) as unknown;
+        if (Array.isArray(parsed))
+          out.push(...(parsed as HeaderEntry[]));
+      }
+      catch {
+        /* torn chunk: keep the chunks that parsed */
+      }
+    }
+    return out;
+  }
+
+  /**
    * Index-driven order. Drop grouping.isRenderable === false.
    * complete is false while bubbleId is in generatingBubbleIds.
    */
   readIndex(sessionId: string): MessageHeader[] {
     const cd = this.readComposer(sessionId);
-    const entries = cd?.fullConversationHeadersOnly ?? [];
+    const entries = this.readHeaders(sessionId, cd);
     const generating = cd?.generatingBubbleIds ?? [];
     return entries
       .filter(e => e.grouping?.isRenderable !== false)
@@ -302,7 +348,7 @@ export class CursorAdapter implements ContentSource {
       childSessionIds: cd.subagentComposerIds?.length
         ? cd.subagentComposerIds
         : undefined,
-      messageCount: cd.fullConversationHeadersOnly?.length ?? 0,
+      messageCount: this.readHeaders(meta.ref.sessionId, cd).length,
       modelName:
         cd.modelConfig?.modelName
         ?? cd.modelConfig?.selectedModels?.[0]?.modelId,
@@ -410,7 +456,7 @@ export class CursorAdapter implements ContentSource {
       // Align against **every** header, hidden ones included: Cursor hides some human bubbles from the UI
       // (`isRenderable: false`) but the transcript still counts their turn, so the filtered `readIndex` would
       // never match the transcript's user-message count.
-      const index = (this.readComposer(sessionId)?.fullConversationHeadersOnly ?? []).map(e => ({
+      const index = this.readHeaders(sessionId, this.readComposer(sessionId)).map(e => ({
         messageId: e.bubbleId,
         role: e.type === 1 ? ('human' as const) : ('assistant' as const),
         preview: e.grouping?.textPreview,

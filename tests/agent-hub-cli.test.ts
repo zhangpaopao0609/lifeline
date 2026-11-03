@@ -826,6 +826,8 @@ describe('AgentDirectory CLI forwarding', () => {
     assert.equal(browserCommandEventNames().includes('command:cli_start'), true);
     assert.equal(browserCommandEventNames().includes('command:cli_close'), true);
     assert.equal(browserCommandEventNames().includes('command:cli_permission_response'), true);
+    // Deliberate tripwire, not a derived value (the deepEqual above already pins the contents):
+    // bump it when a command lands in `COMMAND_EVENTS` / `CLI_COMMAND_EVENTS`.
     assert.equal(browserCommandEventNames().length, 21);
   });
 });

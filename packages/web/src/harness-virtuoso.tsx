@@ -190,7 +190,6 @@ window.__hv = {
     const page = buildBody(count, seed, `n${local.length}-`);
     state.applySessionAppend(
       { sessionId: SESSION_ID, ide: IDE, messages: page, seq: (state.bodySeq[KEY] ?? 0) + 1 },
-      KEY,
     );
     const after = useSessionsStore.getState();
     const body = after.bodies[KEY] ?? [];

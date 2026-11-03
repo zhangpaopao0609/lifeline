@@ -1,4 +1,5 @@
 import { CircleNotch } from '@phosphor-icons/react';
+import { usePendingNewChat } from '../hooks/usePendingNewChat';
 import { IDE_LABELS } from '../net/protocol';
 import {
   activeTabOf,
@@ -18,6 +19,8 @@ export function TargetBar() {
   const state = ides[selectedIde];
   const tab = state ? activeTabOf(state) : null;
   const pendingHere = pendingSwitch && pendingSwitch.ide === selectedIde ? pendingSwitch : null;
+  // Create in flight: same truth as the rail row and the pane, so the header must not keep naming the old session.
+  const pendingNew = usePendingNewChat();
   const ideLabel = IDE_LABELS[selectedIde];
   // Window name is optimistic like the title: switching to a session in another window changes the name immediately, without waiting for state.
   const windowTitle = viewedWindowOf(state, pendingHere)?.title;
@@ -41,6 +44,9 @@ export function TargetBar() {
   const statusText = backgroundRunning
     ? '后台任务运行中'
     : targetBarStatusText(state, running, unread, ideLabel);
+  // A create / switch in flight owns the header: the old session's title and status would contradict the rail and pane.
+  const title = pendingNew ? '新会话' : pendingHere ? (pendingHere.title || '（未命名）') : (tab?.title || '（无会话）');
+  const inFlight = pendingNew ? '新建中…' : pendingHere ? '切换中…' : '';
 
   return (
     <div className="flex min-h-11 items-center gap-2.5 border-b border-[var(--hairline)] bg-[var(--bg-1)] px-4 py-2.5">
@@ -55,20 +61,18 @@ export function TargetBar() {
               aria-label="会话进行中"
             />
           )}
-          <span className="overflow-hidden text-ellipsis whitespace-nowrap">
-            {pendingHere ? (pendingHere.title || '（未命名）') : (tab?.title || '（无会话）')}
-          </span>
+          <span className="overflow-hidden text-ellipsis whitespace-nowrap">{title}</span>
         </div>
         <div className="mono overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-[var(--text-weak)]">
           {ideLabel}
           {windowTitle ? ` · ${windowTitle}` : ''}
         </div>
       </div>
-      {pendingHere
+      {inFlight
         ? (
             <span className="inline-flex shrink-0 items-center gap-1.5 text-[length:var(--text-chrome)] text-[var(--text-secondary)]">
               <span className="dot live-dot-pulse bg-[var(--accent)]" />
-              切换中…
+              {inFlight}
             </span>
           )
         : state && (

@@ -19,6 +19,7 @@ import type {
   StatePatchWire,
   UserInfo,
 } from './protocol';
+import { newChatLanded } from '../lib/new-chat';
 import { noteUserSwitch } from '../lib/useViewState';
 import { dispatchCli, nextActiveTarget, setCliEffectHandler, useCliStore } from '../store/cli';
 import { useConnectionStore } from '../store/connection';
@@ -139,6 +140,16 @@ function reconcilePendingSwitch(ide: IdeKind, state: CursorState | undefined): v
     ui.clearPendingSwitch(pending.commandId);
 }
 
+/** The IDE opened the chat we asked for → drop the optimistic row (the real one is in this very state). */
+function reconcilePendingNewChat(ide: IdeKind, state: CursorState | undefined): void {
+  const ui = useUiStore.getState();
+  const pending = ui.pendingNewChat;
+  if (!pending || pending.ide !== ide)
+    return;
+  if (newChatLanded(pending, state))
+    ui.clearPendingNewChat(pending.commandId);
+}
+
 function cliAgentId(payload: unknown): string {
   if (!payload || typeof payload !== 'object')
     return '';
@@ -240,6 +251,8 @@ export function bindSocket(): void {
     const { ides } = useIdesStore.getState();
     reconcilePendingSwitch('cursor', ides.cursor);
     reconcilePendingSwitch('codebuddy', ides.codebuddy);
+    reconcilePendingNewChat('cursor', ides.cursor);
+    reconcilePendingNewChat('codebuddy', ides.codebuddy);
   });
   socket.on('state:patch', (wire: StatePatchWire) => {
     useIdesStore.getState().applyStatePatch(wire);
@@ -247,17 +260,19 @@ export function bindSocket(): void {
     const { ides } = useIdesStore.getState();
     reconcilePendingSwitch('cursor', ides.cursor);
     reconcilePendingSwitch('codebuddy', ides.codebuddy);
+    reconcilePendingNewChat('cursor', ides.cursor);
+    reconcilePendingNewChat('codebuddy', ides.codebuddy);
   });
 
   socket.on('session:full', (payload: SessionBodyPayload) => sessions().applySessionFull(payload, currentLiveKey()));
   socket.on('session:unavailable', (payload: SessionMissingPayload) => sessions().applySessionUnavailable(payload));
   socket.on('session:append', (payload: SessionBodyPayload) => {
-    const outcome = sessions().applySessionAppend(payload, currentLiveKey());
+    const outcome = sessions().applySessionAppend(payload);
     if (outcome === 'gap')
       resyncBody(payload);
   });
   socket.on('session:patch', (payload: SessionPatchPayload) => {
-    sessions().applySessionPatch(payload, currentLiveKey());
+    sessions().applySessionPatch(payload);
   });
   socket.on('session:sync', (payload: SessionSyncPayload) => sessions().applySessionSync(payload));
 
@@ -329,6 +344,19 @@ export function bindSocket(): void {
     //   - success → become "confirmed", highlight stays on the target row, drop once state catches up.
     //     The reply arrives before state: dropping now would flash highlight back to the old active row.
     const ui = useUiStore.getState();
+    // Optimistic new session: the IDE's own ＋ click failed → drop the row now instead of waiting out the deadline.
+    // Success keeps it until state catches up, but only for one extract: an IDE that silently did nothing (or reused
+    // the draft it already had) produces no landing signal at all, and 8s of locked input is the wrong answer to that.
+    const creating = ui.pendingNewChat;
+    if (creating && creating.commandId === result.commandId) {
+      if (result.ok) {
+        ui.confirmPendingNewChat(creating.commandId);
+      }
+      else {
+        ui.clearPendingNewChat(creating.commandId);
+        ui.pushToast(`新建会话失败：${result.error ?? '未知错误'}`, 'error');
+      }
+    }
     const pending = ui.pendingSwitch;
     if (!pending || pending.commandId !== result.commandId)
       return;

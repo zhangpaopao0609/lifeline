@@ -25,12 +25,16 @@ const JSONRPC_INTERNAL_ERROR = -32603;
  * permission method wait until the peer answers. An explicit `timeoutMs`, including
  * `null`, replaces that default.
  */
-export function resolveTimeoutMs(method: string, timeoutMs?: number | null): number | null {
+export function resolveTimeoutMs(
+  method: string,
+  timeoutMs?: number | null,
+  defaultMs: number = DEFAULT_REQUEST_TIMEOUT_MS,
+): number | null {
   if (timeoutMs !== undefined)
     return timeoutMs;
   if (method === 'session/prompt' || method.includes('permission'))
     return null;
-  return DEFAULT_REQUEST_TIMEOUT_MS;
+  return defaultMs;
 }
 
 export class JsonlRpcError extends Error {
@@ -95,6 +99,12 @@ export interface JsonlRpcOptions {
   env?: NodeJS.ProcessEnv;
   /** Overrides `DEFAULT_KILL_GRACE_MS` so tests do not wait five seconds. */
   killGraceMs?: number;
+  /**
+   * Overrides `DEFAULT_REQUEST_TIMEOUT_MS` for the methods that are allowed to time out, so a test can prove
+   * "initialize times out, prompt does not" without waiting fifteen real seconds. The default value itself is
+   * pinned by the unit test on `resolveTimeoutMs`.
+   */
+  requestTimeoutMs?: number;
   onRequest?: (request: JsonlRpcInboundRequest) => Promise<unknown> | unknown;
   onNotification?: (notification: JsonlRpcNotification) => void;
   /**
@@ -118,6 +128,7 @@ interface Pending {
 export class JsonlRpc {
   readonly killGraceMs: number;
 
+  private readonly requestTimeoutMs: number;
   private readonly command: string;
   private readonly args: string[];
   private readonly cwd: string | undefined;
@@ -140,6 +151,7 @@ export class JsonlRpc {
 
   constructor(options: JsonlRpcOptions) {
     this.killGraceMs = options.killGraceMs ?? DEFAULT_KILL_GRACE_MS;
+    this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     this.command = options.command;
     this.args = [...(options.args ?? [])];
     this.cwd = options.cwd;
@@ -177,7 +189,7 @@ export class JsonlRpc {
   sendRequest(method: string, params?: unknown, options?: JsonlRpcRequestOptions): JsonlRpcCall {
     const id = this.nextId;
     this.nextId += 1;
-    const timeoutMs = resolveTimeoutMs(method, options?.timeoutMs);
+    const timeoutMs = resolveTimeoutMs(method, options?.timeoutMs, this.requestTimeoutMs);
     const response = new Promise<unknown>((resolve, reject) => {
       const timer = timeoutMs == null
         ? undefined

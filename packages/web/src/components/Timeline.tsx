@@ -1,6 +1,7 @@
 import { CloudArrowDown, FileDashed, Plug } from '@phosphor-icons/react';
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { useLiveSessionKey } from '../hooks/useLiveSessionKey';
+import { usePendingNewChat } from '../hooks/usePendingNewChat';
 import { IDE_LABELS } from '../net/protocol';
 import { socket } from '../net/socket';
 import { isDraftTab, useIdesStore, viewedTabOf } from '../store/ides';
@@ -153,6 +154,7 @@ export function Timeline() {
   );
   const pendingSwitch = useUiStore(s => s.pendingSwitch);
   const pendingHere = pendingSwitch && pendingSwitch.ide === selectedIde ? pendingSwitch : null;
+  const pendingNewHere = usePendingNewChat();
   const viewedTab = viewedTabOf(state, pendingHere);
   const liveKey = useLiveSessionKey();
   const body = useSessionsStore(s => (liveKey ? s.bodies[liveKey] : undefined));
@@ -190,6 +192,15 @@ export function Timeline() {
     return <IdeDisconnected ideLabel={IDE_LABELS[selectedIde]} error={state.lastExtractionError ?? null} />;
 
   if (!liveKey) {
+    // Create in flight (the ＋ was just clicked): show the empty-session hint now instead of the previous session's
+    // body or a "no session open" line — the row in the rail already says 新会话.
+    if (pendingNewHere) {
+      return (
+        <div className="tl-hint">
+          新会话（草稿）—— 在下方输入框发一条消息就能开始。
+        </div>
+      );
+    }
     if (isDraftTab(viewedTab)) {
       return (
         <div className="tl-hint">

@@ -489,6 +489,12 @@ export class StateManager extends EventEmitter {
           this.pendingPatch = null;
         }
       }, this.debounceMs);
+      // A pending patch must never be the reason the process stays alive. Without this, a test constructing
+      // `new StateManager(60_000)` sat idle for the full minute after its assertions had already passed
+      // (tests/cdp-issue-state.test.ts: 60.4s wall clock against 0.5s of actual work), and the same timer
+      // delays SIGTERM. The agent always has sockets/servers holding the loop open, and shutdown paths call
+      // `flush()` first.
+      this.debounceTimer.unref?.();
     }
   }
 

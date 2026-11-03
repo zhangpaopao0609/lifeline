@@ -16,6 +16,7 @@ import {
 } from '@phosphor-icons/react';
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useIsDesktop } from '../hooks/useMediaQuery';
+import { usePendingNewChat } from '../hooks/usePendingNewChat';
 import { groupCliByCwd, normalizeCliCwd } from '../lib/cli-placement';
 import { noteUserSwitch } from '../lib/useViewState';
 import { useWindowOrder } from '../lib/useWindowOrder';
@@ -101,6 +102,20 @@ function GroupNewChatButton({ windowTitle, onNewChat }: { windowTitle: string; o
 }
 
 /**
+ * The optimistic row for a create that is still in flight (the `+` was just clicked). Same shape as a real row and
+ * already marked as the current one, so the click has a visible effect within a frame; it is replaced by the real
+ * draft row as soon as state catches up (lib/new-chat.ts). Not a button: there is nothing to switch to yet.
+ */
+function NewChatRow() {
+  return (
+    <div className="sess-tab is-viewing" role="status" aria-label="正在新建会话">
+      <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap">新会话</span>
+      <span className="sess-chip shrink-0">草稿</span>
+    </div>
+  );
+}
+
+/**
  * When opening the phone switcher, bring the "current session" into view (`revealCurrent`): with many sessions the panel always paints from the top,
  * so the user has to scroll around and hunt for the highlighted row — "every switch means scrolling forever" (2026-09-17 feedback).
  *
@@ -120,9 +135,9 @@ export function SessionList({
   /** When opening this screen, scroll to the current session (phone switcher; the desktop column is always visible, so jumping with selection is jarring) */
   revealCurrent?: boolean;
 }) {
-  const ides = useIdesStore(s => s.ides);
+  // Only the selected IDE's slice: subscribing to the whole map re-renders the rail for the other slot too.
   const selectedIde = useIdesStore(s => s.selectedIde);
-  const state = ides[selectedIde];
+  const state = useIdesStore(s => s.ides[s.selectedIde]);
   const isDesktop = useIsDesktop();
   const agentId = useMachinesStore(s => s.selectedAgentId);
   // Sessions on a content-source machine (no IDE) still need to be openable: tapping one must not go through the "switch tab" command.
@@ -131,6 +146,7 @@ export function SessionList({
   );
   const pendingSwitch = useUiStore(s => s.pendingSwitch);
   const setPendingSwitch = useUiStore(s => s.setPendingSwitch);
+  const setPendingNewChat = useUiStore(s => s.setPendingNewChat);
   const [query, setQuery] = useState('');
   const [dragId, setDragId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
@@ -154,6 +170,15 @@ export function SessionList({
   const cliSurface = (activeTarget.kind === 'cli' || activeTarget.kind === 'cli-home')
     && activeTarget.agentId === agentId;
   const pendingHere = pendingSwitch && pendingSwitch.ide === selectedIde ? pendingSwitch : null;
+  /**
+   * Optimistic create (see `PendingNewChat`): the row + the empty pane are painted on click. Measured on the live
+   * site 2026-10-31: without this the row appeared **2321ms** after the click (agent clicks the IDE's ＋, then a
+   * forced extract), which is exactly "点完不立即出现".
+   *
+   * The hook drops it the moment the state proves the chat exists: bind.ts clears the store at that point, and
+   * deriving it here as well means the two rows can never paint in the same frame.
+   */
+  const newHere = usePendingNewChat();
 
   // Folded-by-default + desktop = a session is open on the right while the list shows nothing selected anywhere (2026-10-20 feedback;
   // the default flipped to folded and only the phone switcher force-opened the current group).
@@ -269,8 +294,38 @@ export function SessionList({
 
   const newChat = (windowId: string, section?: string) => {
     noteUserSwitch();
+    // Last click wins the other way round too: a switch still in flight would never match its target (the create moves
+    // the IDE onto a new chat), leaving its lock on the composer until the 10s deadline.
+    useUiStore.getState().clearPendingSwitch();
     // The Agents-window "+" sits on the section header (= IDE New Agent, created into that repo); project windows omit section
-    sendCommand('command:new_chat', { ide: selectedIde, windowId, ...(section ? { section } : {}) });
+    const commandId = sendCommand('command:new_chat', { ide: selectedIde, windowId, ...(section ? { section } : {}) });
+    // Optimistic: the row and the empty pane paint on click. The IDE still has to click its own ＋ and report back
+    // (0.5–2s) — waiting for that looked like "the ＋ did nothing" (2026-10-31 feedback). Dropped again as soon as the
+    // real state arrives (lib/new-chat.ts), or on failure / deadline.
+    //
+    // Baseline: "landed" is a delta against what was on screen at click time (see newChatLanded) — an already-active
+    // draft or the window raise that precedes a cross-window ＋ must not read as the new chat. Both tab sources, same
+    // merge as groupTabsByWindow: `chatTabs` is the raised window's, other windows live in `windows[].chatTabs`.
+    const inTargetWindow = (t: ChatTab) => (t.windowId || state?.activeWindowId || '') === windowId;
+    const baseTabs = [
+      ...(state?.chatTabs ?? []),
+      ...(state?.windows ?? []).flatMap(w => w.chatTabs ?? []),
+    ].filter(inTargetWindow);
+    setPendingNewChat({
+      commandId,
+      ide: selectedIde,
+      agentId,
+      windowId,
+      ...(section === undefined ? {} : { section }),
+      baseComposerIds: baseTabs.map(t => t.composerId).filter(Boolean),
+      baseDraftIds: baseTabs.filter(isDraftTab).map(t => t.composerId).filter(Boolean),
+    });
+    // A folded group would hide that row: unfold the target group (and the Agents-window section it is created in).
+    setOpenKeys(prev => new Set([
+      ...prev,
+      groupKey(windowId),
+      ...(section === undefined ? [] : [`${groupKey(windowId)}:${section}`]),
+    ]));
     // Phone: tapping + means go to this new session — leaving the full-screen switcher up covers the input for the whole screen,
     // so the user sees "the new session is already there" but cannot type (2026-09-16 feedback). Desktop has no onNavigate.
     onNavigate?.();
@@ -278,6 +333,9 @@ export function SessionList({
 
   const switchTab = (tab: ChatTab, windowId: string) => {
     useUiStore.getState().showIde(selectedIde);
+    // Last click wins: picking a session while a create is still in flight drops the optimistic row, so it cannot
+    // reappear after the switch lands (the IDE does create the chat; the real row shows up in the next extract).
+    useUiStore.getState().clearPendingNewChat();
     const wid = tab.windowId || windowId;
     // Selecting a row dismisses the overlay (the phone P3 full-screen switcher: "pick a session → close and land").
     // Must run before the two early returns: tapping the row that is already current / whose switch command is still in flight
@@ -391,16 +449,20 @@ export function SessionList({
                 {!state && <div className="p-2.5 text-[length:var(--text-chrome)] text-[var(--text-weak)]">该 IDE 无状态</div>}
                 {groups.map((g) => {
                   const tabs = q ? g.tabs.filter(t => t.title.toLowerCase().includes(q)) : g.tabs;
-                  if (tabs.length === 0)
+                  /** Optimistic create landing in this window (never filtered by search: the user just asked for it). */
+                  const pendingRow = newHere && newHere.windowId === g.windowId ? newHere : null;
+                  if (tabs.length === 0 && !pendingRow)
                     return null;
                   const dropping = overId === g.windowId && dragId !== null && dragId !== g.windowId;
                   const viewingInGroup = revealCurrent && !!state && tabs.some(t => isViewingTab(t, g.windowId, selectedIde, state, pendingSwitch));
-                  const folded = !q && !viewingInGroup && !openKeys.has(groupKey(g.windowId));
+                  // A folded group would hide the row the user just asked for, so an in-flight create keeps it open.
+                  const folded = !q && !pendingRow && !viewingInGroup && !openKeys.has(groupKey(g.windowId));
                   // Agents window (Cursor's global agent list): subdivide the group by repo, matching the IDE
                   const isAgents = (state?.windows.find(w => w.id === g.windowId)?.kind ?? 'project') === 'agents';
                   const renderRow = (t: ChatTab) => {
-                    // Exactly one current session: during a switch the target owns it, and the old active row demotes immediately (2026-09-15 dual-active feedback)
-                    const viewing = isViewingTab(t, g.windowId, selectedIde, state, pendingSwitch);
+                    // Exactly one current session: during a switch the target owns it, and the old active row demotes immediately (2026-09-15 dual-active feedback).
+                    // A create in flight owns it too (the IDE is about to focus the chat it is making) — otherwise two rows paint as "current".
+                    const viewing = !newHere && isViewingTab(t, g.windowId, selectedIde, state, pendingSwitch);
                     return (
                       <button
                         key={`${t.composerId}:${t.title}`}
@@ -414,6 +476,12 @@ export function SessionList({
                       </button>
                     );
                   };
+                  // Agents window: the create belongs to one repo section. Only draw it inside that section when the
+                  // section already exists; otherwise fall back to the top of the group (a brand-new repo has no section yet).
+                  const sections = isAgents ? groupTabsBySection(tabs) : [];
+                  const pendingInSection = !!pendingRow
+                    && pendingRow.section !== undefined
+                    && sections.some(sec => (sec.section ?? '') === pendingRow.section);
                   return (
                     <div
                       key={g.windowId}
@@ -475,63 +543,86 @@ export function SessionList({
                         >
                           <DotsSixVertical size={14} weight="bold" />
                         </button>
-                        <GroupNewChatButton windowTitle={g.title} onNewChat={() => newChat(g.windowId)} />
+                        {/* A content-source machine has no CDP: a create can only fail, so don't offer it. */}
+                        {!contentOnlyMachine && (
+                          <GroupNewChatButton windowTitle={g.title} onNewChat={() => newChat(g.windowId)} />
+                        )}
                       </div>
                       {!folded && (isAgents
-                        ? groupTabsBySection(tabs).map((sec, secIdx) => {
-                            const secKey = `${groupKey(g.windowId)}:${sec.section}`;
-                            const viewingInSection = revealCurrent && !!state && sec.tabs.some(t => isViewingTab(t, g.windowId, selectedIde, state, pendingSwitch));
-                            const secFolded = !q && !viewingInSection && !openKeys.has(secKey);
-                            // Collapse state is keyed by section name (secKey), but the React key needs another identity layer:
-                            // groupTabsBySection only merges **adjacent** same-named sections (the IDE's own order can leave same names non-adjacent),
-                            // so "two workspace.json sections in the Agents window" is valid input — using secKey alone would collide keys
-                            // (React duplicate-key warning; on re-render children can be duplicated/dropped; empirically 378 console lines when rapidly tapping sessions).
-                            const secRowKey = `${secKey}:${sec.tabs[0]?.composerId ?? secIdx}`;
-                            return (
-                              <div key={secRowKey} className="sess-section">
-                                {/* Section header is not a button (it still needs a + inside, so we cannot nest buttons) — same as the window header, use role=button */}
-                                <div
-                                  className="sess-section-head"
-                                  role="button"
-                                  tabIndex={0}
-                                  aria-expanded={!secFolded}
-                                  aria-label={`${secFolded ? '展开' : '收起'}「${sec.section || '其他'}」`}
-                                  onClick={() => toggleKey(secKey)}
-                                  onKeyDown={(e) => {
-                                    if (e.key !== 'Enter' && e.key !== ' ')
-                                      return;
-                                    e.preventDefault();
-                                    toggleKey(secKey);
-                                  }}
-                                >
-                                  {secFolded
-                                    ? <CaretRight size={10} weight="fill" />
-                                    : <CaretDown size={10} weight="fill" />}
-                                  <span className="sess-section-title">{sec.section || '其他'}</span>
-                                  <span className="sess-section-count">{sec.tabs.length}</span>
-                                  {/* IDE section headers each have New Agent: create into that repo.
+                        ? (
+                            <>
+                              {pendingRow && !pendingInSection && <NewChatRow />}
+                              {sections.map((sec, secIdx) => {
+                                const secKey = `${groupKey(g.windowId)}:${sec.section}`;
+                                const viewingInSection = revealCurrent && !!state && sec.tabs.some(t => isViewingTab(t, g.windowId, selectedIde, state, pendingSwitch));
+                                const pendingInThis = pendingInSection && (pendingRow?.section ?? '') === (sec.section ?? '');
+                                const secFolded = !q && !pendingInThis && !viewingInSection && !openKeys.has(secKey);
+                                // Collapse state is keyed by section name (secKey), but the React key needs another identity layer:
+                                // groupTabsBySection only merges **adjacent** same-named sections (the IDE's own order can leave same names non-adjacent),
+                                // so "two workspace.json sections in the Agents window" is valid input — using secKey alone would collide keys
+                                // (React duplicate-key warning; on re-render children can be duplicated/dropped; empirically 378 console lines when rapidly tapping sessions).
+                                const secRowKey = `${secKey}:${sec.tabs[0]?.composerId ?? secIdx}`;
+                                return (
+                                  <div key={secRowKey} className="sess-section">
+                                    {/* Section header is not a button (it still needs a + inside, so we cannot nest buttons) — same as the window header, use role=button */}
+                                    <div
+                                      className="sess-section-head"
+                                      role="button"
+                                      tabIndex={0}
+                                      aria-expanded={!secFolded}
+                                      aria-label={`${secFolded ? '展开' : '收起'}「${sec.section || '其他'}」`}
+                                      onClick={() => toggleKey(secKey)}
+                                      onKeyDown={(e) => {
+                                        if (e.key !== 'Enter' && e.key !== ' ')
+                                          return;
+                                        e.preventDefault();
+                                        toggleKey(secKey);
+                                      }}
+                                    >
+                                      {secFolded
+                                        ? <CaretRight size={10} weight="fill" />
+                                        : <CaretDown size={10} weight="fill" />}
+                                      <span className="sess-section-title">{sec.section || '其他'}</span>
+                                      <span className="sess-section-count">{sec.tabs.length}</span>
+                                      {/* IDE section headers each have New Agent: create into that repo.
                               Remote creates always flip Run on to This Mac (a cloud agent's body is not readable on this machine,
                               see spec 3.6) — so the "No Repo" section is also safe to create in. */}
-                                  <button
-                                    type="button"
-                                    className="sess-add"
-                                    aria-label={`在「${sec.section || '其他'}」新建 agent`}
-                                    title="在该仓库新建 agent（远程新建跑在本机）"
-                                    onClick={(e) => { e.stopPropagation(); newChat(g.windowId, sec.section); }}
-                                  >
-                                    <Plus size={12} weight="bold" />
-                                  </button>
-                                </div>
-                                {!secFolded && sec.tabs.map(renderRow)}
-                              </div>
-                            );
-                          })
-                        : tabs.map(renderRow))}
+                                      {!contentOnlyMachine && (
+                                        <button
+                                          type="button"
+                                          className="sess-add"
+                                          aria-label={`在「${sec.section || '其他'}」新建 agent`}
+                                          title="在该仓库新建 agent（远程新建跑在本机）"
+                                          onClick={(e) => { e.stopPropagation(); newChat(g.windowId, sec.section); }}
+                                        >
+                                          <Plus size={12} weight="bold" />
+                                        </button>
+                                      )}
+                                    </div>
+                                    {!secFolded && (
+                                      <>
+                                        {pendingInThis && <NewChatRow />}
+                                        {sec.tabs.map(renderRow)}
+                                      </>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </>
+                          )
+                        : (
+                            <>
+                              {pendingRow && <NewChatRow />}
+                              {tabs.map(renderRow)}
+                            </>
+                          ))}
                     </div>
                   );
                 })}
-                {state && groups.every(g => g.tabs.length === 0) && (
-                  <div className="p-2.5 text-[length:var(--text-chrome)] text-[var(--text-weak)]">暂无会话 —— 点窗口分组头部的 ＋ 新建。</div>
+                {state && !newHere && groups.every(g => g.tabs.length === 0) && (
+                  <div className="p-2.5 text-[length:var(--text-chrome)] text-[var(--text-weak)]">
+                    {contentOnlyMachine ? '暂无会话 —— 这台机器只读，不能新建。' : '暂无会话 —— 点窗口分组头部的 ＋ 新建。'}
+                  </div>
                 )}
               </>
             )}

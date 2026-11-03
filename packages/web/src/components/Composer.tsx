@@ -1,6 +1,7 @@
 import type { ActiveTarget } from '../store/cli';
 import { PaperPlaneRight, Square } from '@phosphor-icons/react';
 import { useEffect, useRef, useState } from 'react';
+import { usePendingNewChat } from '../hooks/usePendingNewChat';
 import { cdpIssueCopy } from '../lib/cdp-issue-copy';
 import { IDE_LABELS } from '../net/protocol';
 import { selectCliModel, selectCliThinking, sendCliMessage, sendUserMessage, stopCliSession, stopSession } from '../net/send';
@@ -83,6 +84,12 @@ function IdeComposer() {
   }, [issue?.scope, issue?.kind]);
   // Optimistic "switching": the server hasn't switched yet, so a send would hit the old session — lock first.
   const pendingHere = pendingSwitch && pendingSwitch.ide === selectedIde ? pendingSwitch : null;
+  /**
+   * Optimistic create: the chat does not exist on the IDE yet, so `sendTargetOf` still points at the previous
+   * session — sending now would post the first message into the wrong conversation. Lock until state catches up
+   * (usually a few hundred ms; the row/pane are already painted optimistically, see store/ui PendingNewChat).
+   */
+  const pendingNewHere = usePendingNewChat();
   // Session in progress (thinking/generating/running tools): lock input so we don't send into a half-done session.
   // Same criterion as title/session-row loading (row-level spinner wins); a long task doesn't unlock mid-run.
   const working = isActiveSessionWorking(state, pendingHere);
@@ -91,13 +98,13 @@ function IdeComposer() {
   const backgroundRunning = !working && tab?.isActive === true && tab?.backgroundRunning === true;
   const ideConnected = state?.connected === true;
   const canSend
-    = draft.trim().length > 0 && !!target && !machineOffline && !machineContentOnly && !pendingHere && !working && ideConnected;
+    = draft.trim().length > 0 && !!target && !machineOffline && !machineContentOnly && !pendingHere && !pendingNewHere && !working && ideConnected;
   // While generating, the send key becomes a stop key (same place, same action as the one in the IDE).
   // Both IDEs are enrolled: CodeBuddy uses fiber onCancel; Cursor uses the composer's
   // `[data-stop-button="true"]` / `aria-label="Stop generation"` (when not generating the agent returns
   // `Not generating`, explained in a toast — not a silent failure).
   const canStop
-    = working && !!target && !machineOffline && !machineContentOnly && !pendingHere && ideConnected;
+    = working && !!target && !machineOffline && !machineContentOnly && !pendingHere && !pendingNewHere && ideConnected;
 
   const autoGrow = () => {
     const ta = taRef.current;
@@ -140,7 +147,7 @@ function IdeComposer() {
   const requestScrollToBottom = useUiStore(s => s.requestScrollToBottom);
 
   const send = () => {
-    if (!draft.trim() || !target || !state || machineContentOnly || pendingHere || working || !state.connected)
+    if (!draft.trim() || !target || !state || machineContentOnly || pendingHere || pendingNewHere || working || !state.connected)
       return;
     if (!sendUserMessage(draft))
       return;
@@ -160,26 +167,28 @@ function IdeComposer() {
     e.preventDefault(); send();
   };
 
-  const placeholder = pendingHere
-    ? `正在切换到「${pendingHere.title || '未命名'}」…`
-    : working
-      ? '会话进行中…'
-      : backgroundRunning
-        ? '后台任务运行中，可继续发送'
-        : !state
-            ? '该 IDE 无状态'
-            : cdpIssue
-              ? cdpIssueCopy(cdpIssue, ideLabel).text
-              : machineContentOnly
-                ? '内容源（只读）：这台机器不接管输入'
-                : machineOffline
-                  ? '机器已离线，无法发送'
-                  : isDraftTab(tab)
-                  // Draft: the title is the draft text (or still New Agent); don't splice it into "send to …".
-                    ? (draftText ? '草稿里的文字已填好，可直接发送' : '新会话（草稿）—— 发第一条消息')
-                    : target
-                      ? `发给 ${tab?.title ?? target.tabTitle}`
-                      : '无可用发送目标';
+  const placeholder = pendingNewHere
+    ? '正在新建会话…'
+    : pendingHere
+      ? `正在切换到「${pendingHere.title || '未命名'}」…`
+      : working
+        ? '会话进行中…'
+        : backgroundRunning
+          ? '后台任务运行中，可继续发送'
+          : !state
+              ? '该 IDE 无状态'
+              : cdpIssue
+                ? cdpIssueCopy(cdpIssue, ideLabel).text
+                : machineContentOnly
+                  ? '内容源（只读）：这台机器不接管输入'
+                  : machineOffline
+                    ? '机器已离线，无法发送'
+                    : isDraftTab(tab)
+                    // Draft: the title is the draft text (or still New Agent); don't splice it into "send to …".
+                      ? (draftText ? '草稿里的文字已填好，可直接发送' : '新会话（草稿）—— 发第一条消息')
+                      : target
+                        ? `发给 ${tab?.title ?? target.tabTitle}`
+                        : '无可用发送目标';
 
   const bannerCopy = bannerVisible && issue ? cdpIssueCopy(issue, ideLabel) : null;
   const bannerText = bannerCopy

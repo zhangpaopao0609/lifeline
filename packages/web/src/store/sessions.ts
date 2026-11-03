@@ -17,7 +17,7 @@ import { parseIde } from '../net/protocol';
  * Semantics match production src/client/app.js item by item:
  *  - key sessionBodyKey = `${ide}:${sessionId}`
  *  - optimistic bubble id = `pending-send:${commandId}`
- *  - pruneResolvedPending: pop bubbles against the set of real human texts (reconcile = end-to-end confirm)
+ *  - pruneResolvedPending: pop bubbles against the real human messages that landed **after** them (reconcile = end-to-end confirm)
  *  - mergeById (lib/session-page): de-dupe by id (replace if present, else push); tail/earlier page merge also uses it
  *  - paging: when the server only sent the tail, `pageMeta` stores the cursor; scrolling up asks for the earlier page (`beginEarlier`)
  *  - **full body kept**: this is the data layer, history is never dropped; "how much to render" is Timeline's per-viewport job
@@ -73,9 +73,39 @@ function realHumanTexts(list: ChatElement[]): Set<string> {
   return real;
 }
 
+/**
+ * Pop optimistic bubbles whose real message has already landed.
+ *
+ * Two rules, both taken from how a pending bubble is created (appended at the **tail**, see echoPendingSend):
+ *  - **position anchor**, not a whole-body text set: the on-disk twin can only appear *after* the pending, so an
+ *    older message that happens to have the same text can no longer pop a freshly sent bubble;
+ *  - **one-to-one tail→head**, so sending the same text twice pops one bubble per landed message instead of
+ *    popping both the moment the first one lands (which made the second bubble flash away and come back).
+ *
+ * Match is still by text (`pending-send:<commandId>` and the disk bubbleId are two unrelated id spaces); the
+ * position anchor is what makes that compromise tolerable. Returns the input array untouched when nothing popped.
+ */
 function pruneResolvedPending(list: ChatElement[]): ChatElement[] {
-  const real = realHumanTexts(list);
-  return list.filter(m => !(isPendingSend(m) && real.has((m as HumanMessage).text)));
+  const landed = new Map<string, number>();
+  let popped: Set<number> | null = null;
+  for (let i = list.length - 1; i >= 0; i--) {
+    const m = list[i];
+    if (!m)
+      continue;
+    if (m.type === 'human' && !isPendingSend(m)) {
+      landed.set(m.text, (landed.get(m.text) ?? 0) + 1);
+      continue;
+    }
+    if (!isPendingSend(m))
+      continue;
+    const text = (m as HumanMessage).text;
+    const left = landed.get(text) ?? 0;
+    if (left === 0)
+      continue;
+    landed.set(text, left - 1);
+    (popped ??= new Set()).add(i);
+  }
+  return popped ? list.filter((_, i) => !popped.has(i)) : list;
 }
 
 /** When full arrives, splice currently unresolved pending bubbles back into incoming, then reconcile. */
@@ -141,9 +171,15 @@ interface SessionsStore {
   unavailable: Record<string, true>;
   applySessionUnavailable: (payload: SessionMissingPayload) => void;
   applySessionFull: (payload: SessionBodyPayload, liveKey: string) => void;
-  applySessionAppend: (payload: SessionBodyPayload, liveKey: string) => AppendOutcome;
+  /**
+   * No `liveKey` argument on purpose: whether a landed message may pop its pending bubble does not depend on
+   * which session the user is looking at. Gating it on `key === liveKey` was what left a second, ✓-less copy of
+   * the sent message in place — the real packet lands a few dozen ms before the IDE state catches up (a draft
+   * handover still reports an empty liveKey), so the pop was skipped and never re-run.
+   */
+  applySessionAppend: (payload: SessionBodyPayload) => AppendOutcome;
   /** Incremental fill from a content machine: merge by id, push the reconcile point straight to seq. */
-  applySessionPatch: (payload: SessionPatchPayload, liveKey: string) => void;
+  applySessionPatch: (payload: SessionPatchPayload) => void;
   /** Request earlier page: returns the `before` to send; null when we shouldn't (at the top / in flight). */
   beginEarlier: (key: string) => { before: number } | null;
   /** seq check passed: only advance the reconcile point, don't touch the body. */
@@ -252,7 +288,7 @@ export const useSessionsStore = create<SessionsStore>()((set, get) => ({
     });
   },
 
-  applySessionAppend: (payload, liveKey) => {
+  applySessionAppend: (payload) => {
     const sessionId = payload?.sessionId;
     const incoming = Array.isArray(payload?.messages) ? payload.messages : [];
     if (!sessionId)
@@ -269,9 +305,9 @@ export const useSessionsStore = create<SessionsStore>()((set, get) => ({
         return 'gap';
     }
     const cached = get().bodies[key] ?? [];
-    let merged = mergeById(cached, incoming);
-    if (key === liveKey)
-      merged = pruneResolvedPending(merged);
+    // Unconditional (not `key === liveKey`): the twin may land before the IDE state reports this session as live,
+    // and a skipped pop is never retried — see pruneResolvedPending.
+    const merged = pruneResolvedPending(mergeById(cached, incoming));
     set((s) => {
       const bodies = { ...s.bodies, [key]: merged };
       return {
@@ -283,7 +319,7 @@ export const useSessionsStore = create<SessionsStore>()((set, get) => ({
     return 'applied';
   },
 
-  applySessionPatch: (payload, liveKey) => {
+  applySessionPatch: (payload) => {
     const sessionId = payload?.sessionId;
     const incoming = Array.isArray(payload?.messages) ? payload.messages : [];
     const seq = typeof payload?.seq === 'number' ? payload.seq : undefined;
@@ -291,9 +327,9 @@ export const useSessionsStore = create<SessionsStore>()((set, get) => ({
       return;
     const key = sessionBodyKey(sessionId, payloadIde(payload));
     const cached = get().bodies[key] ?? [];
-    let merged = mergeById(cached, incoming);
-    if (key === liveKey)
-      merged = pruneResolvedPending(merged);
+    // Unconditional (not `key === liveKey`): the twin may land before the IDE state reports this session as live,
+    // and a skipped pop is never retried — see pruneResolvedPending.
+    const merged = pruneResolvedPending(mergeById(cached, incoming));
     set((s) => {
       const bodies = { ...s.bodies, [key]: merged };
       return {
