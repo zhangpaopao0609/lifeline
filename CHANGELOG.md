@@ -2,6 +2,21 @@
 
 **English** | [简体中文](./CHANGELOG.zh-CN.md)
 
+## [0.4.0] - 2026-11-05
+
+### Features
+
+- CodeBuddy also connects to the plugin inside VS Code now. Same slot: the plugin shows as "CodeBuddy · VS Code plugin", the standalone IDE still shows just "CodeBuddy".
+- Sessions from the plugin and from the standalone IDE appear in the same session list.
+
+### Bug Fixes
+
+- On Windows with only the plugin installed, the automatic restart stalled on "did not quit" and never reopened. It now quits and reopens only the program that actually needs it.
+- On a machine with both installed, a VS Code you start yourself also carries the debug port now, so it stops being closed and reopened every time.
+- A leftover port file from a program that did not exit cleanly no longer hides the live one behind it.
+- macOS no longer relies on `pgrep` alone to decide whether the app is running, which stops it from restarting the wrong app.
+- The disconnected hint follows the host: in plugin mode it says VS Code reads `argv.json`, so quitting and reopening it by hand works too.
+
 ## [0.3.0] - 2026-11-03
 
 ### Features
