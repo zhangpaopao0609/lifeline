@@ -18,7 +18,7 @@ import type {
 } from '../net/protocol';
 import { create } from 'zustand';
 import { mergeById } from '../lib/session-page';
-import { cliAppendSchema, cliSnapshotSchema, validateInbound } from '../net/protocol';
+import { cliAppendSchema, cliSnapshotSchema, isCliPlatform, validateInbound } from '../net/protocol';
 
 function isListedCliSource(source: unknown): source is CliSource {
   return source === 'cursor-cli' || source === 'codebuddy-cli';
@@ -444,7 +444,7 @@ export function cliRailDot(
 }
 
 export function visibleCliSources(machine: { platform?: string; cliSources?: unknown } | null | undefined): Array<{ source: CliSource; availability: CliAvailability }> {
-  if (!machine || machine.platform !== 'darwin' || !Array.isArray(machine.cliSources))
+  if (!machine || !isCliPlatform(machine.platform) || !Array.isArray(machine.cliSources))
     return [];
   const out: Array<{ source: CliSource; availability: CliAvailability }> = [];
   for (const row of machine.cliSources) {

@@ -4,7 +4,7 @@ import type { CheckedAtState, ReadinessClient, ReadinessReport } from './readine
 import type { AcpClientOptions } from './types.js';
 import { tmpdir } from 'node:os';
 import { isAbsolute } from 'node:path';
-import { assertCliCatalog, assertCliStart, assertCliTarget } from '@lifeline/protocol';
+import { assertCliCatalog, assertCliStart, assertCliTarget, isCliPlatform } from '@lifeline/protocol';
 import { CliSessionManager } from '../../cli-session-manager.js';
 import { readServerCommand } from '../../server-inbound.js';
 import { AcpClient } from './client.js';
@@ -177,7 +177,7 @@ export function createLiveCliEntry(options: LiveCliEntryOptions): LiveCliEntry {
   });
 
   function emitAvailability(source: CliSource, availability: CliAvailability, detail?: string): void {
-    if (platform !== 'darwin')
+    if (!isCliPlatform(platform))
       return;
     const row: CliSourceAvailability = {
       source,
@@ -190,10 +190,12 @@ export function createLiveCliEntry(options: LiveCliEntryOptions): LiveCliEntry {
   }
 
   function emitCapabilities(row: CliSourceAvailability): void {
+    if (!isCliPlatform(platform))
+      return;
     capabilityRows.set(row.source, row);
     const payload: CliCapabilities = {
       epoch: options.epoch,
-      platform: 'darwin',
+      platform,
       sources: orderedCapabilityRows(),
     };
     options.emit('cli:capabilities', payload);

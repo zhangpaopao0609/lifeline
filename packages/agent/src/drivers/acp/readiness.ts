@@ -2,6 +2,7 @@ import type { CliAvailability, CliCapabilities, CliSource, CommandErrorCode } fr
 import type { AcpProfile } from './types.js';
 import { statSync } from 'node:fs';
 import { dirname, isAbsolute } from 'node:path';
+import { isCliPlatform } from '@lifeline/protocol';
 import { AcpClient } from './client.js';
 import { JsonlRpcError, JsonlRpcRemoteError } from './jsonl-rpc.js';
 import { codebuddyAcpProfile, cursorAcpProfile } from './profiles.js';
@@ -9,12 +10,13 @@ import { codebuddyAcpProfile, cursorAcpProfile } from './profiles.js';
 const DETAIL_MAX = 160;
 
 /**
- * Agent-side ACP gate. This is `process.platform === 'darwin'` at the call site.
- * `LIFELINE_LINUX_CDP` does not make Linux able to spawn a CLI. The IDE control helper is a different gate.
+ * Agent-side ACP gate: `CLI_PLATFORMS` (darwin, linux). A CLI session is a stdio child process, so it needs
+ * no GUI; Linux runs CLI sessions while staying a content source for IDE control (a separate gate).
+ * `LIFELINE_LINUX_CDP` is the IDE-control escape hatch and has no effect here.
  */
 export function acpSpawnAllowed(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): boolean {
   void env.LIFELINE_LINUX_CDP;
-  return platform === 'darwin';
+  return isCliPlatform(platform);
 }
 
 export interface CheckedAtState {
@@ -272,7 +274,7 @@ function publish(input: ReadinessInput, verdict: ReadinessVerdict, hasKey: boole
   const state = input.checkedAt ?? {};
   const checkedAt = takeCheckedAt(state, input.now?.() ?? Date.now());
   const platform = input.platform ?? process.platform;
-  if (input.emit && input.epoch && platform === 'darwin') {
+  if (input.emit && input.epoch && isCliPlatform(platform)) {
     const row: CliCapabilities['sources'][number] = {
       source: input.source,
       availability: verdict.availability,
@@ -282,7 +284,7 @@ function publish(input: ReadinessInput, verdict: ReadinessVerdict, hasKey: boole
       row.detail = verdict.detail;
     input.emit('cli:capabilities', {
       epoch: input.epoch,
-      platform: 'darwin',
+      platform,
       sources: [row],
     });
   }

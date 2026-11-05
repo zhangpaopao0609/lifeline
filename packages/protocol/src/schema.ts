@@ -6,6 +6,7 @@ import {
   CLI_MODEL_ID_MAX,
   CLI_MODEL_LABEL_MAX,
   CLI_MODEL_LIMIT,
+  CLI_PLATFORMS,
   CLI_RESUME_COMMAND_MAX,
   CLI_SESSION_STATUSES,
   CLI_SOURCES,
@@ -174,7 +175,7 @@ export const sessionSyncSchema = z.object({
 
 const cliAcpCapabilitySchema = z.object({
   protocolVersion: z.literal(1),
-  platform: z.literal('darwin'),
+  platform: z.enum(CLI_PLATFORMS),
   sources: z.array(z.object({
     source: z.enum(CLI_SOURCES),
   }).strict()),

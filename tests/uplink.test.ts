@@ -207,10 +207,11 @@ const DARWIN_CLI_ACP: CliAcpCapability = {
 };
 
 describe('static cliAcp', () => {
-  it('declares both CLI sources on darwin and omits the field on linux and win32', () => {
+  it('declares both CLI sources on darwin and linux and omits the field elsewhere', () => {
     assert.deepEqual(staticCliAcp('darwin', { LIFELINE_LINUX_CDP: '1' }), DARWIN_CLI_ACP);
     assert.deepEqual(staticCliAcp('darwin', {}), DARWIN_CLI_ACP);
-    assert.equal(staticCliAcp('linux', { LIFELINE_LINUX_CDP: '1' }), undefined);
+    assert.deepEqual(staticCliAcp('linux', {}), { ...DARWIN_CLI_ACP, platform: 'linux' });
+    assert.deepEqual(staticCliAcp('linux', { LIFELINE_LINUX_CDP: '1' }), { ...DARWIN_CLI_ACP, platform: 'linux' });
     assert.equal(staticCliAcp('win32', { LIFELINE_LINUX_CDP: '1' }), undefined);
     assert.equal(staticCliAcp('freebsd', { LIFELINE_LINUX_CDP: '1' }), undefined);
   });

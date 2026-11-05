@@ -22,6 +22,7 @@ import {
 } from './content-watermark.js';
 import { cliCatalogPath } from './drivers/acp/catalog-disk.js';
 import { attachCliUplinkSync, attachLiveCliListeners, createLiveCliEntry, warmCursorModels } from './drivers/acp/live-entry.js';
+import { acpSpawnAllowed } from './drivers/acp/readiness.js';
 import { cliSessionLedgerPath } from './drivers/acp/session-ledger.js';
 import { registeredDrivers } from './drivers/index.js';
 import { createIdeSlot } from './ide-slot.js';
@@ -157,7 +158,7 @@ async function main(): Promise<void> {
   warmCursorModels(process.env, cliCatalogPath());
   // CodeBuddy has no `--list-models`. Read its catalog once at startup so the
   // new-session dialog is not the process that waits on `session/new`.
-  if (process.platform === 'darwin')
+  if (acpSpawnAllowed(process.platform, process.env))
     void cliSessions.readCatalog({ source: 'codebuddy-cli', cwd: homedir() });
   void liveCli.probe('cursor-cli');
   void liveCli.probe('codebuddy-cli');
