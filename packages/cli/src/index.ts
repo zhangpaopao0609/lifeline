@@ -1,5 +1,6 @@
 import { CODEX_BRIDGE_SUBCOMMAND } from '../../agent/src/drivers/codex/launch.js';
 import { BUILD_VERSION as VERSION } from './build-version.js';
+import { cmdCodex } from './commands/codex.js';
 import { cmdDaemon } from './commands/daemon.js';
 import { cmdOpen } from './commands/open.js';
 import { cmdSetup } from './commands/setup.js';
@@ -22,6 +23,7 @@ Usage:
   lifeline status              Health check: version, config, IDE CDP, server
   lifeline update              Update to the latest release (--force to reinstall)
   lifeline open                Open the web client in your browser
+  lifeline codex [args]        Codex in this terminal, shared live with the web console
   lifeline config path         Print the config file location
 
 Config lives at ~/.lifeline/config.json.`;
@@ -79,6 +81,9 @@ async function main(): Promise<void> {
       break;
     case 'open':
       cmdOpen();
+      break;
+    case 'codex':
+      await cmdCodex(process.argv.slice(3));
       break;
     case 'daemon': {
       // install once reported a false success (the launchd step failed while the exit code stayed 0),

@@ -19,6 +19,8 @@ import {
   turnSummary,
 } from '../packages/agent/src/drivers/codex/items.js';
 import { CODEX_BRIDGE_SUBCOMMAND, codexBridgeLaunch, isExecutableFile } from '../packages/agent/src/drivers/codex/launch.js';
+import { codexSharedSocket, readCodexSessions, resolveCodexThread, sharedServerEnv, writeCodexSession } from '../packages/agent/src/drivers/codex/shared.js';
+import { codexRemoteArgs, resolveSessionAliases } from '../packages/cli/src/commands/codex.js';
 
 const dirs: string[] = [];
 after(() => {
@@ -169,15 +171,68 @@ describe('codex profile and resume', () => {
     assert.equal(env.OPENAI_API_KEY, 'o');
   });
 
-  it('resumes the codex thread with the configured binary, model and effort', () => {
-    const record = { source: 'codex-cli' as const, cwd: '/work dir', providerSessionId: '01a1-thread', modelId: 'gpt-5', thinking: 'high' };
+  it('resumes through lifeline codex (shared server, session id alias) with model and effort', () => {
+    const record = { source: 'codex-cli' as const, cwd: '/work dir', providerSessionId: 'b1c2-session', modelId: 'gpt-5', thinking: 'high' };
     assert.equal(
-      cliResumeCommand(record, 'linux', '/home/me/.local/bin/my-codex'),
-      `cd '/work dir' && '/home/me/.local/bin/my-codex' resume '01a1-thread' -m 'gpt-5' -c 'model_reasoning_effort="high"'`,
+      cliResumeCommand(record, 'linux'),
+      `cd '/work dir' && lifeline codex resume 'b1c2-session' -m 'gpt-5' -c 'model_reasoning_effort="high"'`,
     );
     assert.equal(
       cliResumeCommand({ source: 'codex-cli', cwd: '/w', providerSessionId: 't' }, 'linux'),
-      `cd '/w' && codex resume 't'`,
+      `cd '/w' && lifeline codex resume 't'`,
     );
+  });
+});
+
+describe('lifeline codex and the shared server', () => {
+  it('attaches an interactive session to the shared server and passes other subcommands through', () => {
+    const remote = 'unix:///h/.lifeline/codex/app-server.sock';
+    assert.deepEqual(codexRemoteArgs([], remote, '/w'), ['--remote', remote, '-C', '/w']);
+    assert.deepEqual(codexRemoteArgs(['fix the run script'], remote, '/w'), ['--remote', remote, '-C', '/w', 'fix the run script']);
+    assert.deepEqual(codexRemoteArgs(['-C', '/x', 'hi'], remote, '/w'), ['--remote', remote, '-C', '/x', 'hi']);
+    assert.deepEqual(codexRemoteArgs(['resume', '--last'], remote, '/w'), ['resume', '--remote', remote, '--last']);
+    assert.deepEqual(codexRemoteArgs(['fork', 't1'], remote, '/w'), ['fork', '--remote', remote, 't1']);
+    for (const sub of ['exec', 'login', '--version', 'mcp'])
+      assert.deepEqual(codexRemoteArgs([sub, 'x'], remote, '/w'), [sub, 'x']);
+  });
+
+  it('maps a Lifeline session id from "copy to terminal" to its thread', () => {
+    const sessions = { 's-1': { threadId: 't-9' } };
+    assert.deepEqual(resolveSessionAliases(['resume', 's-1', '-m', 'gpt'], sessions), ['resume', 't-9', '-m', 'gpt']);
+    assert.deepEqual(resolveSessionAliases(['resume', 't-5'], sessions), ['resume', 't-5']);
+  });
+
+  it('records session aliases atomically and drops stale ones', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'lifeline-codex-sessions-'));
+    dirs.push(dir);
+    const path = join(dir, 'sessions.json');
+    writeCodexSession('old', { threadId: 't-old' }, path, 1);
+    writeCodexSession('s-1', { threadId: 't-1', cwd: '/w' }, path, 200 * 24 * 3600 * 1000);
+    assert.deepEqual(Object.keys(readCodexSessions(path)), ['s-1']);
+    assert.equal(resolveCodexThread('s-1', path), 't-1');
+    assert.equal(resolveCodexThread('t-raw', path), 't-raw');
+    assert.deepEqual(readCodexSessions(join(dir, 'missing.json')), {});
+  });
+
+  it('puts the socket under ~/.lifeline/codex unless sharing is off or the path is too long', () => {
+    assert.equal(codexSharedSocket({}, '/home/me'), '/home/me/.lifeline/codex/app-server.sock');
+    assert.equal(codexSharedSocket({ LIFELINE_CODEX_SHARED: '0' }, '/home/me'), undefined);
+    assert.equal(codexSharedSocket({ LIFELINE_CODEX_SOCKET: '/run/x.sock' }, '/home/me'), '/run/x.sock');
+    assert.equal(codexSharedSocket({}, `/${'d'.repeat(120)}`), undefined);
+  });
+
+  it('keeps Lifeline secrets out of the long-lived server env', () => {
+    const env = sharedServerEnv({
+      PATH: '/usr/bin',
+      HOME: '/h',
+      OPENAI_API_KEY: 'o',
+      AGENT_TOKEN: 'secret',
+      REMOTE_URL: 'https://server.example',
+      CODEBUDDY_API_KEY: 'k',
+      LIFELINE_CODEX_CLI: '/opt/codex/bin/codex',
+      INVOCATION_ID: 'abc',
+    }, '/opt/codex/bin/codex');
+    assert.deepEqual(Object.keys(env).sort(), ['HOME', 'OPENAI_API_KEY', 'PATH']);
+    assert.equal(env.PATH, '/opt/codex/bin:/usr/bin');
   });
 });

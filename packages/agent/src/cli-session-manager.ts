@@ -1404,7 +1404,7 @@ function sessionResumeCommand(session: LiveSession): string | undefined {
     cwd: session.cwd,
     providerSessionId,
     ...recordedSelection(session),
-  }, process.platform, process.env.LIFELINE_CODEX_CLI || undefined);
+  });
   if (command.length > CLI_RESUME_COMMAND_MAX)
     return undefined;
   return command;

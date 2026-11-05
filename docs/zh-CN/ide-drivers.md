@@ -41,10 +41,13 @@ index.ts（遍历 registeredDrivers() 组装）
 |---|---|---|
 | `cursor-cli` | `cursorCliPath` / `LIFELINE_CURSOR_CLI` | `cursor-agent acp` |
 | `codebuddy-cli` | `codebuddyCliPath` / `LIFELINE_CODEBUDDY_CLI` | `codebuddy --acp` |
-| `codex-cli` | `codexCliPath` / `LIFELINE_CODEX_CLI` | 内置桥接：`node lifeline.mjs codex-acp-bridge`，由它再启动 `<codex> app-server` |
+| `codex-cli` | `codexCliPath` / `LIFELINE_CODEX_CLI` | 内置桥接：`node lifeline.mjs codex-acp-bridge`，连共享的 `<codex> app-server` |
 
 - **Codex 没有 ACP 模式**，所以 `drivers/codex/bridge.ts` 在 stdio 上说 ACP，背后驱动 `codex app-server`（JSON-RPC v2）。桥接随 runtime 打包（`codexBridgeLaunch()`；源码运行时是 `drivers/codex/main.ts`，带同样的 loader 参数）。任何兼容 `codex` 的包装命令都可以填进 `codexCliPath`。
-- **ACP 会话 id 就是 Codex 线程 id。** 终端里 `codex resume <id>`、agent 重启后的 `session/load`（`thread/resume`）都靠它。一次回合都没跑过的线程没有 rollout，无法恢复。
+- **终端和网页共享同一个实时会话。** 桥接连接每个用户唯一的 `codex app-server --listen unix://~/.lifeline/codex/app-server.sock`（`drivers/codex/shared.ts`）；`lifeline codex [参数]` 让终端里的 Codex 连同一个服务（`codex --remote …`）。跟随某个线程的网页会话能实时看到终端发起的回合（输入、工具行、回复、回合结束），也会收到它的审批（先答先算，另一边会收到"已处理"）；终端回合进行中网页发的消息会排队等它结束。`/attach`（会话目录下最近的线程）、`/attach list`、`/attach <序号|线程 id>` 把网页会话接到终端的线程上。
+- **共享服务独立于 agent 运行。** 谁先用到谁启动，并脱离 agent 的进程组（agent 跑在 systemd 下时用 `systemd-run --user` 起一个临时 unit，否则会随 agent 的 cgroup 一起被杀），所以 agent 重启、升级不会打断正在跑的回合。它的环境变量来自启动它的那一方。`LIFELINE_CODEX_SHARED=0` 关闭共享；不支持 `--listen` 的旧版 Codex 会回退成每个会话一个私有 app-server。
+- **会话的线程在第一次发消息时才创建**，所以 ACP 会话 id 是别名（`~/.lifeline/codex/sessions.json`）：读模型目录或没用过的会话不会在 `codex resume` 里留下空线程，`/attach` 也能改指向。「复制到终端」给出 `lifeline codex resume <会话 id>`，由它换成线程 id。从没发过消息的会话无法恢复。
+- 共享模式下，Lifeline 关闭桥接时被取消的审批卡片不会替用户回答（留给终端或下一个会话处理）；停止按钮仍然回答 `cancel`。
 - `session/load` 最多回放最近 10 个回合的摘要（用户输入 + 最终回复），限时 8 秒：长线程整段恢复可能要好几分钟，而 Lifeline 只给 15 秒。
 - 审批选项用 ACP 规范的 kind（`allow_once` / `allow_always` / `reject_once`）；Codex 未登录时 `session/new` 返回 JSON-RPC 401（`credential-required`）。
 - 加新来源的清单：`CLI_SOURCES`、`acpProfileFor`、`resolveAcpLaunch` 与 `COMMAND_ENV`、`acceptCatalog` 里的模型目录读法、`cliResumeCommand`、cli 配置项与 `agentRuntimeEnv`、网页的 `CLI_SOURCE_LABEL` / `CLI_AGENT_LABEL` / `CliNewDialog`。旧 server 会因为不认识的来源拒绝整个 `agent:register`：同步更新 `uplink.ts` 的 `legacyCliAcp()`。

@@ -207,6 +207,7 @@ export interface CodexModel {
   description: string;
   efforts: string[];
   defaultEffort?: string;
+  isDefault?: boolean;
 }
 
 /** `model/list` rows → visible models. Hidden rows are dropped. */
@@ -227,6 +228,7 @@ export function readModels(rows: readonly unknown[]): CodexModel[] {
       description: str(row.description),
       efforts,
       ...(str(row.defaultReasoningEffort) ? { defaultEffort: str(row.defaultReasoningEffort) } : {}),
+      ...(row.isDefault === true ? { isDefault: true } : {}),
     });
   }
   return out;
