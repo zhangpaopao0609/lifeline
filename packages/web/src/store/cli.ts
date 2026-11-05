@@ -18,10 +18,10 @@ import type {
 } from '../net/protocol';
 import { create } from 'zustand';
 import { mergeById } from '../lib/session-page';
-import { cliAppendSchema, cliSnapshotSchema, validateInbound } from '../net/protocol';
+import { cliAppendSchema, cliSnapshotSchema, isCliPlatform, isCliSource, validateInbound } from '../net/protocol';
 
 function isListedCliSource(source: unknown): source is CliSource {
-  return source === 'cursor-cli' || source === 'codebuddy-cli';
+  return isCliSource(source);
 }
 
 /** No matching full for this long triggers one automatic sync. The next miss is `sync-error`. */
@@ -46,12 +46,14 @@ export type CliInterfaceName = (typeof CLI_INTERFACE_STATES)[number];
 export const CLI_SOURCE_LABEL: Record<CliSource, string> = {
   'cursor-cli': 'Cursor 命令行',
   'codebuddy-cli': 'CodeBuddy 命令行',
+  'codex-cli': 'Codex 命令行',
 };
 
 /** The person picks an agent. Which process runs it stays behind this name. */
 export const CLI_AGENT_LABEL: Record<CliSource, string> = {
   'cursor-cli': 'Cursor',
   'codebuddy-cli': 'CodeBuddy',
+  'codex-cli': 'Codex',
 };
 
 export type ActiveTarget
@@ -444,7 +446,7 @@ export function cliRailDot(
 }
 
 export function visibleCliSources(machine: { platform?: string; cliSources?: unknown } | null | undefined): Array<{ source: CliSource; availability: CliAvailability }> {
-  if (!machine || machine.platform !== 'darwin' || !Array.isArray(machine.cliSources))
+  if (!machine || !isCliPlatform(machine.platform) || !Array.isArray(machine.cliSources))
     return [];
   const out: Array<{ source: CliSource; availability: CliAvailability }> = [];
   for (const row of machine.cliSources) {

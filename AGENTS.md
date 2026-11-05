@@ -30,7 +30,7 @@ browser  --HTTP/WS-->  packages/server  <--outbound WS /agent-io + per-machine t
 | Outbound connection | `packages/agent/src/uplink.ts` |
 | IDE adapters | `packages/agent/src/drivers/` (see [`ide-drivers.md`](docs/ide-drivers.md)) |
 | Composer attachments | `packages/agent/src/attachments.ts` (write) + `attach-files.ts` (native paste), text contract in `packages/protocol/src/attachments.ts` |
-| CLI ACP | `packages/agent/src/drivers/acp/` |
+| CLI ACP | `packages/agent/src/drivers/acp/`; Codex bridge in `drivers/codex/` (see [`ide-drivers.md`](docs/ide-drivers.md#cli-sessions-acp)) |
 | Shared wire types | `packages/protocol` (`@lifeline/protocol`) |
 | Auth exemption | `packages/server/src/public-paths.ts` (only `/public/*`, `/healthz`, `/agent-io`) |
 | Browser auth | `packages/server/src/auth/` (matrix in root `.env.example`) |
@@ -63,7 +63,7 @@ Secrets stay out of the tree: server `.env`, per-machine `~/.lifeline/config.jso
 Read the matching code and topic doc before touching these. Criteria only:
 
 - CDP evaluate timeout `EVALUATE_TIMEOUT_MS = 12000`. Port 9222 must never be on the public internet; the agent talks to it over loopback only. Live DOM is gone when the IDE window is occluded.
-- Linux is a **content source only** (`canControlIde()` allows `darwin | win32`). Do not probe `DISPLAY` / `WAYLAND_DISPLAY`. Escape hatch is `LIFELINE_LINUX_CDP=1`, not a code change.
+- Linux is a **content source only** (`canControlIde()` allows `darwin | win32`). Do not probe `DISPLAY` / `WAYLAND_DISPLAY`. Escape hatch is `LIFELINE_LINUX_CDP=1`, not a code change. ACP CLI sessions are a separate gate (`CLI_PLATFORMS` = `darwin | linux`, stdio only, no GUI): a Linux content source still runs them.
 - SIGTERM (container stop / restart) must have a hard timeout (`Relay.stop` closes `engine` first). Do not re-virtualize the timeline (window indices are segments; see `packages/web/src/lib/timeline-window.ts`). `session-index-reporter` must not fall back to `listSessions()` (heads / `indexSignal` only).
 - Windows: approval-shortcut character classes must include `^` (Ctrl glyph). A full `lifeline start` reinstall restarts an IDE that has no debug port — during development, do not do that on CodeBuddy without one. **Running the repo agent directly (`pnpm run agent`) has the same effect**: `cdp-bridge` quits and relaunches the IDE (measured 2026-10-11, CodeBuddy), so no manual agent run on a machine whose IDE is in use.
 - One agent per machine: the machine lock (`single-instance.ts`) plus the registration rule (`register-outcome.ts`) plus `agent:superseded` (a displaced process stands down only for a superseder that names itself, `superseded-outcome.ts`). Do not make the server disconnect a displaced socket, do not let a newcomer without an `instanceId` displace a connected current process, and keep `lifelinePidsExcept` recognizing the dev/built entry points on every platform. Never let two machines share one `agentId` — the lock cannot see the other machine (see `docs/agent-lifecycle.md`).

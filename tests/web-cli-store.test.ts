@@ -949,8 +949,12 @@ describe('Agent CLI rail dot', () => {
 });
 
 describe('CLI 入口', () => {
-  it('只列出 darwin 上机器列表投影出来的 source', () => {
-    assert.deepEqual(visibleCliSources({ platform: 'linux', cliSources: [{ source: 'cursor-cli', availability: 'ready' }] }), []);
+  it('只列出 darwin / linux 上机器列表投影出来的 source', () => {
+    assert.deepEqual(visibleCliSources({ platform: 'win32', cliSources: [{ source: 'cursor-cli', availability: 'ready' }] }), []);
+    assert.deepEqual(
+      visibleCliSources({ platform: 'linux', cliSources: [{ source: 'cursor-cli', availability: 'ready' }] }).map(row => row.source),
+      ['cursor-cli'],
+    );
     assert.deepEqual(visibleCliSources({ platform: 'darwin' }), []);
     assert.deepEqual(visibleCliSources(undefined), []);
     const only = visibleCliSources({
@@ -969,6 +973,20 @@ describe('CLI 入口', () => {
       ['cursor-cli'],
     );
     assert.equal(paletteCliEntries({ platform: 'win32', cliSources: [{ source: 'cursor-cli', availability: 'ready' }] }).length, 0);
+  });
+
+  it('列出 Codex 命令行，并给出它的名字', () => {
+    const rows = paletteCliEntries({
+      platform: 'linux',
+      cliSources: [
+        { source: 'codebuddy-cli', availability: 'unknown' },
+        { source: 'codex-cli', availability: 'ready' },
+      ],
+    });
+    assert.deepEqual(rows.map(row => [row.source, row.label]), [
+      ['codebuddy-cli', 'CodeBuddy 命令行'],
+      ['codex-cli', 'Codex 命令行'],
+    ]);
   });
 
   it('同时只展开一张卡；低高度或软键盘折叠成一行计数', () => {

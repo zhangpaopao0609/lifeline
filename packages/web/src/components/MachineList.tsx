@@ -135,26 +135,16 @@ export function MachineList({ onNavigate }: { onNavigate?: () => void }) {
                   </button>
                 );
               })}
-              <button
-                type="button"
-                onClick={() => {
+              <CliEntryRow
+                active={selected && (activeTarget.kind === 'cli' || activeTarget.kind === 'cli-home') && activeTarget.agentId === m.agentId}
+                dot={cliDot}
+                onOpen={() => {
                   noteUserSwitch();
                   selectMachine(m.agentId);
                   useUiStore.getState().showCliHome(m.agentId);
                   onNavigate?.();
                 }}
-                className={`ml-5 flex w-[calc(100%-20px)] items-center gap-2 rounded-[var(--radius-md)] border-0 px-2.5 py-1.5 text-left text-[length:var(--text-chrome)] text-[var(--text-secondary)] ${
-                  selected && (activeTarget.kind === 'cli' || activeTarget.kind === 'cli-home') && activeTarget.agentId === m.agentId
-                    ? 'bg-[var(--bg-3)]'
-                    : 'bg-transparent'
-                }`}
-              >
-                <TerminalWindow size={14} />
-                <span className="flex-1">Agent CLI</span>
-                {cliDot !== 'hidden' && (
-                  <span className={`dot-sm ${cliDot === 'on' ? 'bg-[var(--ok)]' : 'bg-[var(--text-weak)]'}`} />
-                )}
-              </button>
+              />
             </div>
           </div>
         );
@@ -190,29 +180,47 @@ export function MachineList({ onNavigate }: { onNavigate?: () => void }) {
               useUiStore.getState().showIde(ide ?? selectedIde);
               onNavigate?.();
             };
+            // Linux runs CLI sessions while staying a content source for IDEs: give it the same Agent CLI entry.
+            const cliSources = visibleCliSources(m);
+            const cliAgent = cliAgents[m.agentId];
+            const liveSessions = selected && cliAgent?.epoch ? cliAgent.order.length : undefined;
             return (
-              <div key={m.agentId} className="ml-5 flex items-center gap-1">
-                <button
-                  type="button"
-                  onClick={onSelect}
-                  className={`flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-[var(--radius-md)] border-0 px-2.5 py-1.5 text-left transition-colors duration-[var(--duration-fast)] ${
-                    selected ? 'bg-[var(--accent-soft)]' : 'bg-transparent'
-                  }`}
-                >
-                  <span className={`dot-sm ${m.connected ? 'bg-[var(--ok)]' : 'bg-[var(--text-weak)]'}`} />
-                  <span className="mono min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[length:var(--text-chrome)] text-[var(--text-secondary)]">
-                    {machineLabel(m)}
-                  </span>
-                  <span className="text-[length:var(--text-chrome)] text-[var(--text-weak)]">仅内容</span>
-                  {/* Same copy as a normal row: a content source can be displaced too. */}
-                  {notice.displaced && (
-                    <span className="shrink-0 text-[length:var(--text-chrome)] text-[var(--text-weak)]">{notice.displaced}</span>
-                  )}
-                  {notice.devBuild && (
-                    <span className="shrink-0 text-[length:var(--text-chrome)] text-[var(--text-weak)]">dev</span>
-                  )}
-                </button>
-                <MachineRowMenu machine={m} />
+              <div key={m.agentId} className="ml-5 flex flex-col gap-0.5">
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={onSelect}
+                    className={`flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-[var(--radius-md)] border-0 px-2.5 py-1.5 text-left transition-colors duration-[var(--duration-fast)] ${
+                      selected ? 'bg-[var(--accent-soft)]' : 'bg-transparent'
+                    }`}
+                  >
+                    <span className={`dot-sm ${m.connected ? 'bg-[var(--ok)]' : 'bg-[var(--text-weak)]'}`} />
+                    <span className="mono min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[length:var(--text-chrome)] text-[var(--text-secondary)]">
+                      {machineLabel(m)}
+                    </span>
+                    <span className="text-[length:var(--text-chrome)] text-[var(--text-weak)]">仅内容</span>
+                    {/* Same copy as a normal row: a content source can be displaced too. */}
+                    {notice.displaced && (
+                      <span className="shrink-0 text-[length:var(--text-chrome)] text-[var(--text-weak)]">{notice.displaced}</span>
+                    )}
+                    {notice.devBuild && (
+                      <span className="shrink-0 text-[length:var(--text-chrome)] text-[var(--text-weak)]">dev</span>
+                    )}
+                  </button>
+                  <MachineRowMenu machine={m} />
+                </div>
+                {cliSources.length > 0 && (
+                  <CliEntryRow
+                    active={selected && (activeTarget.kind === 'cli' || activeTarget.kind === 'cli-home') && activeTarget.agentId === m.agentId}
+                    dot={cliRailDot(m.connected, cliSources, liveSessions)}
+                    onOpen={() => {
+                      noteUserSwitch();
+                      selectMachine(m.agentId);
+                      useUiStore.getState().showCliHome(m.agentId);
+                      onNavigate?.();
+                    }}
+                  />
+                )}
               </div>
             );
           })}
@@ -231,5 +239,24 @@ export function MachineList({ onNavigate }: { onNavigate?: () => void }) {
 
       {enrollOpen && <EnrollDialog onClose={() => setEnrollOpen(false)} />}
     </div>
+  );
+}
+
+/** "Agent CLI" sub-row under a machine (live machines, and content sources that declare CLI sources). */
+function CliEntryRow({ active, dot, onOpen }: { active: boolean; dot: ReturnType<typeof cliRailDot>; onOpen: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className={`ml-5 flex w-[calc(100%-20px)] items-center gap-2 rounded-[var(--radius-md)] border-0 px-2.5 py-1.5 text-left text-[length:var(--text-chrome)] text-[var(--text-secondary)] ${
+        active ? 'bg-[var(--bg-3)]' : 'bg-transparent'
+      }`}
+    >
+      <TerminalWindow size={14} />
+      <span className="flex-1">Agent CLI</span>
+      {dot !== 'hidden' && (
+        <span className={`dot-sm ${dot === 'on' ? 'bg-[var(--ok)]' : 'bg-[var(--text-weak)]'}`} />
+      )}
+    </button>
   );
 }

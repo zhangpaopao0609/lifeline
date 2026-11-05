@@ -30,7 +30,7 @@ describe('live ACP entry', () => {
   }
 
   it('returns unsupported-platform before constructing a client', async () => {
-    for (const platform of ['linux', 'win32'] as const) {
+    for (const platform of ['win32', 'freebsd'] as const) {
       let constructions = 0;
       const entry = createLiveCliEntry({
         epoch: EPOCH,
@@ -450,6 +450,12 @@ describe('live ACP entry', () => {
     assert.equal(sourceRow(combined, 'cursor-cli')?.checkedAt, cursor?.checkedAt);
     assert.equal(sourceRow(combined, 'codebuddy-cli')?.availability, 'unknown');
     assert.equal(probeSessions, 0);
+
+    // A third source joins the same report instead of being dropped.
+    await entry.probe('codex-cli');
+    const three = reports.at(-1);
+    assert.deepEqual(three?.sources.map(row => row.source), ['cursor-cli', 'codebuddy-cli', 'codex-cli']);
+    assert.equal(sourceRow(three, 'codex-cli')?.availability, 'binary-missing');
 
     const before = reports.length;
     const pending = entry.start({ source: 'codebuddy-cli', cwd: tempDir() });

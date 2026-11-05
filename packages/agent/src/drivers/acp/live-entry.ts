@@ -4,20 +4,42 @@ import type { CheckedAtState, ReadinessClient, ReadinessReport } from './readine
 import type { AcpClientOptions } from './types.js';
 import { tmpdir } from 'node:os';
 import { isAbsolute } from 'node:path';
-import { assertCliCatalog, assertCliStart, assertCliTarget } from '@lifeline/protocol';
+import { assertCliCatalog, assertCliStart, assertCliTarget, CLI_SOURCES, isCliPlatform } from '@lifeline/protocol';
 import { CliSessionManager } from '../../cli-session-manager.js';
 import { readServerCommand } from '../../server-inbound.js';
+import { codexBridgeLaunch, isExecutableFile } from '../codex/launch.js';
 import { AcpClient } from './client.js';
 import { listCursorModels } from './cursor-models.js';
 import { JsonlRpcError, JsonlRpcRemoteError } from './jsonl-rpc.js';
-import { codebuddyAcpProfile, cursorAcpProfile } from './profiles.js';
+import { acpProfileFor } from './profiles.js';
 import { acpSpawnAllowed, buildChildEnv, probeReadiness, takeCheckedAt, withCliBinOnPath } from './readiness.js';
 import { isCursorModelId } from './session-catalog.js';
 
-const COMMAND_ENV: Record<CliSource, 'LIFELINE_CURSOR_CLI' | 'LIFELINE_CODEBUDDY_CLI'> = {
+const COMMAND_ENV: Record<CliSource, 'LIFELINE_CURSOR_CLI' | 'LIFELINE_CODEBUDDY_CLI' | 'LIFELINE_CODEX_CLI'> = {
   'cursor-cli': 'LIFELINE_CURSOR_CLI',
   'codebuddy-cli': 'LIFELINE_CODEBUDDY_CLI',
+  'codex-cli': 'LIFELINE_CODEX_CLI',
 };
+
+export interface AcpLaunch {
+  command: string;
+  args: string[];
+}
+
+/**
+ * The ACP child for a source, or undefined when its binary is not configured (`binary-missing`).
+ * Cursor / CodeBuddy speak ACP themselves: the saved absolute path with the profile args.
+ * Codex does not: the child is this program's built-in bridge, and the saved Codex path must be an
+ * executable file now, because only the bridge would notice later (as a provider error).
+ */
+export function resolveAcpLaunch(env: NodeJS.ProcessEnv, source: CliSource): AcpLaunch | undefined {
+  const command = savedCommand(env, source);
+  if (command == null)
+    return undefined;
+  if (source === 'codex-cli')
+    return isExecutableFile(command) ? codexBridgeLaunch() : undefined;
+  return { command, args: [...acpProfileFor(source).args] };
+}
 
 export interface LiveAcpClientInput {
   source: CliSource;
@@ -106,10 +128,11 @@ export function attachLiveCliListeners(
  * The returned env is the only place a CodeBuddy key is copied.
  */
 export function buildLiveAcpClientOptions(input: LiveAcpClientInput): AcpClientOptions {
-  const profile = input.source === 'cursor-cli' ? cursorAcpProfile : codebuddyAcpProfile;
-  const command = savedCommand(input.env, input.source);
-  if (command == null)
+  const profile = acpProfileFor(input.source);
+  const launch = resolveAcpLaunch(input.env, input.source);
+  if (launch == null)
     throw new JsonlRpcError('binary-missing', 'binary-missing');
+  const { command } = launch;
   const { env } = buildChildEnv({
     source: input.source,
     base: input.env,
@@ -119,7 +142,7 @@ export function buildLiveAcpClientOptions(input: LiveAcpClientInput): AcpClientO
   return {
     profile,
     command,
-    args: acpArgs(profile, input.modelId),
+    args: acpArgs(profile, launch.args, input.modelId),
     cwd: input.cwd,
     env: withCliBinOnPath(env, command),
     apiKey: input.apiKey,
@@ -177,7 +200,7 @@ export function createLiveCliEntry(options: LiveCliEntryOptions): LiveCliEntry {
   });
 
   function emitAvailability(source: CliSource, availability: CliAvailability, detail?: string): void {
-    if (platform !== 'darwin')
+    if (!isCliPlatform(platform))
       return;
     const row: CliSourceAvailability = {
       source,
@@ -190,10 +213,12 @@ export function createLiveCliEntry(options: LiveCliEntryOptions): LiveCliEntry {
   }
 
   function emitCapabilities(row: CliSourceAvailability): void {
+    if (!isCliPlatform(platform))
+      return;
     capabilityRows.set(row.source, row);
     const payload: CliCapabilities = {
       epoch: options.epoch,
-      platform: 'darwin',
+      platform,
       sources: orderedCapabilityRows(),
     };
     options.emit('cli:capabilities', payload);
@@ -201,7 +226,7 @@ export function createLiveCliEntry(options: LiveCliEntryOptions): LiveCliEntry {
 
   function orderedCapabilityRows(): CliSourceAvailability[] {
     const ordered: CliSourceAvailability[] = [];
-    for (const source of ['cursor-cli', 'codebuddy-cli'] as const) {
+    for (const source of CLI_SOURCES) {
       const row = capabilityRows.get(source);
       if (row)
         ordered.push(row);
@@ -224,12 +249,13 @@ export function createLiveCliEntry(options: LiveCliEntryOptions): LiveCliEntry {
   async function probe(source: CliSource): Promise<ReadinessReport> {
     if (!acpSpawnAllowed(platform, parentEnv))
       return staticReport(source, 'unsupported-platform');
-    const command = savedCommand(parentEnv, source);
-    if (command == null)
+    const launch = resolveAcpLaunch(parentEnv, source);
+    if (launch == null)
       return staticReport(source, 'binary-missing');
     return probeReadiness({
       source,
-      command,
+      command: launch.command,
+      args: launch.args,
       cwd: tmpdir(),
       platform,
       env: parentEnv,
@@ -299,10 +325,13 @@ export function createLiveCliEntry(options: LiveCliEntryOptions): LiveCliEntry {
     });
   }
 
-  async function readCodebuddyCatalog(cwd: string | undefined) {
+  /** CodeBuddy and Codex list models on `session/new` in the asked cwd. */
+  async function readSessionNewCatalog(source: CliSource, cwd: string | undefined) {
     if (!cwd)
       return { ok: false as const, errorCode: 'invalid-cwd' as const };
-    return manager.readCatalog({ source: 'codebuddy-cli' as const, cwd });
+    if (resolveAcpLaunch(parentEnv, source) == null)
+      return { ok: false as const, errorCode: 'binary-missing' as const };
+    return manager.readCatalog({ source, cwd });
   }
 
   async function acceptCatalog(payload: unknown): Promise<void> {
@@ -325,7 +354,7 @@ export function createLiveCliEntry(options: LiveCliEntryOptions): LiveCliEntry {
       }
       const result = asked.source === 'cursor-cli'
         ? await readCursorCatalog()
-        : await readCodebuddyCatalog(asked.cwd);
+        : await readSessionNewCatalog(asked.source, asked.cwd);
       options.emit('command:result', result.ok
         ? { commandId: asked.commandId, ok: true, data: result.data }
         : { commandId: asked.commandId, ok: false, errorCode: result.errorCode, error: result.errorCode });
@@ -454,10 +483,10 @@ export function createLiveCliEntry(options: LiveCliEntryOptions): LiveCliEntry {
   return { manager, probe, start, acceptStart, acceptCatalog, acceptModel, acceptThinking, acceptSend, acceptStop, acceptClose, acceptPermission };
 }
 
-function acpArgs(profile: { source: CliSource; args: readonly string[] }, modelId: string | undefined): string[] {
+function acpArgs(profile: { source: CliSource }, args: readonly string[], modelId: string | undefined): string[] {
   if (profile.source === 'cursor-cli' && modelId && isCursorModelId(modelId))
-    return ['--model', modelId, ...profile.args];
-  return [...profile.args];
+    return ['--model', modelId, ...args];
+  return [...args];
 }
 
 function savedCommand(env: NodeJS.ProcessEnv, source: CliSource): string | undefined {

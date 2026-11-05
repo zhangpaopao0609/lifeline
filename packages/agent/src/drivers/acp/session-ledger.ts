@@ -16,7 +16,7 @@ export interface CliSessionRecord {
   cwd: string;
   providerSessionId: string;
   modelId?: string;
-  /** CodeBuddy effort. Cursor keeps effort inside `modelId`. */
+  /** CodeBuddy / Codex effort. Cursor keeps effort inside `modelId`. */
   thinking?: string;
 }
 
@@ -59,10 +59,20 @@ export function writeCliSessionLedger(path: string, records: readonly CliSession
 /**
  * One shell line for the machine's terminal. CodeBuddy gets `--model` and
  * `--effort`. Cursor gets `--model` with the effort already in the id.
+ * Codex goes through `lifeline codex`, which maps the Lifeline session id to its Codex thread and opens it
+ * on the shared app-server, so the terminal and the web follow the same live session.
  */
 export function cliResumeCommand(record: CliSessionRecord, platform: NodeJS.Platform = process.platform): string {
   const quote = platform === 'win32' ? cmdQuote : posixQuote;
   const cd = platform === 'win32' ? `cd /d ${quote(record.cwd)}` : `cd ${quote(record.cwd)}`;
+  if (record.source === 'codex-cli') {
+    const codex = ['lifeline', 'codex', 'resume', quote(record.providerSessionId)];
+    if (record.modelId)
+      codex.push('-m', quote(record.modelId));
+    if (record.thinking)
+      codex.push('-c', quote(`model_reasoning_effort="${record.thinking}"`));
+    return `${cd} && ${codex.join(' ')}`;
+  }
   const args = record.source === 'cursor-cli'
     ? ['cursor-agent', '--resume', quote(record.providerSessionId)]
     : ['codebuddy', '--resume', quote(record.providerSessionId)];

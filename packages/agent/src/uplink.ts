@@ -67,6 +67,13 @@ export class Uplink extends EventEmitter {
   private readonly instanceId: string;
   /** Static CLI capability. Absent when this process does not speak CLI. */
   private readonly cliAcp: CliAcpCapability | undefined;
+  /**
+   * Set when a server rejected a register whose `cliAcp` an older server cannot parse (a linux
+   * platform, or a source it does not know such as `codex-cli`). Such servers validate `cliAcp`
+   * strictly and drop the whole register; the agent then registers with `legacyCliAcp()` for the rest
+   * of this process, so it still comes online.
+   */
+  private cliAcpLegacy = false;
   private watchdog: UplinkWatchdog;
 
   constructor(
@@ -118,29 +125,7 @@ export class Uplink extends EventEmitter {
   private attachSocketHandlers(socket: Socket): void {
     socket.on('connect', () => {
       console.log(`[uplink] ${ts()} Connected to ${this.remoteUrl} (${socket.id})`);
-      // The console uses this to send uninstall/upgrade commands for **this
-      // machine** — the person on the web may be on a different OS, so the
-      // platform must be self-reported by the machine, not guessed from the
-      // browser UA. Omit if unrecognized; the web falls back to OS toggles.
-      const platform = toAgentPlatform(process.platform);
-      socket.emit('agent:register', {
-        agentId: this.agentId,
-        hostname: hostname(),
-        // Server stores this so the web can show "which version this box is"; older servers ignore it.
-        version: BUILD_VERSION,
-        // Stable across this process's rebuilds: a reconnect must not look like a takeover, and an
-        // old-code newcomer must not displace a process that can name itself (register-outcome.ts).
-        instanceId: this.instanceId,
-        ...(this.liveIdes !== undefined ? { liveIdes: this.liveIdes } : {}),
-        ...(platform !== undefined ? { platform } : {}),
-        // This machine is content-source only (Linux). The server uses this to
-        // file it under "content sources".
-        // The criterion is the **platform**, not "app not found in the
-        // inventory" — that would misclassify a normal install as a content
-        // source (review R1).
-        ...(this.contentSource !== undefined ? { contentSource: this.contentSource } : {}),
-        ...(this.cliAcp !== undefined ? { cliAcp: this.cliAcp } : {}),
-      });
+      this.sendRegister(socket);
       this.emit('connected');
       this.watchdog.notifyConnected();
     });
@@ -192,7 +177,18 @@ export class Uplink extends EventEmitter {
       this.emit('sync', payload);
     });
 
-    socket.on('agent:rejected', () => {
+    socket.on('agent:rejected', (payload?: unknown) => {
+      // An older server rejects a `cliAcp` it cannot parse, and with it the whole register. Retry once
+      // with what such a server accepts, on this socket (a reconnect re-registers the same way).
+      const reason = (payload as { reason?: unknown } | undefined)?.reason;
+      if (reason === 'reject-register' && !this.cliAcpLegacy && this.cliAcp && !sameCliAcp(legacyCliAcp(this.cliAcp), this.cliAcp)) {
+        this.cliAcpLegacy = true;
+        const legacy = legacyCliAcp(this.cliAcp);
+        const fallback = legacy ? `with ${legacy.sources.map(row => row.source).join(', ')} only` : 'without CLI sessions';
+        console.warn(`[uplink] ${ts()} Server rejected the CLI capability (older server?); registering ${fallback}`);
+        this.sendRegister(socket);
+        return;
+      }
       this.emit('rejected');
     });
 
@@ -202,6 +198,33 @@ export class Uplink extends EventEmitter {
     // owns the lock (see superseded-outcome.ts).
     socket.on('agent:superseded', (payload?: unknown) => {
       this.emit('superseded', payload);
+    });
+  }
+
+  private sendRegister(socket: Socket): void {
+    // The console uses this to send uninstall/upgrade commands for **this
+    // machine** — the person on the web may be on a different OS, so the
+    // platform must be self-reported by the machine, not guessed from the
+    // browser UA. Omit if unrecognized; the web falls back to OS toggles.
+    const platform = toAgentPlatform(process.platform);
+    const cliAcp = this.cliAcpLegacy && this.cliAcp ? legacyCliAcp(this.cliAcp) : this.cliAcp;
+    socket.emit('agent:register', {
+      agentId: this.agentId,
+      hostname: hostname(),
+      // Server stores this so the web can show "which version this box is"; older servers ignore it.
+      version: BUILD_VERSION,
+      // Stable across this process's rebuilds: a reconnect must not look like a takeover, and an
+      // old-code newcomer must not displace a process that can name itself (register-outcome.ts).
+      instanceId: this.instanceId,
+      ...(this.liveIdes !== undefined ? { liveIdes: this.liveIdes } : {}),
+      ...(platform !== undefined ? { platform } : {}),
+      // This machine is content-source only (Linux). The server uses this to
+      // file it under "content sources".
+      // The criterion is the **platform**, not "app not found in the
+      // inventory" — that would misclassify a normal install as a content
+      // source (review R1).
+      ...(this.contentSource !== undefined ? { contentSource: this.contentSource } : {}),
+      ...(cliAcp !== undefined ? { cliAcp } : {}),
     });
   }
 
@@ -268,4 +291,18 @@ export class Uplink extends EventEmitter {
     this.watchdog.stop();
     this.socket.disconnect();
   }
+}
+
+/** Platform and sources a server from before Linux CLI sessions and `codex-cli` accepts. */
+const LEGACY_CLI_SOURCES: ReadonlySet<string> = new Set(['cursor-cli', 'codebuddy-cli']);
+
+export function legacyCliAcp(cap: CliAcpCapability): CliAcpCapability | undefined {
+  if (cap.platform !== 'darwin')
+    return undefined;
+  const sources = cap.sources.filter(row => LEGACY_CLI_SOURCES.has(row.source));
+  return sources.length > 0 ? { ...cap, sources } : undefined;
+}
+
+function sameCliAcp(a: CliAcpCapability | undefined, b: CliAcpCapability): boolean {
+  return a != null && a.platform === b.platform && a.sources.length === b.sources.length;
 }

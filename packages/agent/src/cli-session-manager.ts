@@ -32,7 +32,7 @@ import { catalogFreshness, readStoredCatalog, writeStoredCatalog } from './drive
 import { codebuddyProjectSlug, createCodebuddyCliFollow, projectCodebuddyCliGrowth, readCodebuddyCliGrowth } from './drivers/acp/codebuddy-cli-transcript.js';
 import { peekCursorModels } from './drivers/acp/cursor-models.js';
 import { JsonlRpcError } from './drivers/acp/jsonl-rpc.js';
-import { codebuddyAcpProfile, cursorAcpProfile } from './drivers/acp/profiles.js';
+import { acpProfileFor } from './drivers/acp/profiles.js';
 import { currentModelLabel, cursorEffortOf, cursorListedId, cursorListIdFromParameters, cursorModelFamily, impliedCursorEffort, readCursorParameters, resolveCursorListSelection, rewriteCursorEffort } from './drivers/acp/session-catalog.js';
 import { cliResumeCommand, readCliSessionLedger, writeCliSessionLedger } from './drivers/acp/session-ledger.js';
 
@@ -1087,7 +1087,8 @@ export class CliSessionManager {
       if (label)
         session.modelLabel = label;
     }
-    if (session.source === 'codebuddy-cli' && record.thinking) {
+    // Cursor keeps effort inside the model id; the others have a separate thinking dial.
+    if (session.source !== 'cursor-cli' && record.thinking) {
       const chosen = catalog.models.find(model => model.id === catalog.currentModelId);
       const levels = chosen?.thinking?.levels ?? catalog.thinking?.levels;
       const current = chosen?.thinking?.current ?? catalog.thinking?.current;
@@ -1135,7 +1136,7 @@ export class CliSessionManager {
   private onPermission(session: LiveSession, event: AcpPermissionEvent): void {
     if (session.closed || session.crashed || !session.ready)
       return;
-    const profile = session.source === 'cursor-cli' ? cursorAcpProfile : codebuddyAcpProfile;
+    const profile = acpProfileFor(session.source);
     const approval = profile.toCliApproval(event.raw, randomUUID(), session.sessionId);
     session.approvals.push({ ...approval, respond: event.respond });
     this.emitIncremental('cli:approval', {
@@ -1385,7 +1386,7 @@ function fullPayload(epoch: string, snapshotId: string, session: LiveSession) {
 function recordedSelection(session: LiveSession): { modelId?: string; thinking?: string } {
   const modelId = session.catalog?.currentModelId;
   const model = session.catalog?.models.find(item => item.id === modelId);
-  const thinking = session.source === 'codebuddy-cli'
+  const thinking = session.source !== 'cursor-cli'
     ? (model?.thinking?.current ?? session.catalog?.thinking?.current)
     : undefined;
   return {

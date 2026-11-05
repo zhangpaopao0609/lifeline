@@ -33,6 +33,25 @@ index.ts (walks registeredDrivers() and wires them)
 5. CLI argv ensure/remove if that IDE needs it (table-driven at the function layer)
 6. Zero server changes (`Partial<Record<IdeKind, …>>` already fans out)
 
+## CLI sessions (ACP)
+
+The "Agent CLI" entry is not an IDE driver: the agent spawns a CLI as an ACP child over stdio (`drivers/acp/`) and the web talks to it through `command:cli_*`. Gate: `CLI_PLATFORMS` (`darwin | linux`), independent of `canControlIde()`.
+
+| Source | Binary (config / env) | Spawned child |
+|---|---|---|
+| `cursor-cli` | `cursorCliPath` / `LIFELINE_CURSOR_CLI` | `cursor-agent acp` |
+| `codebuddy-cli` | `codebuddyCliPath` / `LIFELINE_CODEBUDDY_CLI` | `codebuddy --acp` |
+| `codex-cli` | `codexCliPath` / `LIFELINE_CODEX_CLI` | built-in bridge: `node lifeline.mjs codex-acp-bridge`, on the shared `<codex> app-server` |
+
+- **Codex has no ACP mode**, so `drivers/codex/bridge.ts` speaks ACP on stdio and drives `codex app-server` (JSON-RPC v2). The bridge ships inside the runtime bundle (`codexBridgeLaunch()`; from source it is `drivers/codex/main.ts` with the same loader flags). Any `codex`-compatible wrapper works as `codexCliPath`.
+- **Terminal and web share live sessions.** The bridge connects to one per-user `codex app-server --listen unix://~/.lifeline/codex/app-server.sock` (`drivers/codex/shared.ts`); `lifeline codex [args]` runs Codex in a terminal on the same server (`codex --remote …`). A web session following a thread sees terminal turns live (prompt, tool rows, reply, end of turn), gets their approvals too (first answer wins; the other side is told it was resolved), and queues a web message until a running terminal turn ends. `/attach` (latest thread in the session directory), `/attach list` and `/attach <n|thread id>` point a web session at a terminal thread.
+- **The shared server outlives the agent.** Whoever needs it first starts it detached (as a transient `systemd-run --user` unit when the agent runs under systemd, since the agent's cgroup would take it down), so an agent restart or update does not stop running turns. Its environment is that of whoever started it. `LIFELINE_CODEX_SHARED=0` turns sharing off; an older Codex without `--listen` falls back to a private app-server per session.
+- **A session's thread starts on its first prompt**, so the ACP session id is an alias (`~/.lifeline/codex/sessions.json`): a catalog read or an unused session leaves nothing in `codex resume`, and `/attach` can re-point a session. "Copy to terminal" is `lifeline codex resume <session id>`, which maps the alias. A session that never ran a prompt cannot be loaded.
+- On a shared server, an approval card cancelled because Lifeline is shutting the bridge down is not answered (it stays for the terminal or the next session); the stop button still answers `cancel`.
+- `session/load` replays at most the last 10 turns as summaries (prompt + final reply) within 8s: a full-history resume of a long thread can take minutes and Lifeline gives the load 15s.
+- Approval options use the ACP spec kinds (`allow_once` / `allow_always` / `reject_once`); a signed-out Codex fails `session/new` with JSON-RPC 401 (`credential-required`).
+- New source checklist: `CLI_SOURCES`, `acpProfileFor`, `resolveAcpLaunch` + `COMMAND_ENV`, catalog path in `acceptCatalog`, `cliResumeCommand`, cli config key + `agentRuntimeEnv`, web `CLI_SOURCE_LABEL` / `CLI_AGENT_LABEL` / `CliNewDialog`. An older server rejects an unknown source in `agent:register`: keep `legacyCliAcp()` in `uplink.ts` in step.
+
 ## Pitfalls (criteria)
 
 - **Runtime callback signatures include an `ide` parameter.** `ContentLiveRuntime` onSessionFull/Append/Patch/Sync is `(sessionId, messages, ide, seq)` — the runtime passes `adapter.ide`. Do not shadow it with an outer loop variable (equivalent, but missing the parameter fails TS).

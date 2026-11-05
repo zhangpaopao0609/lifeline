@@ -1,4 +1,4 @@
-import type { CliApproval, CliApprovalOptionKind } from '@lifeline/protocol';
+import type { CliApproval, CliApprovalOptionKind, CliSource } from '@lifeline/protocol';
 import type { AcpEnvInput, AcpProfile } from './types.js';
 
 const CURSOR_KINDS = new Map<string, CliApprovalOptionKind>([
@@ -11,6 +11,13 @@ const CODEBUDDY_KINDS = new Map<string, CliApprovalOptionKind>([
   ['allow_always', 'allow_always'],
   ['allow', 'allow_once'],
   ['reject', 'reject_once'],
+]);
+
+/** ACP spec spelling, which the built-in Codex bridge emits. */
+const ACP_SPEC_KINDS = new Map<string, CliApprovalOptionKind>([
+  ['allow_once', 'allow_once'],
+  ['allow_always', 'allow_always'],
+  ['reject_once', 'reject_once'],
 ]);
 
 export type { AcpProfile } from './types.js';
@@ -44,6 +51,33 @@ export const codebuddyAcpProfile: AcpProfile = {
     return codebuddyEnv(input);
   },
 };
+
+/**
+ * Codex CLI through the built-in ACP bridge. `command` / `args` are nominal: the spawn is the running Node
+ * with this program's entry (`codexBridgeLaunch()`), and the bridge starts `<codexCliPath> app-server`.
+ */
+export const codexAcpProfile: AcpProfile = {
+  source: 'codex-cli',
+  command: 'codex',
+  args: [],
+  mapOptionKind(kind) {
+    return mapKind(ACP_SPEC_KINDS, kind);
+  },
+  toCliApproval(raw, approvalId, sessionId) {
+    return buildCliApproval(ACP_SPEC_KINDS, raw, approvalId, sessionId);
+  },
+  childEnv(input) {
+    return omitCodebuddyEnv(input?.base);
+  },
+};
+
+export function acpProfileFor(source: CliSource): AcpProfile {
+  if (source === 'cursor-cli')
+    return cursorAcpProfile;
+  if (source === 'codex-cli')
+    return codexAcpProfile;
+  return codebuddyAcpProfile;
+}
 
 function mapKind(table: ReadonlyMap<string, CliApprovalOptionKind>, kind: string): CliApprovalOptionKind {
   return table.get(kind) ?? 'unknown';

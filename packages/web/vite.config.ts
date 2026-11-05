@@ -38,7 +38,7 @@ export default defineConfig(({ mode }) => {
       react(),
       tailwindcss(),
       // The protocol barrel re-exports cli.ts, which calls node:path isAbsolute.
-      // The browser build has no Node builtins. CLI paths are POSIX (darwin only).
+      // The browser build has no Node builtins. CLI paths are POSIX (darwin, linux).
       {
         name: 'browser-node-path',
         enforce: 'pre',

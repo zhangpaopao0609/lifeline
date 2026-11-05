@@ -1,4 +1,4 @@
-import type { CliPermissionResponse } from '@lifeline/protocol';
+import type { CliPermissionResponse, CliSource } from '@lifeline/protocol';
 import type {
   AcpClientEvent,
   AcpClientOptions,
@@ -87,7 +87,7 @@ export class AcpClient {
     if (!isRecord(result) || typeof result.sessionId !== 'string' || result.sessionId.length === 0)
       throw new JsonlRpcError('provider-error', 'session/new missing sessionId');
     this.providerSessionId = result.sessionId;
-    return sessionPayload(result, result.sessionId);
+    return sessionPayload(result, result.sessionId, this.profile.source);
   }
 
   /**
@@ -107,7 +107,7 @@ export class AcpClient {
       ? result.sessionId
       : input.sessionId;
     this.providerSessionId = echoed;
-    return sessionPayload(result, echoed);
+    return sessionPayload(result, echoed, this.profile.source);
   }
 
   /**
@@ -252,10 +252,11 @@ function stripSessionId(params: unknown): unknown {
   return copy;
 }
 
-function sessionPayload(result: Record<string, unknown>, sessionId: string): AcpSessionNewResult {
+function sessionPayload(result: Record<string, unknown>, sessionId: string, source: CliSource): AcpSessionNewResult {
   const catalog = readSessionCatalog(result);
   const configIds = readSessionConfigIds(result);
-  const cursorParameters = readCursorParameters(result);
+  // Codex model ids are plain ids with a separate effort dial, not Cursor's parameterized names.
+  const cursorParameters = source === 'codex-cli' ? undefined : readCursorParameters(result);
   return {
     sessionId,
     models: readList(result.models, 'availableModels'),
