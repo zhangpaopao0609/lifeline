@@ -1,0 +1,7 @@
+{
+  "id": "u6",
+  "role": "user",
+  "createdAt": "2026-01-04T00:00:00.000Z",
+  "message": "{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"from vscode plugin\"}]}",
+  "extra": "{\"isHelperMessage\":false}"
+}

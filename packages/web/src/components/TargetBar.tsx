@@ -1,6 +1,6 @@
 import { CircleNotch } from '@phosphor-icons/react';
 import { usePendingNewChat } from '../hooks/usePendingNewChat';
-import { IDE_LABELS } from '../net/protocol';
+import { ideSubject, ideTitle } from '../lib/ide-label';
 import {
   activeTabOf,
   isActiveSessionWorking,
@@ -21,7 +21,8 @@ export function TargetBar() {
   const pendingHere = pendingSwitch && pendingSwitch.ide === selectedIde ? pendingSwitch : null;
   // Create in flight: same truth as the rail row and the pane, so the header must not keep naming the old session.
   const pendingNew = usePendingNewChat();
-  const ideLabel = IDE_LABELS[selectedIde];
+  // "CodeBuddy" / "CodeBuddy · VS Code 插件" — the plugin host is named, the standalone IDE is not.
+  const ideLabel = ideTitle(selectedIde, state?.host);
   // Window name is optimistic like the title: switching to a session in another window changes the name immediately, without waiting for state.
   const windowTitle = viewedWindowOf(state, pendingHere)?.title;
 
@@ -43,7 +44,8 @@ export function TargetBar() {
   // Copy follows the spinner (see targetBarStatusText: global idle must not cover row-level "running" and "finished unread").
   const statusText = backgroundRunning
     ? '后台任务运行中'
-    : targetBarStatusText(state, running, unread, ideLabel);
+    // Status sentences name the process we would quit/reopen, not the slot label.
+    : targetBarStatusText(state, running, unread, ideSubject(selectedIde, state?.host));
   // A create / switch in flight owns the header: the old session's title and status would contradict the rail and pane.
   const title = pendingNew ? '新会话' : pendingHere ? (pendingHere.title || '（未命名）') : (tab?.title || '（无会话）');
   const inFlight = pendingNew ? '新建中…' : pendingHere ? '切换中…' : '';

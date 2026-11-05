@@ -2,10 +2,11 @@ import type { IdeKind } from '../net/protocol';
 import { ArrowCircleUp, Cpu, Database, Plus, TerminalWindow, WarningCircle } from '@phosphor-icons/react';
 import { useState } from 'react';
 import { machineNotice } from '../lib/duplicate-agent';
+import { ideTitle } from '../lib/ide-label';
 import { machineLabel } from '../lib/machine-name';
 import { noteUserSwitch } from '../lib/useViewState';
 import { isOutdated } from '../lib/version';
-import { IDE_KINDS, IDE_LABELS } from '../net/protocol';
+import { IDE_KINDS } from '../net/protocol';
 import { cliRailDot, useCliStore, visibleCliSources } from '../store/cli';
 import { useIdesStore } from '../store/ides';
 import { useMachinesStore } from '../store/machines';
@@ -103,7 +104,7 @@ export function MachineList({ onNavigate }: { onNavigate?: () => void }) {
               {IDE_KINDS.map((ide) => {
                 // The selected machine uses the live store (faster); others only have the summary from machines:list.
                 const status = selected
-                  ? { connected: ideConnected(ide), pendingApprovals: approvalsOf(ide) }
+                  ? { connected: ideConnected(ide), pendingApprovals: approvalsOf(ide), host: ides[ide]?.host }
                   : m.ides?.[ide];
                 const n = status?.pendingApprovals ?? 0;
                 // When the machine is offline, IDE status is frozen and a green dot would be a lie.
@@ -119,7 +120,8 @@ export function MachineList({ onNavigate }: { onNavigate?: () => void }) {
                     }`}
                   >
                     <Cpu size={14} />
-                    <span className="flex-1">{IDE_LABELS[ide]}</span>
+                    {/* `truncate`: the plugin label ("CodeBuddy · VS Code 插件") is ~2x the name — the rail is 240px and must not wrap. */}
+                    <span className="flex-1 truncate">{ideTitle(ide, status?.host)}</span>
                     {/* No summary (older server): don't draw a dot. Not drawing = unknown, more honest than a gray dot. */}
                     {status && (
                       <span className={`dot-sm ${ideOnline ? 'bg-[var(--ok)]' : 'bg-[var(--text-weak)]'}`} />

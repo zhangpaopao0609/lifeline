@@ -1,0 +1,7 @@
+{
+  "id": "a6",
+  "role": "assistant",
+  "createdAt": "2026-01-04T00:00:01.000Z",
+  "message": "{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"plugin reply\"}]}",
+  "extra": "{\"isHelperMessage\":false}"
+}

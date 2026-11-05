@@ -6,6 +6,7 @@ import type {
   CliAvailability,
   CliSource,
   DuplicateAgent,
+  IdeHost,
   PatchSeqBaseline,
   SessionBodyPayload,
   SessionGetPayload,
@@ -75,6 +76,8 @@ export interface StatePatchPayload {
 export interface MachineIdeStatus {
   connected: boolean;
   pendingApprovals: number;
+  /** Standalone IDE vs the VSCode plugin host; absent = unknown (old agent, never connected). */
+  host?: IdeHost;
 }
 
 export interface MachineInfo {
@@ -2149,14 +2152,20 @@ function stripIdesState(state: AgentIdesState): AgentIdesState {
   return { ides };
 }
 
-/** Rail child-row summary: only the two numbers the status dot and badge need */
+/** Rail child-row summary: the status dot, the badge, and the row label (host) */
 function ideStatusOf(state: AgentIdesState): Partial<Record<IdeKind, MachineIdeStatus>> {
   const out: Partial<Record<IdeKind, MachineIdeStatus>> = {};
   for (const ide of IDE_KINDS) {
     const s = state.ides[ide];
     if (!s)
       continue;
-    out[ide] = { connected: s.connected === true, pendingApprovals: s.pendingApprovals?.length ?? 0 };
+    out[ide] = {
+      connected: s.connected === true,
+      pendingApprovals: s.pendingApprovals?.length ?? 0,
+      // Omit the key when unknown: an `undefined` value would survive JSON in
+      // theory but is one less thing to explain in a payload diff.
+      ...(s.host ? { host: s.host } : {}),
+    };
   }
   return out;
 }
@@ -2182,12 +2191,20 @@ function isContentOnlyConn(conn: AgentConn): boolean {
   return liveCapable === undefined || liveCapable.length === 0;
 }
 
-/** Summary fingerprint: only broadcast machines:list when it changes */
+/**
+ * Summary fingerprint: only broadcast machines:list when it changes.
+ *
+ * `host` belongs in here even though it is "just a label": the rail row of a
+ * **non-selected** machine reads `m.ides[ide].host` from this list, and host is
+ * learned on connect — a `state:patch` carrying nothing else this signature
+ * looks at. Without it, that row keeps the previous host suffix until the
+ * connection bit or the approval count happens to move.
+ */
 function ideStatusSignature(state: AgentIdesState): string {
   const status = ideStatusOf(state);
   return IDE_KINDS.map((ide) => {
     const s = status[ide];
-    return s ? `${s.connected ? '1' : '0'}:${s.pendingApprovals}` : '-';
+    return s ? `${s.connected ? '1' : '0'}:${s.pendingApprovals}:${s.host ?? '-'}` : '-';
   }).join('|');
 }
 

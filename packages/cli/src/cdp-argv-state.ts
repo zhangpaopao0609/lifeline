@@ -5,9 +5,9 @@ import {
   cursorArgvPath,
   ensureCodeBuddyCdpArgv,
   ensureCursorCdpArgv,
+  isVscodeArgvPath,
   removeCodeBuddyCdpArgv,
   removeCursorCdpArgv,
-  resolveCodeBuddyArgvPath,
 } from './cdp-argv-file.js';
 import { cdpQuitAndReopenHint } from './cdp-status.js';
 import { loadCliConfig, saveCliConfig } from './config.js';
@@ -28,53 +28,92 @@ export function applyCursorCdpArgv(config: CliConfig): { config: CliConfig; stat
   return { config: { ...config, managedCdpArgv: true }, state: 'wrote' };
 }
 
-export function applyCodeBuddyCdpArgv(config: CliConfig): { config: CliConfig; state: CdpArgvState } {
-  const result = ensureCodeBuddyCdpArgv();
-  if (result === 'skipped' || !resolveCodeBuddyArgvPath())
-    return { config, state: 'skipped' };
-  if (result === 'already') {
+export function applyCodeBuddyCdpArgv(config: CliConfig): {
+  config: CliConfig;
+  state: CdpArgvState;
+  /** Every argv.json managed right now (one per installed host). */
+  paths: string[];
+  /** The subset actually written this run. */
+  written: string[];
+} {
+  const { state, paths, written } = ensureCodeBuddyCdpArgv();
+  if (state === 'skipped')
+    return { config, state: 'skipped', paths, written };
+  if (state === 'already') {
     return {
       config: { ...config, managedCodebuddyCdpArgv: config.managedCodebuddyCdpArgv ?? false },
       state: 'already',
+      paths,
+      written,
     };
   }
-  return { config: { ...config, managedCodebuddyCdpArgv: true }, state: 'wrote' };
+  return { config: { ...config, managedCodebuddyCdpArgv: true }, state: 'wrote', paths, written };
 }
 
-/** Report line + the one thing the user may have to do about it. */
-export function cdpSummary(cursor: CdpArgvState, codebuddy: CdpArgvState): { value: string; notes: string[] } {
+/**
+ * Report line + the one thing the user may have to do about it.
+ *
+ * ⚠️ **Do not blanket-say "quit and reopen is pointless"**: measured, Cursor
+ * 3.20.21 and the CodeBuddy IDE do not read argv.json's `remote-debugging-port`
+ * (in out/main.js that key only appears in `app.commandLine.getSwitchValue(...)`,
+ * with no inject branch). **VSCode does** — the CodeBuddy plugin host applies it
+ * through `app.commandLine.appendSwitch` — so telling a VSCode user that a manual
+ * reopen does nothing is backwards (and on Windows it is the only step that works,
+ * see `docs/ide-drivers.md`). The written path decides which sentence is true.
+ */
+export function cdpSummary(
+  cursor: CdpArgvState,
+  codebuddy: CdpArgvState,
+  opts: { codebuddyPaths?: readonly string[] } = {},
+): { value: string; notes: string[] } {
   const configured = [
     cursor === 'skipped' ? '' : 'Cursor',
     codebuddy === 'skipped' ? '' : 'CodeBuddy',
   ].filter(Boolean);
-  const restart = [
-    cursor === 'wrote' ? 'Cursor' : '',
-    codebuddy === 'wrote' ? 'CodeBuddy' : '',
-  ].filter(Boolean);
+  const notes: string[] = [];
+  if (!canControlIde()) {
+    notes.push('This machine only reads session data (Linux); the debug port is not used here.');
+  }
+  else {
+    // A dual-install machine now has one file per host; the sentence differs per
+    // host, so decide per file instead of per product name.
+    const paths = opts.codebuddyPaths ?? [];
+    const vscodePaths = paths.filter(isVscodeArgvPath);
+    const idePaths = paths.filter(path => !isVscodeArgvPath(path));
+    const ignores = [
+      cursor === 'wrote' ? 'Cursor' : '',
+      codebuddy === 'wrote' && idePaths.length > 0 ? 'CodeBuddy' : '',
+    ].filter(Boolean);
+    if (ignores.length > 0)
+      notes.push(`Do NOT restart ${ignores.join(' / ')} by hand: this build ignores argv.json, so lifeline restarts the IDE itself when the debug port is missing.`);
+    if (codebuddy === 'wrote' && vscodePaths.length > 0)
+      notes.push(`The CodeBuddy plugin runs in VS Code, which does read ${vscodePaths.join(', ')}: quitting it fully and reopening also applies the port. lifeline restarts it when the port is missing.`);
+  }
   return {
     value: configured.join(' · ') || 'no Cursor / CodeBuddy install found',
-    // ⚠️ **Do not tell the user to "quit and reopen"**: measured, Cursor 3.20.21 does not read argv.json's remote-debugging-port
-    // (in out/main.js that key only appears in app.commandLine.getSwitchValue(...), with no inject branch),
-    // so a manual reopen just puts it back in the "no debug port" state, then the agent restarts it again.
-    notes: !canControlIde()
-      ? ['This machine only reads session data (Linux); the debug port is not used here.']
-      : restart.length
-        ? [`Do NOT restart ${restart.join(' / ')} by hand: this build ignores argv.json, so lifeline restarts the IDE itself when the debug port is missing.`]
-        : [],
+    notes,
   };
 }
 
 /** Verbose wording, for `daemon install` and the interactive setup. */
-export function cdpArgvLines(name: string, state: CdpArgvState, path: string, port: number): string[] {
+export function cdpArgvLines(name: string, state: CdpArgvState, paths: readonly string[], port: number): string[] {
   if (state === 'skipped')
     return [`${name} not installed; skipped the remote-debugging-port=${port} argv.`];
+  if (paths.length === 0)
+    return [];
   if (state === 'already')
-    return [`${name} already keeps remote-debugging-port=${port} on (${path}).`];
-  return [
+    return paths.map(path => `${name} already keeps remote-debugging-port=${port} on (${path}).`);
+  // One "Wrote" + one note per file: on a dual-install machine the two hosts
+  // behave differently (VSCode applies the key, the standalone IDE does not).
+  return paths.flatMap(path => [
     `Wrote ${path} (remote-debugging-port=${port}).`,
-    // This line **deliberately no longer says "restart it and it takes effect"**: that key is a no-op in practice (see above); we write it so uninstall can strip it cleanly.
-    `Note: ${name} ignores this key (verified); lifeline passes the debug flag when it launches the IDE.`,
-  ];
+    // Deliberately no "restart it and it takes effect" for Cursor / the CodeBuddy
+    // IDE: that key is a no-op in practice (see `cdpSummary`); we write it so
+    // uninstall can strip it cleanly. VSCode is the exception and says so.
+    isVscodeArgvPath(path)
+      ? `Note: VSCode reads this key at startup (verified); lifeline also passes the debug flag when it launches the IDE.`
+      : `Note: ${name} ignores this key (verified); lifeline passes the debug flag when it launches the IDE.`,
+  ]);
 }
 
 export function revertCursorCdpArgvIfManaged(): void {

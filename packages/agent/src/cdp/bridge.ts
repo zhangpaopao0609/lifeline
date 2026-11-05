@@ -1,4 +1,4 @@
-import type { CdpEndpointSource, CdpIssue, CdpIssueKind } from '../../../protocol/src/index.js';
+import type { CdpEndpointSource, CdpIssue, CdpIssueKind, IdeHost } from '../../../protocol/src/index.js';
 import type { AgentConfig, CursorWindow, IdeKind } from '../types.js';
 import type { ProbeResult } from './probe.js';
 import type { RelaunchResult } from './relaunch-engine.js';
@@ -177,7 +177,17 @@ export async function extractWorkspaceName(client: CdpClient, includeQualifier =
 }
 
 export const DEFAULT_TITLE_SUFFIXES = [' - Cursor'];
-export const CODEBUDDY_TITLE_SUFFIXES = [' - CodeBuddy CN', ' - CodeBuddy'];
+/**
+ * CodeBuddy family window-title suffixes. macOS VSCode separates with an em
+ * dash before the app name, Windows/Linux with a hyphen — list both;
+ * `parseCdpTitle` sorts by length desc and stops at the first match.
+ */
+export const CODEBUDDY_TITLE_SUFFIXES = [
+  ' - CodeBuddy CN',
+  ' - CodeBuddy',
+  ' — Visual Studio Code',
+  ' - Visual Studio Code',
+];
 
 export interface CdpRelauncher {
   maybeRelaunch: (port: number) => Promise<RelaunchResult>;
@@ -396,6 +406,18 @@ export class CDPBridge extends EventEmitter {
   /** Baseline of the quiet watch (captured on arm): only false→true triggers a probe. */
   private quietSeenRunning = false;
   private endpointSource: CdpEndpointSource | undefined;
+  /**
+   * Which product answered the last successful probe (see `hostOf`). Kept after a
+   * disconnect on purpose: the console label must not flip back to "plain IDE"
+   * while the IDE is restarting/closed — and never guessed from install inventory.
+   *
+   * **Sampled only on the connected edge.** It is sticky (`probed.host ?? last`),
+   * so an endpoint that switches product *without* a reconnect (single-instance
+   * forwarding, or a relaunch whose `--args` got dropped) keeps the old label. That
+   * is accepted: every real host switch goes through disconnect → connect. Do not
+   * assume this follows the probe once connected.
+   */
+  private ideHost: IdeHost | undefined;
   /** Instance uuid from `DevToolsActivePort`: the pre-connect probe must use it for kinship too (or the identity check dies at the attach layer). */
   private endpointUuid: string | undefined;
   /** Last seen port-file mtime (`undefined` = no file was read). */
@@ -479,6 +501,11 @@ export class CDPBridge extends EventEmitter {
 
   get raiseAppNames(): readonly string[] {
     return this.appNames;
+  }
+
+  /** Host of the last successful probe (`undefined` = never connected, or unrecognized). */
+  get host(): IdeHost | undefined {
+    return this.ideHost;
   }
 
   async connect(targetId?: string): Promise<void> {
@@ -611,6 +638,10 @@ export class CDPBridge extends EventEmitter {
         this.scheduleReconnect(issue.kind);
         return;
       }
+
+      // Learned from the endpoint we just accepted (never from install inventory):
+      // a dual-install machine can host either product in the same slot.
+      this.ideHost = probed.host ?? this.ideHost;
 
       let target = probed.target as CDPTarget;
       if (!this.probeOverride) {

@@ -92,6 +92,7 @@ export class StateManager extends EventEmitter {
     newState.contentSource = this.currentState.contentSource;
     newState.cdpIssue = this.currentState.cdpIssue ?? null;
     newState.liveIssue = this.currentState.liveIssue ?? null;
+    newState.host = this.currentState.host;
     if (newState.activeWindowId && Array.isArray(newState.chatTabs)) {
       newState.chatTabs = newState.chatTabs.map(tab =>
         tab.windowId ? tab : { ...tab, windowId: newState.activeWindowId },
@@ -274,6 +275,18 @@ export class StateManager extends EventEmitter {
       return;
     this.currentState = { ...this.currentState, cdpIssue: issue };
     this.emit('state:patch', { cdpIssue: issue });
+  }
+
+  /**
+   * Which product hosts this slot (from the CDP bridge; `undefined` = unknown).
+   * Bridge-managed like `contentSource`: the DOM extractor never sees it, so
+   * `onExtraction` must copy it forward (it does, next to `connected`).
+   */
+  setHost(host: CursorState['host']): void {
+    if (this.currentState.host === host)
+      return;
+    this.currentState = { ...this.currentState, host };
+    this.emit('state:patch', { host });
   }
 
   setLiveIssue(issue: CdpIssue | null): void {
@@ -460,6 +473,11 @@ export class StateManager extends EventEmitter {
 
     if (prev.contentSource !== next.contentSource) {
       patch.contentSource = next.contentSource;
+      hasChange = true;
+    }
+
+    if (prev.host !== next.host) {
+      patch.host = next.host;
       hasChange = true;
     }
 

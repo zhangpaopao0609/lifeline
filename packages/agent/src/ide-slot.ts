@@ -180,6 +180,9 @@ export function createIdeSlot(options: CreateIdeSlotOptions): IdeSlot {
   }
 
   cdp.on('connected', () => {
+    // Before the state flips to connected: the console labels the row from `host`,
+    // and a "connected but still plain CodeBuddy" frame is a visible flip-flop.
+    stateManager.setHost(cdp.host);
     stateManager.onConnectionChanged(true);
     stateManager.updateWindows(cdp.windows, cdp.activeTargetId);
     driver.attachLive(handle);

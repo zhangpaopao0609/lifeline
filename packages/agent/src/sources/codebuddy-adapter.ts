@@ -2,11 +2,13 @@
  * Readonly CodeBuddy content source: JSON files under
  * ~/Library/Application Support/CodeBuddyExtension/Data.
  *
- * Layout:
- *   <root>/<uid>/CodeBuddyIDE/<workspaceId>/history/<bucket>/
+ * Layout (the coding-copilot extension is shared by the standalone IDE and the
+ * VSCode plugin; each host writes its sessions under its own dir):
+ *   <root>/<uid>/<host>/<workspaceId>/history/<bucket>/
  *     index.json                 { conversations: [...] }
  *     <sessionId>/index.json     { messages, requests }
  *     <sessionId>/messages/<id>.json
+ * where <host> ∈ CodeBuddyIDE (standalone) | VSCode (plugin).
  */
 
 import type { ChatElement } from '../types.js';
@@ -26,6 +28,9 @@ import {
   parseTs,
   projectCodeBuddy,
 } from './codebuddy-project.js';
+
+/** Extension host dirs under `<root>/<uid>/`: the standalone IDE and the VSCode plugin (measured on 2026-11-03). */
+const HOST_DIRS = ['CodeBuddyIDE', 'VSCode'] as const;
 
 interface ConversationHead {
   id: string;
@@ -305,13 +310,15 @@ export class CodeBuddyAdapter implements ContentSource {
     if (!existsSync(this.rootPath))
       return out;
     for (const uid of listDirs(this.rootPath)) {
-      const ideRoot = join(this.rootPath, uid, 'CodeBuddyIDE');
-      if (!existsSync(ideRoot))
-        continue;
-      for (const workspaceId of listDirs(ideRoot)) {
-        const hist = join(ideRoot, workspaceId, 'history');
-        if (existsSync(hist) && statSync(hist).isDirectory())
-          out.push(hist);
+      for (const host of HOST_DIRS) {
+        const ideRoot = join(this.rootPath, uid, host);
+        if (!existsSync(ideRoot))
+          continue;
+        for (const workspaceId of listDirs(ideRoot)) {
+          const hist = join(ideRoot, workspaceId, 'history');
+          if (existsSync(hist) && statSync(hist).isDirectory())
+            out.push(hist);
+        }
       }
     }
     return out;
@@ -322,26 +329,28 @@ export class CodeBuddyAdapter implements ContentSource {
     if (!existsSync(this.rootPath))
       return out;
     for (const uid of listDirs(this.rootPath)) {
-      const ideRoot = join(this.rootPath, uid, 'CodeBuddyIDE');
-      if (!existsSync(ideRoot))
-        continue;
-      for (const workspaceId of listDirs(ideRoot)) {
-        const histRoot = join(ideRoot, workspaceId, 'history');
-        if (!existsSync(histRoot))
+      for (const host of HOST_DIRS) {
+        const ideRoot = join(this.rootPath, uid, host);
+        if (!existsSync(ideRoot))
           continue;
-        for (const bucket of listDirs(histRoot)) {
-          const bucketDir = join(histRoot, bucket);
-          const head = readJson<BucketIndex>(join(bucketDir, 'index.json'));
-          const convs = head?.conversations ?? [];
-          for (const conv of convs) {
-            if (!conv?.id)
-              continue;
-            out.push({
-              sessionId: conv.id,
-              workspaceId,
-              dir: join(bucketDir, conv.id),
-              conv,
-            });
+        for (const workspaceId of listDirs(ideRoot)) {
+          const histRoot = join(ideRoot, workspaceId, 'history');
+          if (!existsSync(histRoot))
+            continue;
+          for (const bucket of listDirs(histRoot)) {
+            const bucketDir = join(histRoot, bucket);
+            const head = readJson<BucketIndex>(join(bucketDir, 'index.json'));
+            const convs = head?.conversations ?? [];
+            for (const conv of convs) {
+              if (!conv?.id)
+                continue;
+              out.push({
+                sessionId: conv.id,
+                workspaceId,
+                dir: join(bucketDir, conv.id),
+                conv,
+              });
+            }
           }
         }
       }

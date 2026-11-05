@@ -2,7 +2,7 @@ import { CloudArrowDown, FileDashed, Plug } from '@phosphor-icons/react';
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { useLiveSessionKey } from '../hooks/useLiveSessionKey';
 import { usePendingNewChat } from '../hooks/usePendingNewChat';
-import { IDE_LABELS } from '../net/protocol';
+import { ideSubject, isPluginHost } from '../lib/ide-label';
 import { socket } from '../net/socket';
 import { isDraftTab, useIdesStore, viewedTabOf } from '../store/ides';
 import { useMachinesStore } from '../store/machines';
@@ -13,8 +13,17 @@ import { segmentize } from './timeline-segments';
 import { TIMELINE_PROBE_ON, TimelineProbe } from './TimelineProbe';
 import { TimelineVirtuoso } from './TimelineVirtuoso';
 
-function IdeDisconnected({ ideLabel, error }: { ideLabel: string; error: string | null }) {
-  const fixText = `${ideLabel} 未连接：先确认它开着 —— lifeline 会自动退出并用调试参数重新打开它（约 2 秒），不需要手动操作。手动"退出再打开"没用：这个版本不读 argv.json。`;
+function IdeDisconnected({ ideLabel, argvHonoured, error }: { ideLabel: string; argvHonoured: boolean; error: string | null }) {
+  // VSCode (the CodeBuddy plugin host) is the one build that **does** read argv.json
+  // — measured in its `out/main.js`, `remote-debugging-port` is in the whitelist and
+  // goes through `app.commandLine.appendSwitch`. Cursor and the CodeBuddy IDE ignore
+  // it. Telling a VSCode user "a manual reopen is pointless" is backwards, and on
+  // Windows it is the only step that works: the plugin-only quit path cannot
+  // self-heal (`quitProcessWin` never sees the exit).
+  const manual = argvHonoured
+    ? '手动完全退出再打开也有效：VS Code 会读 argv.json。'
+    : '手动「退出再打开」没有用：这个版本不读 argv.json。';
+  const fixText = `${ideLabel} 未连接：先确认它开着 —— lifeline 会自动退出并用调试参数重新打开它（约 2 秒），不需要手动操作。${manual}`;
   return (
     <div className="tl-hint">
       <Plug size={28} color="var(--text-weak)" />
@@ -30,10 +39,23 @@ function IdeDisconnected({ ideLabel, error }: { ideLabel: string; error: string 
         {' '}
         已经打开 —— lifeline 会自动退出并用调试参数重新打开它（约 2 秒），不需要手动操作。
         <div className="text-[var(--text-weak)]">
-          手动「退出再打开」没有用：这个版本不读
-          {' '}
-          <span className="mono">argv.json</span>
-          。
+          {argvHonoured
+            ? (
+                <>
+                  手动完全退出再打开也有效：VS Code 会读
+                  {' '}
+                  <span className="mono">argv.json</span>
+                  。
+                </>
+              )
+            : (
+                <>
+                  手动「退出再打开」没有用：这个版本不读
+                  {' '}
+                  <span className="mono">argv.json</span>
+                  。
+                </>
+              )}
         </div>
         {error && (
           <div className="mono mt-1.5 text-[11px]">
@@ -188,8 +210,16 @@ export function Timeline() {
     [body],
   );
 
-  if (state && state.connected === false && !machineContentOnly)
-    return <IdeDisconnected ideLabel={IDE_LABELS[selectedIde]} error={state.lastExtractionError ?? null} />;
+  if (state && state.connected === false && !machineContentOnly) {
+    // Subject, not title: the copy tells the user which app to open / which app we will restart.
+    return (
+      <IdeDisconnected
+        ideLabel={ideSubject(selectedIde, state.host)}
+        argvHonoured={isPluginHost(selectedIde, state.host)}
+        error={state.lastExtractionError ?? null}
+      />
+    );
+  }
 
   if (!liveKey) {
     // Create in flight (the ＋ was just clicked): show the empty-session hint now instead of the previous session's

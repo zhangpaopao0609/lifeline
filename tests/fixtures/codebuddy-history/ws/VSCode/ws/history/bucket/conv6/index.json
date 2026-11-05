@@ -1,0 +1,7 @@
+{
+  "messages": [
+    { "id": "u6", "type": "text", "role": "user", "isComplete": true },
+    { "id": "a6", "type": "text", "role": "assistant", "isComplete": true }
+  ],
+  "requests": [{ "id": "r6", "state": "finished", "messages": ["u6", "a6"] }]
+}

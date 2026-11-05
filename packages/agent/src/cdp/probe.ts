@@ -1,4 +1,4 @@
-import type { CdpIssue, CdpIssueKind, CdpScope, IdeKind, NotCdpCause } from '../../../protocol/src/index.js';
+import type { CdpIssue, CdpIssueKind, CdpScope, IdeHost, IdeKind, NotCdpCause } from '../../../protocol/src/index.js';
 import type { CdpPageTarget } from './bridge.js';
 import { spawnSync } from 'node:child_process';
 import { isWorkbenchPage } from './bridge.js';
@@ -24,7 +24,26 @@ const OUR_UA_TOKEN: Record<IdeKind, RegExp> = {
  * decide from `Chrome/` alone — first confirm the UA has none of our tokens
  * (Cursor's UA also carries `Chrome/`).
  */
-const FOREIGN_UA_TOKEN = /HeadlessChrome\/|Chrome\/|Firefox\/|Edg\/| Code\/\d|VSCodium\/|Windsurf\/|Trae\//;
+const FOREIGN_UA_TOKEN_BASE = /HeadlessChrome\/|Chrome\/|Firefox\/|Edg\/|VSCodium\/|Windsurf\/|Trae\//;
+
+/**
+ * Plain VSCode's UA token. Foreign to `cursor`; on the `codebuddy` slot it is a
+ * **family member** (the CodeBuddy plugin runs inside VSCode) and must be
+ * classified `unknown`, never a match and never foreign.
+ *
+ * Checked **before** the foreign list, not merely removed from it: VSCode's UA
+ * carries both ` Code/<version>` and `Chrome/`, so leaving `Chrome/` to decide
+ * would report every plugin host as someone else's product (`not-cdp/foreign` →
+ * the console says "端口上是 Chrome/x.y，不是 CodeBuddy"). Measured UA shape:
+ * `Mozilla/5.0 … Code/1.96.0 Chrome/128.0.6613.186 Electron/32.2.6 Safari/537.36`.
+ */
+const VSCODE_UA_TOKEN = / Code\/\d/;
+
+function foreignUaToken(ide: IdeKind): RegExp {
+  return ide === 'cursor'
+    ? new RegExp(`${FOREIGN_UA_TOKEN_BASE.source}|${VSCODE_UA_TOKEN.source}`)
+    : FOREIGN_UA_TOKEN_BASE;
+}
 
 /**
  * Three-state identity. **`unknown` is not a reason to reject** — it only means
@@ -36,7 +55,9 @@ export function identityOf(ua: string | undefined, ide: IdeKind): 'match' | 'for
     return 'unknown';
   if (OUR_UA_TOKEN[ide].test(ua))
     return 'match';
-  if (FOREIGN_UA_TOKEN.test(ua))
+  if (ide === 'codebuddy' && VSCODE_UA_TOKEN.test(ua))
+    return 'unknown';
+  if (foreignUaToken(ide).test(ua))
     return 'foreign';
   return 'unknown';
 }
@@ -50,8 +71,16 @@ export function identityOf(ua: string | undefined, ide: IdeKind): 'match' | 'for
  * deliberately omitted** (a wrong `/usr/share/code/` would block us).
  * Spaces in the URL are percent-encoded (measured `/Applications/CodeBuddy%20CN.app/`);
  * decode before comparing.
+ *
+ * `Visual Studio Code` is foreign to `cursor` but **not** to `codebuddy` (the
+ * CodeBuddy plugin runs inside VSCode) — see `foreignAppPathRe`.
  */
-const FOREIGN_APP_PATH = /\/(Visual Studio Code|VSCodium|Windsurf|Trae|Google Chrome|Chromium)\.app\//;
+const FOREIGN_APP_PATH_BASE = /\/(VSCodium|Windsurf|Trae|Google Chrome|Chromium)\.app\//;
+const CURSOR_FOREIGN_APP_PATH = /\/(Visual Studio Code|VSCodium|Windsurf|Trae|Google Chrome|Chromium)\.app\//;
+
+function foreignAppPathRe(ide: IdeKind): RegExp {
+  return ide === 'cursor' ? CURSOR_FOREIGN_APP_PATH : FOREIGN_APP_PATH_BASE;
+}
 
 /**
  * Take the app install path from a workbench URL.
@@ -63,6 +92,41 @@ export function appPathOf(url: string): string {
     return '';
   try { return decodeURIComponent(m[1]); }
   catch { return m[1]; }
+}
+
+/** VSCode's bundle name in the workbench path (percent-decoded by `appPathOf`). */
+const VSCODE_APP_PATH = /\/Visual Studio Code\.app\//;
+/** VSCode's UA carries ` Code/<version>` (CodeBuddy's is `CodeBuddyCN/1.106.1`). */
+const VSCODE_UA = / Code\/\d/;
+
+/**
+ * Which product is serving this endpoint: the standalone CodeBuddy IDE, or the
+ * CodeBuddy plugin running inside VS Code.
+ *
+ * **Display metadata only** — it never accepts or rejects an endpoint (that is
+ * `identityOf` / `foreignAppPathRe`, and a wrong call there blocks a healthy
+ * machine). Two independent signals, install path first: it names the bundle,
+ * while `/json/version` can flap and take the UA with it. Unknown → `undefined`
+ * (no suffix in the console beats a wrong suffix).
+ */
+export function hostOf(input: { appPath?: string; ua?: string }): IdeHost | undefined {
+  const appPath = input.appPath ?? '';
+  if (appPath) {
+    if (VSCODE_APP_PATH.test(appPath))
+      return 'vscode';
+    // A CodeBuddy bundle settles it without waiting for the UA.
+    if (/CodeBuddy/.test(appPath))
+      return 'ide';
+  }
+  const ua = input.ua ?? '';
+  if (!ua.trim())
+    return undefined;
+  // Order matters: CodeBuddy's UA would otherwise look like just another VSCode.
+  if (OUR_UA_TOKEN.codebuddy.test(ua))
+    return 'ide';
+  if (VSCODE_UA.test(ua))
+    return 'vscode';
+  return undefined;
 }
 
 /**
@@ -252,6 +316,8 @@ export interface ProbeResult {
   /** Browser uuid from `/json/version` (diagnostics; kinship is decided internally). */
   browserUuid?: string;
   notCdpCause?: NotCdpCause;
+  /** Which product answered (see `hostOf`); only filled on `ok` — display metadata, never a gate. */
+  host?: IdeHost;
   at: number;
 }
 
@@ -324,6 +390,9 @@ export async function probeCdpEndpoint(
   const targets = list as CdpPageTarget[];
   const pages = targets.filter(t => isWorkbenchPage(t) && Boolean(t.webSocketDebuggerUrl));
   const browser = version?.Browser;
+  /** Hoisted: used by both the "foreign install" rule and `host` (computed once, from the same page). */
+  const appPath = pages.length > 0 ? appPathOf(pages[0].url) : undefined;
+  const host = hostOf({ appPath, ua: version?.['User-Agent'] });
   const versionUuid = parseBrowserUuid(version?.webSocketDebuggerUrl);
   const expectedUuid = opts?.expect?.browserUuid;
   const noWindowKind: CdpIssueKind = targets.length === 0 ? 'no-window' : 'no-workbench';
@@ -355,6 +424,7 @@ export async function probeCdpEndpoint(
         target: pages[0],
         browser,
         browserUuid: versionUuid,
+        host,
       };
     }
     // Instance matched, just no window: a normal state; do not look at UA.
@@ -364,8 +434,7 @@ export async function probeCdpEndpoint(
   // ── Rule 2: there is an attachable workbench, but this layer has no uuid → use **install path** to recognize others ──
   //     Unrecognized means accept (prefer allow): a wrong path shape costs "user fully blocked", far worse than "attached to someone else's window".
   if (pages.length > 0) {
-    const appPath = appPathOf(pages[0].url);
-    if (appPath && FOREIGN_APP_PATH.test(appPath)) {
+    if (appPath && foreignAppPathRe(ide).test(appPath)) {
       return {
         ...base,
         kind: 'not-cdp',
@@ -375,7 +444,7 @@ export async function probeCdpEndpoint(
         occupant: opts?.lookupOccupant?.(port),
       };
     }
-    return { ...base, kind: 'ok', detail: `${pages.length} workbench`, target: pages[0], browser };
+    return { ...base, kind: 'ok', detail: `${pages.length} workbench`, target: pages[0], browser, host };
   }
 
   // ── Rule 3: neither instance identity nor an attachable workbench → UA, and only to split these three classes ──

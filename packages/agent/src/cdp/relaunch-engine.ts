@@ -313,17 +313,82 @@ export function ideUpdaterPgrepPattern(appName: string): string {
   return `(^|/)${escaped}\\.app/Contents/Frameworks/Squirrel\\.framework/Resources/ShipIt`;
 }
 
-export function isIdeUpdaterRunningDarwin(appName: string, deps: WinProcDeps = {}): boolean {
-  const run = deps.run ?? spawnSync;
+export function isIdeUpdaterRunningDarwin(appName: string, deps: DarwinProcDeps = {}): boolean {
+  return isDarwinProcessRunning(ideUpdaterPgrepPattern(appName), deps);
+}
+
+export interface DarwinProcDeps extends WinProcDeps {
+  now?: () => number;
+}
+
+/**
+ * How long one `ps` snapshot serves every pattern. The quiet-watch tick is 2s
+ * (`QUIET_WAKE_POLL_MS`), so this caps the cost at one `ps` (~30ms) per 5s
+ * instead of one per check per app.
+ */
+export const DARWIN_PS_CACHE_MS = 5_000;
+
+let psCache: { at: number; text: string } | undefined;
+
+/** Test hook: forget the cached `ps` snapshot. */
+export function resetDarwinProcessCache(): void {
+  psCache = undefined;
+}
+
+function darwinCommandLines(run: typeof spawnSync, now: () => number): string {
+  if (psCache && now() - psCache.at < DARWIN_PS_CACHE_MS)
+    return psCache.text;
   try {
-    const r = run('pgrep', ['-f', ideUpdaterPgrepPattern(appName)], {
-      encoding: 'utf8',
-      timeout: 5000,
-    });
-    return r.status === 0 && Boolean(r.stdout?.trim());
+    const r = run('ps', ['-axo', 'pid=,command='], { encoding: 'utf8', timeout: 5000 });
+    const text = r.stdout ?? '';
+    psCache = { at: now(), text };
+    return text;
   }
   catch {
+    return '';
+  }
+}
+
+/**
+ * Is a macOS process whose command line matches `pattern` running?
+ *
+ * `pgrep -f` first (cheap, and it is what this code used before), **`ps` as a
+ * fallback** — because `pgrep` is not reliable: measured 2026-11-05 on a real
+ * machine, CodeBuddy CN's main process was invisible to `pgrep` under **every**
+ * pattern (`-f "<App>.app/Contents/MacOS/"`, `-f CodeBuddy`, even `-x Electron`),
+ * while `ps -axo pid=,command=` listed it — same user and session, for both a
+ * Dock launch and an `open --args` launch. Same machine, WorkBuddy's `Electron`
+ * processes *were* visible, so this is not "pgrep is broken" in general.
+ *
+ * Why it matters: with only `pgrep`, `isCodeBuddyRunning` returned `false` for a
+ * running IDE, so `isCodeBuddyFamilyRunningDarwin` was satisfied by VSCode and
+ * `pickCodeBuddyFamilyQuitTargetDarwin` quit **VSCode** instead of the standalone
+ * IDE that actually had no debug port.
+ *
+ * Windows is a different mechanism (`tasklist` by exact image name, see
+ * `isProcessRunningWin`) and cannot fail this way; it is not routed through here.
+ */
+export function isDarwinProcessRunning(pattern: string, deps: DarwinProcDeps = {}): boolean {
+  const run = deps.run ?? spawnSync;
+  const now = deps.now ?? Date.now;
+  try {
+    const pg = run('pgrep', ['-f', pattern], { encoding: 'utf8', timeout: 5000 });
+    if (pg.status === 0 && Boolean(pg.stdout?.trim()))
+      return true;
+  }
+  catch {
+    /* pgrep missing / unreadable: fall through to ps */
+  }
+  const text = darwinCommandLines(run, now);
+  if (!text)
     return false;
+  try {
+    // `m`: `ps` prints one process per line, and the updater pattern is
+    // anchored with `(^|/)`.
+    return new RegExp(pattern, 'm').test(text);
+  }
+  catch {
+    return text.includes(pattern);
   }
 }
 

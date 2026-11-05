@@ -5,6 +5,7 @@ import { describe, it } from 'node:test';
 import {
   appPathOf,
   describePortOccupant,
+  hostOf,
   identityOf,
   parseBrowserUuid,
   parseOccupantLsof,
@@ -15,7 +16,13 @@ import {
 
 const CURSOR_UA = 'Mozilla/5.0 Chrome/148.0.7778.280 Cursor/3.20.21';
 const CHROME_UA = 'Mozilla/5.0 Chrome/148.0.0.0 Safari/537.36';
-const VSCODE_UA = 'Mozilla/5.0 Electron/37.0.0 Code/1.96.0';
+/**
+ * **Real** VSCode `/json/version` UA shape: ` Code/<version>` **and** `Chrome/`
+ * (an Electron build always carries the Chromium token). An earlier fixture
+ * omitted `Chrome/`, which made the "unknown, not foreign" assertion true only
+ * for a UA that no VSCode actually sends.
+ */
+const VSCODE_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Code/1.96.0 Chrome/128.0.6613.186 Electron/32.2.6 Safari/537.36';
 const BUDDY_UA = 'Mozilla/5.0 Chrome/138.0.7204.251 CodeBuddyCN/1.106.1';
 const WB = 'vscode-file://vscode-app/x/out/vs/code/electron-sandbox/workbench/workbench.html';
 /** Real VS Code workbench path (spaces percent-encoded) */
@@ -66,6 +73,18 @@ describe('identityOf', () => {
   it('flags vanilla Chrome and VS Code as foreign on the cursor slot', () => {
     assert.equal(identityOf(CHROME_UA, 'cursor'), 'foreign');
     assert.equal(identityOf(VSCODE_UA, 'cursor'), 'foreign');
+  });
+  // The CodeBuddy plugin runs INSIDE VSCode: its UA must not be "foreign" on the
+  // codebuddy slot (unknown, never a match — the plugin gate lives elsewhere).
+  it('treats VS Code UA as unknown (not foreign) on the codebuddy slot, but vanilla Chrome stays foreign', () => {
+    assert.equal(identityOf(VSCODE_UA, 'codebuddy'), 'unknown');
+    assert.equal(identityOf(CHROME_UA, 'codebuddy'), 'foreign');
+  });
+  // Guard against the fixture drifting back to a UA no VSCode sends: the family
+  // token must win over `Chrome/` (Electron always carries both).
+  it('keeps a VSCode-shaped UA unknown even though it also carries Chrome/', () => {
+    assert.match(VSCODE_UA, / Chrome\//);
+    assert.equal(identityOf(VSCODE_UA, 'codebuddy'), 'unknown');
   });
 });
 
@@ -135,6 +154,42 @@ describe('probeCdpEndpoint', () => {
       [`${url}/json/version`]: () => jsonResp(200, { 'Browser': 'Chrome/148', 'User-Agent': VSCODE_UA }),
     });
     const r = await probeCdpEndpoint(url, 'cursor', { fetch });
+    assert.equal(r.kind, 'not-cdp');
+    assert.equal(r.notCdpCause, 'foreign');
+  });
+  // The codebuddy slot accepts a VS Code workbench (the CodeBuddy plugin host).
+  it('accepts a VS Code workbench on the codebuddy slot (rule 2: plugin host)', async () => {
+    const fetch = fetchMap({
+      [`${url}/json`]: () => jsonResp(200, [{ ...workbench, url: VSCODE_WB }]),
+      [`${url}/json/version`]: () => jsonResp(200, { 'Browser': 'Chrome/148', 'User-Agent': VSCODE_UA }),
+    });
+    const r = await probeCdpEndpoint(url, 'codebuddy', { fetch });
+    assert.equal(r.kind, 'ok');
+    // The console labels the slot from this: "CodeBuddy · VS Code 插件".
+    assert.equal(r.host, 'vscode');
+  });
+  // Rule 1 (uuid match) returns before any UA / install-path logic — `host` must still be filled there,
+  // or a normal (uuid-carrying) machine would never get the label while a fallback machine would.
+  it('reports the plugin host on the instance-id path too (rule 1)', async () => {
+    const fetch = fetchMap({
+      [`${url}/json`]: () => jsonResp(200, [{ ...workbench, url: VSCODE_WB }]),
+      [`${url}/json/version`]: () => jsonResp(200, {
+        'Browser': 'Chrome/148',
+        'User-Agent': VSCODE_UA,
+        'webSocketDebuggerUrl': `ws://127.0.0.1:9222/devtools/browser/${UUID_A}`,
+      }),
+    });
+    const r = await probeCdpEndpoint(url, 'codebuddy', { fetch, expect: { browserUuid: UUID_A } });
+    assert.equal(r.kind, 'ok');
+    assert.equal(r.host, 'vscode');
+  });
+  it('still rejects other foreign app paths (Windsurf) on the codebuddy slot', async () => {
+    const WINDSURF_WB = 'vscode-file://vscode-app/Applications/Windsurf.app/Contents/Resources/app/out/vs/code/electron-sandbox/workbench/workbench.html';
+    const fetch = fetchMap({
+      [`${url}/json`]: () => jsonResp(200, [{ ...workbench, url: WINDSURF_WB }]),
+      [`${url}/json/version`]: () => jsonResp(200, { 'User-Agent': VSCODE_UA }),
+    });
+    const r = await probeCdpEndpoint(url, 'codebuddy', { fetch });
     assert.equal(r.kind, 'not-cdp');
     assert.equal(r.notCdpCause, 'foreign');
   });
@@ -239,6 +294,35 @@ describe('probeCdpEndpoint', () => {
     });
     const r = await probeCdpEndpoint(url, 'cursor', { fetch });
     assert.equal(r.kind, 'no-workbench');
+  });
+});
+
+describe('hostOf', () => {
+  const BUDDY_WB = 'vscode-file://vscode-app/Applications/CodeBuddy%20CN.app/Contents/Resources/app/out/vs/code/electron-sandbox/workbench/workbench.html';
+
+  it('names the install path (highest confidence) and decodes the space', () => {
+    assert.equal(hostOf({ appPath: appPathOf(VSCODE_WB) }), 'vscode');
+    assert.equal(hostOf({ appPath: appPathOf(BUDDY_WB) }), 'ide');
+  });
+
+  it('falls back to the UA when there is no workbench path', () => {
+    assert.equal(hostOf({ ua: VSCODE_UA }), 'vscode');
+    assert.equal(hostOf({ ua: BUDDY_UA }), 'ide');
+  });
+
+  it('CodeBuddy UA wins over `Code/` even if both appear (never relabel the standalone IDE)', () => {
+    assert.equal(hostOf({ ua: `${BUDDY_UA} Code/1.106.1` }), 'ide');
+  });
+
+  it('install path wins over a disagreeing UA', () => {
+    assert.equal(hostOf({ appPath: appPathOf(VSCODE_WB), ua: BUDDY_UA }), 'vscode');
+  });
+
+  // Unknown must stay unknown: the console then shows the plain name instead of claiming "IDE".
+  it('returns undefined for an unrecognised app path and UA', () => {
+    assert.equal(hostOf({}), undefined);
+    assert.equal(hostOf({ appPath: '/Applications/Windsurf.app/Contents/x', ua: 'Mozilla/5.0 Chrome/148' }), undefined);
+    assert.equal(hostOf({ ua: '   ' }), undefined);
   });
 });
 

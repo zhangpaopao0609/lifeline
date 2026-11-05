@@ -6,13 +6,14 @@ import { join } from 'node:path';
 import {
   codeBuddyActivePortFileCandidates,
   cursorActivePortFileCandidates,
+  vscodeActivePortFileCandidates,
 } from '../win-paths.js';
-
-const ADOPT_KINDS = new Set<ProbeResult['kind']>(['ok', 'no-window', 'no-workbench']);
 
 interface CacheEntry {
   cdpUrl: string;
   source: CdpEndpointSource;
+  /** Port file this endpoint came from (`undefined` = configured URL / tunnel). */
+  path?: string;
   fileMtime: number | undefined;
   browserUuid: string | undefined;
   hasPortFile: boolean;
@@ -43,6 +44,7 @@ export function codeBuddyActivePortCandidates(
   home = homedir(),
   platform = process.platform,
   env: NodeJS.ProcessEnv = process.env,
+  opts: { vscodePlugin?: boolean } = {},
 ): string[] {
   const darwin = [
     join(home, 'Library', 'Application Support', 'CodeBuddy CN', 'DevToolsActivePort'),
@@ -64,9 +66,49 @@ export function codeBuddyActivePortCandidates(
   // In practice `<home>\Library\...` / `<home>\.config\...` do not exist on
   // Windows and `readFile` skips them, so putting the current platform first
   // is enough.
-  if (platform === 'win32')
-    return [...codeBuddyActivePortFileCandidates(env, home), ...linux, ...darwin];
-  return platform === 'darwin' ? [...darwin, ...linux] : [...linux, ...darwin];
+  if (platform === 'win32') {
+    return withVscode(
+      [...codeBuddyActivePortFileCandidates(env, home), ...linux, ...darwin],
+      platform,
+      home,
+      env,
+      opts,
+    );
+  }
+  const base = platform === 'darwin' ? [...darwin, ...linux] : [...linux, ...darwin];
+  return withVscode(base, platform, home, env, opts);
+}
+
+/**
+ * Append the VSCode host's DevToolsActivePort (CodeBuddy plugin flavor) to the
+ * CodeBuddy candidate list, right after the current platform's CodeBuddy
+ * entries. `vscodePlugin` defaults to **false** to keep this pure/deterministic
+ * — the production caller (the codebuddy driver) passes the plugin gate
+ * explicitly; plain VSCode never runs with a debug port unless a user went out
+ * of their way, and adopting it would show a foreign workbench as "CodeBuddy"
+ * (empty live state).
+ */
+function withVscode(
+  candidates: string[],
+  platform: NodeJS.Platform,
+  home: string,
+  env: NodeJS.ProcessEnv,
+  opts: { vscodePlugin?: boolean },
+): string[] {
+  if (opts.vscodePlugin !== true)
+    return candidates;
+  const vscode = platform === 'win32'
+    ? vscodeActivePortFileCandidates(env, home)
+    : [join(
+        home,
+        platform === 'darwin' ? 'Library/Application Support' : '.config',
+        'Code',
+        'DevToolsActivePort',
+      )];
+  // Current-platform CodeBuddy first, VSCode next (a dual-install machine
+  // prefers the standalone IDE), other platforms last. The first 2 candidates
+  // are always the current platform's CodeBuddy entries in every branch above.
+  return [...candidates.slice(0, 2), ...vscode, ...candidates.slice(2)];
 }
 
 export function parseDevToolsActivePort(text: string): number | undefined {
@@ -166,11 +208,16 @@ export async function resolveEndpoint(opts: {
    */
   hasPortFile: boolean;
   /**
-   * mtime of the port file we read (`undefined` if we did not read one).
+   * mtime of the port file we **actually adopted** (`undefined` if we adopted none).
    *
    * The caller uses it to judge "after restarting the IDE, did this file move"
    * — if not, this IDE does not use this file (custom `--user-data-dir`), and
    * only then should we switch to the configured port. **mtime alone needs no extra request**.
+   *
+   * It must be the adopted file's mtime, not the first candidate's: on a
+   * dual-install machine the first readable file can be a leftover from the
+   * other* host, and judging "did it move" against a file we never used
+   * declares the (working) location wrong.
    */
   fileMtime?: number;
 }> {
@@ -182,29 +229,39 @@ export async function resolveEndpoint(opts: {
     return { cdpUrl: opts.configuredUrl, source: 'config', hasPortFile: false };
   }
 
-  const fileMtime = firstExistingMtime(opts.candidates, readFile, mtime);
   const cached = cache.get(opts.ide);
-  if (cached && cached.fileMtime === fileMtime) {
-    // Cached health checks must carry identity too, or classification briefly disagrees with the agent/CLI's final decision.
-    const health = await opts.probe(cached.cdpUrl, opts.ide, {
-      expect: { browserUuid: cached.browserUuid },
-    });
-    if (health.kind !== 'no-listener') {
-      return {
-        cdpUrl: cached.cdpUrl,
-        source: cached.source,
-        browserUuid: cached.browserUuid,
-        hasPortFile: cached.hasPortFile,
-        fileMtime: cached.fileMtime,
-      };
+  if (cached) {
+    // Key on the file this endpoint came from, so a rewrite of *that* file
+    // invalidates the entry. A deleted file (IDE exited) yields `undefined`,
+    // which never equals a number → miss → we walk again.
+    const cachedMtime = cached.path !== undefined
+      ? mtime(cached.path)
+      : firstExistingMtime(opts.candidates, readFile, mtime);
+    if (cached.fileMtime === cachedMtime) {
+      // Cached health checks must carry identity too, or classification briefly disagrees with the agent/CLI's final decision.
+      const health = await opts.probe(cached.cdpUrl, opts.ide, {
+        expect: { browserUuid: cached.browserUuid },
+      });
+      if (health.kind !== 'no-listener') {
+        return {
+          cdpUrl: cached.cdpUrl,
+          source: cached.source,
+          browserUuid: cached.browserUuid,
+          hasPortFile: cached.hasPortFile,
+          fileMtime: cached.fileMtime,
+        };
+      }
+      cache.delete(opts.ide);
     }
-    cache.delete(opts.ide);
   }
 
   let adopted: { cdpUrl: string; source: CdpEndpointSource } | undefined;
   let lastProbe: ProbeResult | undefined;
   /** Identity card of the instance in the file. **Only sent out when a file port was actually adopted**; the fallback path has none. */
   let fileUuid: string | undefined;
+  /** The file we adopted and its mtime — the caller's `fileLocationOff` judgement and the cache key follow *this* file. */
+  let adoptedPath: string | undefined;
+  let adoptedMtime: number | undefined;
 
   for (const path of opts.candidates) {
     const text = readFile(path);
@@ -213,26 +270,34 @@ export async function resolveEndpoint(opts: {
     const port = parseDevToolsActivePort(text);
     if (port === undefined)
       continue;
-    fileUuid = parseDevToolsActivePortUuid(text);
+    // Per candidate: this uuid belongs to **this** file. Carrying the previous
+    // file's uuid into the kinship check would report a healthy second host as
+    // `foreign` and refuse it.
+    const uuid = parseDevToolsActivePortUuid(text);
     const cdpUrl = `http://127.0.0.1:${port}`;
     // Pass instance identity down: a match is that IDE (a rename still counts); a mismatch means another process took the port.
-    lastProbe = await opts.probe(cdpUrl, opts.ide, { expect: { browserUuid: fileUuid } });
-    if (ADOPT_KINDS.has(lastProbe.kind)) {
-      // Shape confirmed as ours.
-      adopted = { cdpUrl, source: 'active-port-file' };
-    }
-    else if (lastProbe.kind === 'not-cdp' || lastProbe.kind === 'unknown') {
-      // "Someone answered but we do not recognize it": **return that as-is, never fall back to the configured port**.
+    lastProbe = await opts.probe(cdpUrl, opts.ide, { expect: { browserUuid: uuid } });
+
+    if (lastProbe.kind === 'no-listener') {
+      // Nobody is behind this file any more → it is a leftover from a previous
+      // run. Continuing is what keeps a stale CodeBuddy file from shadowing a
+      // live VSCode one: both hosts write their own `DevToolsActivePort`, and a
+      // crashed (not cleanly exited) IDE leaves its file behind. Before this,
+      // the walk stopped on the first readable file, so a dual-install machine
+      // could never find the live one and relaunched VSCode on every cold start.
       //
-      // Falling back to 9222 (empty once the port became random) would make us
-      // conclude "this IDE has no debug port" and trigger a destructive
-      // relaunch — while something is sitting on that port and the IDE is healthy.
-      // Handing the "not recognized" reason up is much safer than "guess an empty
-      // port, then kill the IDE".
-      // (Review R3: this fallback once killed the user's IDE every ~60s.)
-      adopted = { cdpUrl, source: 'active-port-file' };
+      // ⚠️ **Only `no-listener` may continue.** Anything that answers — even a
+      // product we cannot name (`not-cdp` / `unknown`) — is adopted below and
+      // stops the walk. Guessing a port while something is listening is the R3
+      // bug that killed a healthy IDE every ~60s.
+      continue;
     }
-    // Only no-listener (nobody answered) may continue → fall back to the configured port.
+
+    // Someone answered: adopt what we learned and stop.
+    adopted = { cdpUrl, source: 'active-port-file' };
+    fileUuid = uuid;
+    adoptedPath = path;
+    adoptedMtime = mtime(path);
     break;
   }
 
@@ -252,12 +317,23 @@ export async function resolveEndpoint(opts: {
   // it against the **new instance** on the configured port and block ourselves.
   const fromFile = adopted.source === 'active-port-file';
   const browserUuid = fromFile ? fileUuid : undefined;
+  // No file adopted → keep the old "first readable candidate" answer. Returning
+  // `undefined` there would make `cdp-bridge`'s `undefined === undefined`
+  // comparison look like "the file did not move" and latch `fileLocationOff`
+  // on a machine that never had a port file.
+  const fileMtime = fromFile ? adoptedMtime : firstExistingMtime(opts.candidates, readFile, mtime);
 
   if (lastProbe?.kind === 'no-listener') {
     cache.delete(opts.ide);
   }
   else {
-    cache.set(opts.ide, { ...adopted, fileMtime, browserUuid, hasPortFile: fromFile });
+    cache.set(opts.ide, {
+      ...adopted,
+      path: fromFile ? adoptedPath : undefined,
+      fileMtime,
+      browserUuid,
+      hasPortFile: fromFile,
+    });
   }
 
   return { ...adopted, browserUuid, hasPortFile: fromFile, fileMtime };

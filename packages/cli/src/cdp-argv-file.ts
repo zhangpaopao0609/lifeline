@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { vscodeCodeBuddyPluginInstalled } from '../../agent/src/codebuddy-vscode.js';
 import {
   codeBuddyArgvCandidates as winCodeBuddyArgvCandidates,
   cursorArgvPath as winCursorArgvPath,
@@ -65,11 +66,18 @@ export type EnsureCodeBuddyCdpArgvResult = EnsureCdpArgvResult | 'skipped';
  * First installed product wins: Chinese build, then international.
  * Both layouts are listed so uninstall still strips what we wrote on either
  * platform; the current platform's layout comes first.
+ *
+ * `includeVscode` (default `true` for uninstall safety): append the argv.json
+ * of the VSCode **CodeBuddy plugin host**. `ensureCodeBuddyCdpArgv` passes the
+ * plugin gate result so we only ever *write* it on plugin machines;
+ * `removeCodeBuddyCdpArgv` keeps the default so cleanup never leaves a managed
+ * port behind on a machine whose plugin was removed later.
  */
 export function codeBuddyArgvCandidates(
   home = homedir(),
   platform: NodeJS.Platform = process.platform,
   env: NodeJS.ProcessEnv = process.env,
+  opts: { includeVscode?: boolean } = {},
 ): string[] {
   const darwin = [
     join(home, 'Library', 'Application Support', 'CodeBuddy CN', 'argv.json'),
@@ -82,50 +90,150 @@ export function codeBuddyArgvCandidates(
   // Current platform first; other platforms are **still listed**: uninstall must be able to strip the copy we wrote on the other layout too.
   const win = winCodeBuddyArgvCandidates(env, home);
   if (platform === 'darwin')
-    return [...darwin, ...win, ...linux];
+    return withVscodeArgv([...darwin, ...win, ...linux], home, opts);
   if (platform === 'win32')
-    return [...win, ...linux, ...darwin];
-  return [...linux, ...win, ...darwin];
+    return withVscodeArgv([...win, ...linux, ...darwin], home, opts);
+  return withVscodeArgv([...linux, ...win, ...darwin], home, opts);
 }
 
-export function resolveCodeBuddyArgvPath(
+/**
+ * ⚠️ VSCode reads argv.json from `~/.vscode/argv.json` on **all** platforms
+ * (measured on macOS 2026-11-03; VSCode's own source joins `<home>/.vscode`) —
+ * NOT userDataDir like Cursor / CodeBuddy. Inserted right after the current
+ * platform's CodeBuddy entries (the first 2 in every branch above) so a
+ * dual-install machine still writes CodeBuddy first.
+ */
+function withVscodeArgv(
+  candidates: string[],
+  home: string,
+  opts: { includeVscode?: boolean },
+): string[] {
+  // Default **false**: every production caller passes the gate explicitly
+  // (ensure/resolve = plugin gate, remove = true); a default-true here would
+  // make this pure list machine-dependent and write ports into plain-VSCode
+  // installs.
+  if (opts.includeVscode !== true)
+    return candidates;
+  return [...candidates.slice(0, 2), join(home, '.vscode', 'argv.json'), ...candidates.slice(2)];
+}
+
+/**
+ * Is this argv.json the **VSCode host's** (`~/.vscode/argv.json`, all platforms)?
+ *
+ * The distinction decides user-facing copy, not behavior: VSCode reads
+ * `remote-debugging-port` from argv.json (its `out/main.js` applies it through
+ * `app.commandLine.appendSwitch`), while Cursor and the CodeBuddy IDE ignore it
+ * (measured). Saying "a manual reopen is pointless" to a VSCode user is backwards.
+ */
+export function isVscodeArgvPath(path: string): boolean {
+  return /[\\/]\.vscode[\\/]argv\.json$/.test(path);
+}
+
+/**
+ * **Every** argv.json this machine should manage — one per installed host, not
+ * just the first.
+ *
+ * "First installed product wins" is right for the Chinese vs international
+ * CodeBuddy builds (mutually exclusive installs), but **wrong for the VSCode
+ * plugin host**: it is a second, simultaneously usable host, not another version.
+ * Writing only the standalone IDE's file left `~/.vscode/argv.json` without a
+ * port on every dual-install machine, so a VSCode the user started themselves
+ * always came up without a debug port and got quit + reopened by the relauncher
+ * (see `docs/ide-drivers.md`, the plugin gate).
+ *
+ * The existence criterion is the same one the single-path resolver used (the
+ * file, or its product directory, exists), so "what we write" and "what we clean
+ * up" see the same set.
+ */
+export function resolveCodeBuddyArgvPaths(
   exists: (p: string) => boolean = existsSync,
   home = homedir(),
-): string | null {
-  for (const path of codeBuddyArgvCandidates(home)) {
-    if (exists(path))
-      return path;
+  opts: { includeVscode?: boolean } = {},
+): string[] {
+  // Default = the plugin gate (`~/.vscode` exists on every machine where VSCode
+  // ever ran, plugin or not — an ungated resolve would mark those machines as
+  // "CodeBuddy installed" and write the port). Removal passes `true` explicitly
+  // so cleanup never misses.
+  const includeVscode = opts.includeVscode ?? vscodeCodeBuddyPluginInstalled({ home });
+  const out: string[] = [];
+  for (const path of codeBuddyArgvCandidates(home, process.platform, process.env, { includeVscode })) {
     // The candidate list mixes in paths from **other platforms** (uninstall must strip the other copy too), and the "product directory exists" layer
     // only holds for paths of this platform: a relative form from another platform — e.g. a Windows path from `win-paths` whose
     // `dirname` on POSIX — degenerates to `.`, and `.` always exists, so we falsely hit the current directory,
     // and `ensureCodeBuddyCdpArgv` writes CDP config into a file named `C:\...\argv.json`.
     const dir = dirname(path);
-    if (dir !== '.' && exists(dir))
-      return path;
+    const installed = exists(path) || (dir !== '.' && exists(dir));
+    // `~/.vscode/argv.json` may not exist yet (VSCode creates it only when the
+    // user configures runtime args) — its directory carrying settings.json is
+    // enough, and `ensure` creates the file.
+    if (installed && !out.includes(path))
+      out.push(path);
   }
-  return null;
+  return out;
 }
 
-export function ensureCodeBuddyCdpArgv(port = 0): EnsureCodeBuddyCdpArgvResult {
-  const path = resolveCodeBuddyArgvPath();
-  if (!path)
-    return 'skipped';
-  if (!existsSync(path)) {
-    const { text } = setManagedRemoteDebuggingPort('{\n}\n', port);
+/** Primary argv.json (first installed host). Kept for callers that only need one. */
+export function resolveCodeBuddyArgvPath(
+  exists: (p: string) => boolean = existsSync,
+  home = homedir(),
+  opts: { includeVscode?: boolean } = {},
+): string | null {
+  return resolveCodeBuddyArgvPaths(exists, home, opts)[0] ?? null;
+}
+
+export interface EnsureCodeBuddyCdpArgvOutcome {
+  /** Strongest action taken: `created` > `added` > `already`; `skipped` = no host installed. */
+  state: EnsureCodeBuddyCdpArgvResult;
+  /** Every argv.json managed right now (one per installed host). */
+  paths: string[];
+  /** The subset actually written this run. */
+  written: string[];
+}
+
+/**
+ * Write the port into **every** installed host's argv.json.
+ *
+ * Writing more than one file is the point: a dual-install machine must not leave
+ * the VSCode side without a port, or every self-started VSCode triggers the
+ * quit-and-reopen self-heal. `setManagedRemoteDebuggingPort` inserts a marked
+ * key without re-serializing JSON and leaves an unmarked user-owned
+ * `remote-debugging-port` alone, so touching VSCode's own file is safe.
+ */
+export function ensureCodeBuddyCdpArgv(
+  port = 0,
+  opts: { includeVscode?: boolean; home?: string } = {},
+): EnsureCodeBuddyCdpArgvOutcome {
+  const paths = resolveCodeBuddyArgvPaths(existsSync, opts.home ?? homedir(), { includeVscode: opts.includeVscode });
+  if (paths.length === 0)
+    return { state: 'skipped', paths, written: [] };
+
+  let state: EnsureCodeBuddyCdpArgvResult = 'already';
+  const written: string[] = [];
+  for (const path of paths) {
+    if (!existsSync(path)) {
+      const { text } = setManagedRemoteDebuggingPort('{\n}\n', port);
+      writeFileSync(path, text, 'utf-8');
+      written.push(path);
+      state = 'created';
+      continue;
+    }
+    const raw = readFileSync(path, 'utf-8');
+    const { text, changed } = setManagedRemoteDebuggingPort(raw, port);
+    if (!changed)
+      continue;
     writeFileSync(path, text, 'utf-8');
-    return 'created';
+    written.push(path);
+    if (state !== 'created')
+      state = 'added';
   }
-  const raw = readFileSync(path, 'utf-8');
-  const { text, changed } = setManagedRemoteDebuggingPort(raw, port);
-  if (!changed)
-    return 'already';
-  writeFileSync(path, text, 'utf-8');
-  return 'added';
+  return { state, paths, written };
 }
 
 export function removeCodeBuddyCdpArgv(home = homedir()): boolean {
   let removed = false;
-  for (const path of codeBuddyArgvCandidates(home)) {
+  // includeVscode: true — cleanup must cover every layout we may have written,
+  // including a machine whose plugin (and with it the gate) was removed later.
+  for (const path of codeBuddyArgvCandidates(home, process.platform, process.env, { includeVscode: true })) {
     if (!existsSync(path))
       continue;
     const raw = readFileSync(path, 'utf-8');

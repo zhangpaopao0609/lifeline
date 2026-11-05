@@ -3,12 +3,17 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, it } from 'node:test';
+import { canControlIde } from '../packages/agent/src/live-ides.js';
 import {
   codeBuddyArgvCandidates,
   cursorArgvPath,
+  ensureCodeBuddyCdpArgv,
+  isVscodeArgvPath,
   removeCodeBuddyCdpArgv,
   resolveCodeBuddyArgvPath,
+  resolveCodeBuddyArgvPaths,
 } from '../packages/cli/src/cdp-argv-file.js';
+import { cdpSummary } from '../packages/cli/src/cdp-argv-state.js';
 import {
   ensureRemoteDebuggingPortInText,
   hasRemoteDebuggingPort,
@@ -39,6 +44,30 @@ describe('argv paths per platform', () => {
       win.some(p => p.split(/[\\/]/).includes('.config')),
       true,
       'Linux 候选仍应在列表里，只是排后面',
+    );
+  });
+
+  it('lists the VSCode argv (plugin host) right after the current platform CodeBuddy entries when included', () => {
+    // ⚠️ VSCode reads argv.json from ~/.vscode on ALL platforms — not userDataDir
+    // like Cursor / CodeBuddy (measured on macOS 2026-11-03).
+    const win = codeBuddyArgvCandidates('C:\\u', 'win32', ENV, { includeVscode: true });
+    // host `join` on a POSIX test runner produces a mixed separator — same file, still first-after-CodeBuddy
+    assert.equal(win[2], join('C:\\u', '.vscode', 'argv.json'));
+    assert.equal(win.length, 7);
+
+    const darwin = codeBuddyArgvCandidates('/Users/x', 'darwin', ENV, { includeVscode: true });
+    assert.equal(darwin[2], join('/Users/x', '.vscode', 'argv.json'));
+  });
+
+  // ~/.vscode exists on every machine where VSCode ever ran, plugin or not —
+  // the resolve path must not treat it as a CodeBuddy install without the gate.
+  it('resolveCodeBuddyArgvPath only considers ~/.vscode when the plugin gate is on', () => {
+    const home = '/tmp/fake-home';
+    const exists = (p: string) => p === join(home, '.vscode');
+    assert.equal(resolveCodeBuddyArgvPath(exists, home, { includeVscode: false }), null);
+    assert.equal(
+      resolveCodeBuddyArgvPath(exists, home, { includeVscode: true }),
+      join(home, '.vscode', 'argv.json'),
     );
   });
 
@@ -217,5 +246,126 @@ describe('removeCodeBuddyCdpArgv', () => {
     assert.equal(readFileSync(cn, 'utf-8').includes('Lifeline CDP'), false);
     assert.doesNotMatch(readFileSync(cn, 'utf-8'), /"remote-debugging-port"/);
     assert.equal(readFileSync(intl, 'utf-8'), USER_OWNED_ARGV);
+  });
+});
+
+describe('isVscodeArgvPath', () => {
+  it('matches ~/.vscode/argv.json on both separators, and nothing else', () => {
+    assert.equal(isVscodeArgvPath('/Users/x/.vscode/argv.json'), true);
+    assert.equal(isVscodeArgvPath('C:\\Users\\x\\.vscode\\argv.json'), true);
+    assert.equal(isVscodeArgvPath('/Users/x/Library/Application Support/CodeBuddy CN/argv.json'), false);
+    assert.equal(isVscodeArgvPath('/Users/x/.cursor/argv.json'), false);
+  });
+});
+
+describe('cdpSummary', () => {
+  // The note branches on `canControlIde()` (Linux = content source only) and on
+  // which argv.json we wrote. Telling a VSCode user "a manual restart is
+  // pointless" is backwards — VSCode does read `remote-debugging-port`.
+  const VSCODE_ARGV = '/Users/x/.vscode/argv.json';
+  const IDE_ARGV = '/Users/x/Library/Application Support/CodeBuddy CN/argv.json';
+
+  it('never tells a VSCode user that a manual restart is pointless', () => {
+    const s = cdpSummary('already', 'wrote', { codebuddyPaths: [VSCODE_ARGV] });
+    if (!canControlIde()) {
+      assert.deepEqual(s.notes, ['This machine only reads session data (Linux); the debug port is not used here.']);
+      return;
+    }
+    assert.equal(s.notes.some(n => n.includes('Do NOT restart')), false);
+    assert.equal(s.notes.some(n => n.includes('VS Code')), true);
+  });
+
+  it('still warns the standalone-IDE user', () => {
+    if (!canControlIde())
+      return;
+    const s = cdpSummary('already', 'wrote', { codebuddyPaths: [IDE_ARGV] });
+    assert.equal(s.notes.some(n => n.includes('Do NOT restart CodeBuddy')), true);
+  });
+
+  it('says nothing when nothing was written', () => {
+    if (!canControlIde())
+      return;
+    assert.deepEqual(cdpSummary('already', 'already', { codebuddyPaths: [IDE_ARGV] }).notes, []);
+  });
+});
+
+describe('resolveCodeBuddyArgvPaths (P3: one file per host)', () => {
+  const VSCODE_ARGV = join(homedir(), '.vscode', 'argv.json');
+
+  // Dual install: both products' dirs exist. Before this, only the first one was
+  // ever written, so a VSCode the user started themselves never had a port.
+  it('returns every installed host, CodeBuddy first', () => {
+    const paths = resolveCodeBuddyArgvPaths(
+      p => p === CN_ARGV || p === dirname(CN_ARGV) || p === VSCODE_ARGV || p === dirname(VSCODE_ARGV),
+      undefined,
+      { includeVscode: true },
+    );
+    assert.equal(paths.length, 2);
+    assert.equal(paths.includes(CN_ARGV), true);
+    assert.equal(paths.includes(VSCODE_ARGV), true);
+  });
+
+  it('never includes ~/.vscode when the plugin gate is off', () => {
+    const paths = resolveCodeBuddyArgvPaths(
+      p => p === CN_ARGV || p === dirname(CN_ARGV) || p === VSCODE_ARGV || p === dirname(VSCODE_ARGV),
+      undefined,
+      { includeVscode: false },
+    );
+    assert.deepEqual(paths, [CN_ARGV]);
+  });
+});
+
+describe('ensureCodeBuddyCdpArgv (P3: writes both hosts)', () => {
+  let home: string;
+
+  afterEach(() => {
+    if (home)
+      rmSync(home, { recursive: true, force: true });
+  });
+
+  it('writes the port into the standalone IDE AND the VSCode host', () => {
+    home = mkdtempSync(join(tmpdir(), 'cb-argv-'));
+    // The POSIX product layout is in the candidate list on every platform, so this
+    // stays platform-independent (win32 candidates come from the real APPDATA).
+    const cn = join(home, '.config', 'CodeBuddy CN', 'argv.json');
+    const vscode = join(home, '.vscode', 'argv.json');
+    mkdirSync(dirname(cn), { recursive: true });
+    mkdirSync(dirname(vscode), { recursive: true });
+    writeFileSync(cn, '{\n}\n');
+
+    const outcome = ensureCodeBuddyCdpArgv(0, { includeVscode: true, home });
+    // Order depends on which platform layout exists; membership is what matters.
+    assert.deepEqual([...outcome.paths].sort(), [cn, vscode].sort());
+    assert.deepEqual([...outcome.written].sort(), [cn, vscode].sort());
+    assert.equal(outcome.state, 'created');
+    assert.match(readFileSync(cn, 'utf-8'), /"remote-debugging-port": 0/);
+    assert.match(readFileSync(vscode, 'utf-8'), /"remote-debugging-port": 0/);
+  });
+
+  it('is idempotent: a second run writes nothing', () => {
+    home = mkdtempSync(join(tmpdir(), 'cb-argv-'));
+    const cn = join(home, '.config', 'CodeBuddy CN', 'argv.json');
+    const vscode = join(home, '.vscode', 'argv.json');
+    mkdirSync(dirname(cn), { recursive: true });
+    mkdirSync(dirname(vscode), { recursive: true });
+
+    ensureCodeBuddyCdpArgv(0, { includeVscode: true, home });
+    const again = ensureCodeBuddyCdpArgv(0, { includeVscode: true, home });
+    assert.equal(again.state, 'already');
+    assert.deepEqual(again.written, []);
+    assert.deepEqual([...again.paths].sort(), [cn, vscode].sort());
+  });
+
+  // VSCode's own file may already carry a user-set key (we never re-serialize JSON,
+  // and an unmarked key is left alone).
+  it('leaves a user-owned remote-debugging-port in ~/.vscode/argv.json untouched', () => {
+    home = mkdtempSync(join(tmpdir(), 'cb-argv-'));
+    const vscode = join(home, '.vscode', 'argv.json');
+    mkdirSync(dirname(vscode), { recursive: true });
+    writeFileSync(vscode, USER_OWNED_ARGV);
+
+    const outcome = ensureCodeBuddyCdpArgv(0, { includeVscode: true, home });
+    assert.deepEqual(outcome.written, []);
+    assert.equal(readFileSync(vscode, 'utf-8'), USER_OWNED_ARGV);
   });
 });

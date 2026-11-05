@@ -177,6 +177,30 @@ describe('codeBuddyActivePortCandidates', () => {
     assert.equal(win.length, 6);
   });
 
+  // Pure default: no VSCode candidate unless the driver passes the plugin gate.
+  it('omits the VSCode candidate by default (gate is passed by the driver)', () => {
+    assert.equal(codeBuddyActivePortCandidates('/Users/me', 'darwin', {}).length, 4);
+    const env = { APPDATA: 'C:\\u\\AppData\\Roaming' };
+    assert.equal(codeBuddyActivePortCandidates('C:\\u', 'win32', env).length, 6);
+  });
+
+  // VSCode (CodeBuddy plugin host): its DevToolsActivePort sits right after the
+  // current platform's CodeBuddy entries — a dual-install machine prefers the
+  // standalone IDE, and other platforms stay last.
+  it('inserts the VSCode candidate after the current platform CodeBuddy entries when gated in', () => {
+    const darwin = codeBuddyActivePortCandidates('/Users/me', 'darwin', {}, { vscodePlugin: true });
+    assert.equal(darwin[2], join('/Users/me', 'Library', 'Application Support', 'Code', 'DevToolsActivePort'));
+    assert.equal(darwin.length, 5);
+
+    const linux = codeBuddyActivePortCandidates('/home/me', 'linux', {}, { vscodePlugin: true });
+    assert.equal(linux[2], join('/home/me', '.config', 'Code', 'DevToolsActivePort'));
+
+    const env = { APPDATA: 'C:\\u\\AppData\\Roaming' };
+    const win = codeBuddyActivePortCandidates('C:\\u', 'win32', env, { vscodePlugin: true });
+    assert.equal(win[2], 'C:\\u\\AppData\\Roaming\\Code\\DevToolsActivePort');
+    assert.equal(win.length, 7);
+  });
+
   // "Current platform first" is the **only** safety: `resolveEndpoint` takes the first readable file whose port parses
   // (including not-cdp / unknown), with no kinship check. So a cross-platform candidate, once read, is adopted —
   // this case pins that behavior so nobody assumes "kinship will save us" and shuffles the order.
@@ -472,5 +496,170 @@ describe('CDPBridge.setCdpUrl', () => {
     bridge.setCdpUrl(FILE_URL, { source: 'active-port-file' });
     assert.equal(bridge.cdpUrl, FILE_URL);
     assert.equal(config.cdpUrl, FILE_URL);
+  });
+});
+
+/**
+ * P2: a leftover `DevToolsActivePort` from a host that did **not** exit cleanly
+ * must not shadow the live one behind it. Both hosts write their own file, and
+ * the walk used to stop at the first readable candidate.
+ */
+describe('resolveEndpoint: stale first candidate', () => {
+  const STALE_PATH = '/tmp/CodeBuddy CN/DevToolsActivePort';
+  const LIVE_PATH = '/tmp/Code/DevToolsActivePort';
+  const STALE_PORT = 51000;
+  const LIVE_PORT = 54321;
+  const STALE_URL = `http://127.0.0.1:${STALE_PORT}`;
+  const LIVE_URL = `http://127.0.0.1:${LIVE_PORT}`;
+  const CANDIDATES = [STALE_PATH, LIVE_PATH];
+  const CB_CONFIG_URL = 'http://127.0.0.1:9223';
+
+  function probeResult(url: string, kind: ProbeResult['kind']): ProbeResult {
+    const base: ProbeResult = {
+      kind,
+      cdpUrl: url,
+      port: Number(new URL(url).port),
+      detail: kind,
+      at: 1,
+    };
+    return kind === 'not-cdp' ? { ...base, notCdpCause: 'foreign' } : base;
+  }
+
+  /** Probe that answers per URL; anything unlisted refuses (`no-listener`), like a dead port. */
+  function probeByUrl(map: Record<string, ProbeResult['kind']>, seen?: string[]): typeof probeCdpEndpoint {
+    return async (url) => {
+      seen?.push(url);
+      return probeResult(url, map[url] ?? 'no-listener');
+    };
+  }
+
+  function files(contents: Record<string, string>) {
+    return (p: string) => contents[p];
+  }
+
+  beforeEach(() => clearEndpointCache());
+
+  it('skips a stale file and adopts the live one behind it', async () => {
+    const seen: string[] = [];
+    const result = await resolveEndpoint({
+      ide: 'codebuddy',
+      configuredUrl: CB_CONFIG_URL,
+      probe: probeByUrl({ [LIVE_URL]: 'ok' }, seen),
+      readFile: files({ [STALE_PATH]: `${STALE_PORT}\n`, [LIVE_PATH]: `${LIVE_PORT}\n` }),
+      candidates: CANDIDATES,
+    });
+    assert.deepEqual(seen, [STALE_URL, LIVE_URL], '先探死文件，再探后面那张');
+    assert.equal(result.cdpUrl, LIVE_URL);
+    assert.equal(result.source, 'active-port-file');
+    assert.equal(result.hasPortFile, true);
+  });
+
+  // R3: nothing that answers may be skipped — not even a product we cannot name.
+  it('stops at a port that answers, even when it is unrecognised', async () => {
+    const seen: string[] = [];
+    const result = await resolveEndpoint({
+      ide: 'codebuddy',
+      configuredUrl: CB_CONFIG_URL,
+      probe: probeByUrl({ [STALE_URL]: 'not-cdp', [LIVE_URL]: 'ok' }, seen),
+      readFile: files({ [STALE_PATH]: `${STALE_PORT}\n`, [LIVE_PATH]: `${LIVE_PORT}\n` }),
+      candidates: CANDIDATES,
+    });
+    assert.deepEqual(seen, [STALE_URL], '有人应答就必须停下，绝不去看下一张');
+    assert.equal(result.cdpUrl, STALE_URL);
+    assert.equal(result.source, 'active-port-file');
+  });
+
+  it('falls back to the configured url only when every file is dead', async () => {
+    const seen: string[] = [];
+    const result = await resolveEndpoint({
+      ide: 'codebuddy',
+      configuredUrl: CB_CONFIG_URL,
+      probe: probeByUrl({ [CB_CONFIG_URL]: 'unknown' }, seen),
+      readFile: files({ [STALE_PATH]: `${STALE_PORT}\n`, [LIVE_PATH]: `${LIVE_PORT}\n` }),
+      candidates: CANDIDATES,
+    });
+    assert.deepEqual(seen, [STALE_URL, LIVE_URL, CB_CONFIG_URL]);
+    assert.equal(result.source, 'config-fallback');
+    assert.equal(result.hasPortFile, false);
+  });
+
+  // The uuid belongs to the file it was read from: carrying the stale file's uuid
+  // into the kinship check would report the healthy second host as `foreign`.
+  it('checks the adopted file against its own uuid', async () => {
+    const seen: Array<string | undefined> = [];
+    const probe: typeof probeCdpEndpoint = async (url, _ide, opts) => {
+      seen.push(opts?.expect?.browserUuid);
+      return probeResult(url, url === LIVE_URL ? 'ok' : 'no-listener');
+    };
+    const result = await resolveEndpoint({
+      ide: 'codebuddy',
+      configuredUrl: CB_CONFIG_URL,
+      probe,
+      readFile: files({
+        [STALE_PATH]: `${STALE_PORT}\n/devtools/browser/aaaaaaaa-0000-4000-8000-000000000000\n`,
+        [LIVE_PATH]: `${LIVE_PORT}\n/devtools/browser/bbbbbbbb-1111-4111-8111-111111111111\n`,
+      }),
+      candidates: CANDIDATES,
+    });
+    assert.deepEqual(seen, [
+      'aaaaaaaa-0000-4000-8000-000000000000',
+      'bbbbbbbb-1111-4111-8111-111111111111',
+    ]);
+    assert.equal(result.browserUuid, 'bbbbbbbb-1111-4111-8111-111111111111');
+  });
+
+  it('returns the adopted file mtime, not the first candidate', async () => {
+    const mtimes: Record<string, number> = { [STALE_PATH]: 100, [LIVE_PATH]: 200 };
+    const result = await resolveEndpoint({
+      ide: 'codebuddy',
+      configuredUrl: CB_CONFIG_URL,
+      probe: probeByUrl({ [LIVE_URL]: 'ok' }),
+      readFile: files({ [STALE_PATH]: `${STALE_PORT}\n`, [LIVE_PATH]: `${LIVE_PORT}\n` }),
+      candidates: CANDIDATES,
+      mtime: p => mtimes[p],
+    });
+    // `cdp-bridge` judges "did this file move after the relaunch" from this value;
+    // pointing it at the stale file declares a working location wrong.
+    assert.equal(result.fileMtime, 200);
+  });
+
+  it('keeps a numeric mtime when nothing was adopted (never undefined)', async () => {
+    const result = await resolveEndpoint({
+      ide: 'codebuddy',
+      configuredUrl: CB_CONFIG_URL,
+      probe: probeByUrl({}),
+      readFile: files({ [STALE_PATH]: `${STALE_PORT}\n`, [LIVE_PATH]: `${LIVE_PORT}\n` }),
+      candidates: CANDIDATES,
+      mtime: () => 100,
+    });
+    assert.equal(result.source, 'config-fallback');
+    // `undefined === undefined` would look like "the file did not move" and latch
+    // `fileLocationOff` on a machine that never had a usable port file.
+    assert.equal(result.fileMtime, 100);
+  });
+
+  it('keys the cache on the adopted file: rewriting the stale one does not invalidate', async () => {
+    const mtimes: Record<string, number> = { [STALE_PATH]: 100, [LIVE_PATH]: 200 };
+    const seen: string[] = [];
+    const opts = {
+      ide: 'codebuddy' as const,
+      configuredUrl: CB_CONFIG_URL,
+      probe: probeByUrl({ [LIVE_URL]: 'ok' }, seen),
+      readFile: files({ [STALE_PATH]: `${STALE_PORT}\n`, [LIVE_PATH]: `${LIVE_PORT}\n` }),
+      candidates: CANDIDATES,
+      mtime: (p: string) => mtimes[p],
+    };
+
+    await resolveEndpoint(opts);
+    const probesAfterFirst = seen.length;
+
+    mtimes[STALE_PATH] = 999; // the leftover moved; it is irrelevant
+    const second = await resolveEndpoint(opts);
+    assert.equal(second.cdpUrl, LIVE_URL);
+    assert.equal(seen.length, probesAfterFirst + 1, '只做缓存健康检查，不重新遍历');
+
+    mtimes[LIVE_PATH] = 300; // the file we actually use moved → re-walk
+    await resolveEndpoint(opts);
+    assert.ok(seen.length > probesAfterFirst + 1, '采纳的那张变了就要重新解析');
   });
 });

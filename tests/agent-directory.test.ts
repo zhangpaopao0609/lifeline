@@ -699,6 +699,20 @@ describe('AgentDirectory', () => {
     assert.equal(changes, 2, '审批数变化也要刷名单');
   });
 
+  // The rail row of a **non-selected** machine reads `host` from machines:list,
+  // and host is learned on connect — a patch that moves nothing else.
+  it('refreshes the machine list when only the host changes', () => {
+    const a = fakeSocket('sa');
+    d.register(a, { agentId: 'agent-a', hostname: 'A' });
+    d.applyFull(a, { ides: { cursor: emptyCursorState() } });
+    let changes = 0;
+    d.on('machines:changed', () => { changes += 1; });
+
+    d.applyPatch(a, { ide: 'cursor', patch: { host: 'vscode' } });
+    assert.equal(changes, 1, '宿主标签变了也要刷名单');
+    assert.equal(d.getState('agent-a')?.ides.cursor?.host, 'vscode');
+  });
+
   it('applyPatch with ide only updates that slot', () => {
     const a = fakeSocket('sa');
     d.register(a, { agentId: 'agent-a', hostname: 'A' });

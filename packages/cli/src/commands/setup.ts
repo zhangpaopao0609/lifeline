@@ -1,6 +1,6 @@
 import type { DaemonOutcome } from '../ui.js';
 import { canControlIde } from '../../../agent/src/live-ides.js';
-import { cursorArgvPath, resolveCodeBuddyArgvPath } from '../cdp-argv-file.js';
+import { cursorArgvPath } from '../cdp-argv-file.js';
 import {
   applyCodeBuddyCdpArgv,
   applyCursorCdpArgv,
@@ -142,7 +142,8 @@ async function finishSetup(base: string, agentToken: string, agentId: string): P
     ...codebuddyProviderEnv(process.env),
   }));
 
-  const cdp = cdpSummary(cursor.state, codebuddy.state);
+  // The written paths decide the copy: VSCode honours argv.json, Cursor / the CodeBuddy IDE do not.
+  const cdp = cdpSummary(cursor.state, codebuddy.state, { codebuddyPaths: codebuddy.paths });
 
   log('');
   row('config', shortPath(cliConfigPath()));
@@ -241,8 +242,8 @@ export async function cmdSetup(serverUrlFlag?: string, codeFlag?: string): Promi
 
     log('');
     row('config', shortPath(cliConfigPath()));
-    for (const line of cdpArgvLines('Cursor', cursor.state, cursorArgvPath(), 0)) detail(line);
-    for (const line of cdpArgvLines('CodeBuddy', codebuddy.state, resolveCodeBuddyArgvPath() ?? '', 0)) {
+    for (const line of cdpArgvLines('Cursor', cursor.state, [cursorArgvPath()], 0)) detail(line);
+    for (const line of cdpArgvLines('CodeBuddy', codebuddy.state, codebuddy.paths, 0)) {
       detail(line);
     }
 

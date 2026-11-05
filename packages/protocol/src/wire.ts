@@ -9,6 +9,20 @@ import type { CliPermissionResponse, CliSource, CliTarget, CommandErrorCode } fr
 export const IDE_KINDS = ['cursor', 'codebuddy'] as const;
 export type IdeKind = (typeof IDE_KINDS)[number];
 
+/**
+ * Which product is **hosting** a slot. `ide` = the standalone IDE; `vscode` = the
+ * CodeBuddy plugin running inside VS Code (the coding-copilot panel is an
+ * extension webview, so the DOM and the history root are the same as the
+ * standalone IDE — only the host differs; see `docs/ide-drivers.md`).
+ *
+ * Only `codebuddy` ever reports `vscode`. **Absent is not `ide`**: an old agent,
+ * or an agent that has never connected, knows nothing — the console then shows
+ * the plain product name instead of guessing ("labeled as IDE" would be a lie on
+ * a plugin-only machine).
+ */
+export const IDE_HOSTS = ['ide', 'vscode'] as const;
+export type IdeHost = (typeof IDE_HOSTS)[number];
+
 export interface HumanMessage {
   type: 'human';
   id: string;
@@ -422,6 +436,12 @@ export interface CursorState {
   composerQueue: ComposerQueueState;
   questionnaire: Questionnaire | null;
   contentSource: 'ok' | 'unavailable';
+  /**
+   * Which product hosts this slot (managed by the CDP bridge; set on the first
+   * successful probe, kept afterwards so the console label survives a restart).
+   * Absent = unknown → the console shows the plain product name.
+   */
+  host?: IdeHost;
   /** Workbench CDP connection problem (managed by the bridge; kept across DOM extraction). */
   cdpIssue?: CdpIssue | null;
   /** Live (coding-copilot) CDP connection problem. */
@@ -432,6 +452,8 @@ export interface CursorState {
 export interface MachineIdeStatus {
   connected: boolean;
   pendingApprovals: number;
+  /** Same meaning as `CursorState.host`; absent = unknown (old agent / never connected). */
+  host?: IdeHost;
 }
 
 /** Machine-alias length cap: the rail is only 240px, anything longer is eaten by ellipsis (server truncates to it; the input box limits to it). */

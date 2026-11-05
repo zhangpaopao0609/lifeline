@@ -4,7 +4,8 @@ import { Paperclip, PaperPlaneRight, Square, X } from '@phosphor-icons/react';
 import { useEffect, useRef, useState } from 'react';
 import { usePendingNewChat } from '../hooks/usePendingNewChat';
 import { cdpIssueCopy } from '../lib/cdp-issue-copy';
-import { IDE_LABELS, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, MAX_ATTACHMENTS_TOTAL_BYTES } from '../net/protocol';
+import { ideSubject } from '../lib/ide-label';
+import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, MAX_ATTACHMENTS_TOTAL_BYTES } from '../net/protocol';
 import { selectCliModel, selectCliThinking, sendCliMessage, sendUserMessage, stopCliSession, stopSession } from '../net/send';
 import {
   canSendForTarget,
@@ -110,7 +111,9 @@ function IdeComposer() {
   const machineOffline = selectedMachine?.connected === false;
   // Content-only machine (remote dev box) has no IDE: sessions are readable, but input/approvals cannot be taken over.
   const machineContentOnly = selectedMachine?.contentOnly === true;
-  const ideLabel = IDE_LABELS[selectedIde];
+  // Only used to name the product inside issue copy ("… 没在运行，打开它即可"): for the
+  // plugin host that product is VS Code, which is what the user has to open / we would restart.
+  const ideLabel = ideSubject(selectedIde, state?.host);
   const cdpIssue = state?.cdpIssue ?? null;
   const liveIssue = cdpIssue ? null : (state?.liveIssue ?? null);
   const issue = cdpIssue ?? liveIssue;

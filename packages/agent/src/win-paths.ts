@@ -125,6 +125,32 @@ export function codeBuddyDataRoot(env: WinEnv = process.env, home: string = home
 }
 
 /**
+ * VSCode (stable) userDataDir on Windows: `%APPDATA%\Code`.
+ *
+ * ⚠️ argv.json is the one path that does **NOT** live here: VSCode reads it
+ * from `~/.vscode/argv.json` on **all** platforms (measured on macOS;
+ * VSCode's own source joins `<home>/.vscode`), unlike Cursor / CodeBuddy
+ * whose argv.json sits in userDataDir. See `cli/src/cdp-argv-file.ts`.
+ */
+export function vscodeUserDataDir(env: WinEnv = process.env, home: string = homedir()): string {
+  return win32.join(appDataDir(env, home), 'Code');
+}
+
+/** Same shape as `codeBuddyActivePortFileCandidates`; VSCode stable has a single userDataDir. */
+export function vscodeActivePortFileCandidates(env: WinEnv = process.env, home: string = homedir()): string[] {
+  return [win32.join(vscodeUserDataDir(env, home), 'DevToolsActivePort')];
+}
+
+/** Per-user install first, then machine-wide (same looseness as the other IDE tables). */
+export function vscodeExeCandidates(env: WinEnv = process.env, home: string = homedir()): string[] {
+  return [
+    win32.join(localAppDataDir(env, home), 'Programs', 'Microsoft VS Code', 'Code.exe'),
+    win32.join(programFilesDir(env), 'Microsoft VS Code', 'Code.exe'),
+    win32.join(programFilesDirX86(env), 'Microsoft VS Code', 'Code.exe'),
+  ];
+}
+
+/**
  * Per-user install (measured) first, then machine-wide.
  *
  * The first two differ only in case: NTFS is case-insensitive so they are
@@ -160,10 +186,13 @@ export function codeBuddyExeCandidates(env: WinEnv = process.env, home: string =
 /** Image name in `tasklist /FI "IMAGENAME eq <name>"`. */
 export const CURSOR_IMAGE_NAME = 'Cursor.exe';
 export const CODEBUDDY_IMAGE_NAMES = ['CodeBuddy CN.exe', 'CodeBuddy.exe'];
+/** VSCode's image name (CodeBuddy plugin host). */
+export const VSCODE_IMAGE_NAME = 'Code.exe';
 
 /** Executable names that may be registered under `App Paths`. */
 export const CURSOR_APP_PATHS_EXES = ['Cursor.exe'];
 export const CODEBUDDY_APP_PATHS_EXES = ['CodeBuddy CN.exe', 'CodeBuddy.exe'];
+export const VSCODE_APP_PATHS_EXES = ['Code.exe'];
 
 /**
  * Take the **default value** from `reg query <key> /ve` output (used by `App Paths`).

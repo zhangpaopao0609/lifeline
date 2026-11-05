@@ -1,15 +1,24 @@
 import type { spawnSync } from 'node:child_process';
 import type { CodeBuddyCdpRelaunchDeps } from '../packages/agent/src/drivers/codebuddy/relaunch.js';
 import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
+import { beforeEach, describe, it } from 'node:test';
+import {
+  DARWIN_PS_CACHE_MS,
+  isDarwinProcessRunning,
+  isIdeUpdaterRunningDarwin,
+  quitProcessWin,
+  resetDarwinProcessCache,
+} from '../packages/agent/src/cdp/relaunch-engine.js';
 import {
 
+  codeBuddyFamilyImageNames,
   createCodeBuddyCdpRelauncher,
+  createWinFamilyQuit,
   defaultFindCodeBuddyExe,
   isCodeBuddyMainCommand,
   isCodeBuddyRunningWin,
   openCodeBuddyWithCdpWin,
-  quitCodeBuddyWin,
+  pickCodeBuddyQuitImagesWin,
 } from '../packages/agent/src/drivers/codebuddy/relaunch.js';
 
 /** Fake `spawnSync`: stdout only. */
@@ -103,23 +112,117 @@ describe('isCodeBuddyRunningWin', () => {
       false,
     );
   });
+
+  // VSCode (Code.exe) joins the family ONLY through the plugin gate — an
+  // ungated match would make every plain-VSCode machine "CodeBuddy running".
+  it('counts Code.exe only when the plugin gate is on', () => {
+    const onlyVscode = fakeRun('"Code.exe","1","Console","1","1 K"');
+    assert.equal(isCodeBuddyRunningWin({ run: onlyVscode }), false);
+    assert.equal(isCodeBuddyRunningWin({ run: onlyVscode }, { vscodePlugin: true }), true);
+  });
 });
 
-describe('quitCodeBuddyWin', () => {
-  it('sends taskkill for both product names and never /F', async () => {
+describe('codeBuddyFamilyImageNames', () => {
+  it('gates Code.exe into the family image list', () => {
+    assert.deepEqual(codeBuddyFamilyImageNames(false), ['CodeBuddy CN.exe', 'CodeBuddy.exe']);
+    assert.deepEqual(codeBuddyFamilyImageNames(true), ['CodeBuddy CN.exe', 'CodeBuddy.exe', 'Code.exe']);
+  });
+});
+
+describe('pickCodeBuddyQuitImagesWin', () => {
+  const running = (...names: string[]) => (image: string) => names.includes(image);
+
+  // Killing the whole family closes a window the slot is not using, and the poll
+  // then waits on something it never asked to close.
+  it('picks the standalone IDE and leaves VSCode alone when both hosts are running', () => {
+    assert.deepEqual(
+      pickCodeBuddyQuitImagesWin(running('CodeBuddy CN.exe', 'Code.exe'), true),
+      ['CodeBuddy CN.exe'],
+    );
+  });
+
+  it('never picks Code.exe without the plugin gate', () => {
+    assert.deepEqual(pickCodeBuddyQuitImagesWin(running('Code.exe'), false), []);
+  });
+
+  it('picks Code.exe when it is the only family member (plugin-only machine)', () => {
+    assert.deepEqual(pickCodeBuddyQuitImagesWin(running('Code.exe'), true), ['Code.exe']);
+  });
+
+  it('returns nothing when the family is not running (quit becomes a no-op, not a failure)', () => {
+    assert.deepEqual(pickCodeBuddyQuitImagesWin(running(), true), []);
+  });
+});
+
+describe('createWinFamilyQuit', () => {
+  // Shipped bug pinned here: `taskkill` got "CodeBuddy only" while the poll
+  // predicate counted `Code.exe`, so a live VSCode held the quit open until the
+  // 25s deadline → skipped-quit-pending → the reopen never ran.
+  function harness(alive: string[], vscodePlugin = true) {
+    const killed: string[][] = [];
+    const quitter = createWinFamilyQuit({
+      vscodePlugin,
+      isRunning: image => alive.includes(image),
+      quit: async (images) => {
+        killed.push([...images]);
+        return true;
+      },
+    });
+    return { quitter, killed };
+  }
+
+  it('closes only the standalone IDE, and does not reopen VSCode afterwards', async () => {
+    const { quitter, killed } = harness(['CodeBuddy CN.exe', 'Code.exe']);
+    assert.equal(await quitter.quit(), true);
+    assert.deepEqual(killed, [['CodeBuddy CN.exe']]);
+    assert.equal(quitter.lastQuitVscode(), false);
+  });
+
+  it('closes VSCode alone on a plugin-only machine, and reopens that one', async () => {
+    const { quitter, killed } = harness(['Code.exe']);
+    assert.equal(await quitter.quit(), true);
+    assert.deepEqual(killed, [['Code.exe']]);
+    assert.equal(quitter.lastQuitVscode(), true);
+  });
+
+  it('is a no-op when nothing is running, and does not claim it closed VSCode', async () => {
+    const { quitter, killed } = harness([]);
+    assert.equal(await quitter.quit(), true);
+    assert.deepEqual(killed, []);
+    assert.equal(quitter.lastQuitVscode(), false);
+  });
+
+  it('never closes Code.exe on a machine without the plugin', async () => {
+    const { quitter, killed } = harness(['Code.exe'], false);
+    assert.equal(await quitter.quit(), true);
+    assert.deepEqual(killed, []);
+  });
+});
+
+describe('quitProcessWin kill set == wait set', () => {
+  // What the factory hands to the engine: only the images it killed. A live
+  // `Code.exe` must not hold a CodeBuddy-only quit open.
+  it('succeeds while an unrelated family image is still alive', async () => {
     const seen: string[][] = [];
-    await quitCodeBuddyWin({
-      run: fakeRun('', seen),
-      isRunning: () => false,
+    const run = ((cmd: string, args: string[] = []) => {
+      seen.push([cmd, ...args]);
+      if (cmd === 'taskkill')
+        return { stdout: '', stderr: '', error: undefined, status: 0 };
+      const image = args.find(a => a.startsWith('IMAGENAME eq '))?.slice('IMAGENAME eq '.length) ?? '';
+      return image === 'Code.exe'
+        ? { stdout: '"Code.exe","1","Console","1","1 K"', stderr: '', error: undefined, status: 0 }
+        : { stdout: 'INFO: No tasks are running which match the specified criteria.', stderr: '', error: undefined, status: 0 };
+    }) as unknown as typeof spawnSync;
+
+    const ok = await quitProcessWin(['CodeBuddy CN.exe'], {
+      run,
       now: () => 0,
-      waitMs: 0,
+      waitMs: 10,
       pollMs: 1,
       sleep: async () => {},
     });
-    assert.deepEqual(seen, [
-      ['taskkill', '/IM', 'CodeBuddy CN.exe'],
-      ['taskkill', '/IM', 'CodeBuddy.exe'],
-    ]);
+    assert.equal(ok, true);
+    assert.deepEqual(seen.filter(c => c[0] === 'taskkill'), [['taskkill', '/IM', 'CodeBuddy CN.exe']]);
     assert.equal(seen.some(c => c.includes('/F')), false);
   });
 });
@@ -212,5 +315,95 @@ describe('isCodeBuddyMainCommand', () => {
       ),
       false,
     );
+  });
+});
+
+/**
+ * Measured 2026-11-05: CodeBuddy CN's main process is invisible to `pgrep` (any
+ * pattern, even `-x Electron`) while `ps -axo pid=,command=` lists it. With only
+ * `pgrep`, `isCodeBuddyRunning` said "not running" for a running IDE, so the
+ * family predicate was satisfied by VSCode and the relauncher quit **VSCode**
+ * instead of the IDE that had no debug port.
+ */
+describe('isDarwinProcessRunning', () => {
+  type Handler = { status?: number; stdout?: string } | 'throw';
+
+  function fakeSpawn(handlers: { pgrep?: (args: string[]) => Handler; ps?: () => Handler }, calls?: string[]) {
+    return ((cmd: string, args: string[] = []) => {
+      calls?.push(cmd);
+      const h = cmd === 'pgrep' ? handlers.pgrep?.(args) : handlers.ps?.();
+      if (h === 'throw')
+        throw new Error(`spawnSync ${cmd} ENOENT`);
+      return { status: h?.status ?? 1, stdout: h?.stdout ?? '', stderr: '', error: undefined };
+    }) as unknown as typeof spawnSync;
+  }
+
+  beforeEach(() => resetDarwinProcessCache());
+
+  it('takes the pgrep answer without spawning ps', () => {
+    const calls: string[] = [];
+    const run = fakeSpawn({
+      pgrep: () => ({ status: 0, stdout: '123\n' }),
+      ps: () => ({ stdout: '' }),
+    }, calls);
+    assert.equal(isDarwinProcessRunning('X.app/Contents/MacOS/', { run }), true);
+    assert.deepEqual(calls, ['pgrep']);
+  });
+
+  it('finds the process through ps when pgrep cannot see it', () => {
+    const run = fakeSpawn({
+      pgrep: () => ({ status: 1, stdout: '' }),
+      ps: () => ({
+        stdout: '  8457 /Applications/CodeBuddy CN.app/Contents/MacOS/Electron --remote-debugging-port=9223\n',
+      }),
+    });
+    assert.equal(isDarwinProcessRunning('CodeBuddy CN.app/Contents/MacOS/', { run }), true);
+  });
+
+  it('is false only when neither tool sees it', () => {
+    const run = fakeSpawn({
+      pgrep: () => ({ status: 1, stdout: '' }),
+      ps: () => ({ stdout: '  1 /sbin/launchd\n' }),
+    });
+    assert.equal(isDarwinProcessRunning('CodeBuddy CN.app/Contents/MacOS/', { run }), false);
+  });
+
+  it('is false when ps also fails (never throws to the caller)', () => {
+    const run = fakeSpawn({ pgrep: () => 'throw', ps: () => 'throw' });
+    assert.equal(isDarwinProcessRunning('CodeBuddy CN.app/Contents/MacOS/', { run }), false);
+  });
+
+  it('serves every pattern from one ps snapshot for DARWIN_PS_CACHE_MS', () => {
+    let psCalls = 0;
+    let now = 0;
+    const run = fakeSpawn({
+      pgrep: () => ({ status: 1 }),
+      ps: () => {
+        psCalls += 1;
+        return { stdout: '  1 /sbin/launchd\n' };
+      },
+    });
+    const deps = { run, now: () => now };
+
+    isDarwinProcessRunning('A.app/Contents/MacOS/', deps);
+    isDarwinProcessRunning('B.app/Contents/MacOS/', deps);
+    assert.equal(psCalls, 1, '同一 tick 内的两次判定共用一次 ps');
+
+    now = DARWIN_PS_CACHE_MS;
+    isDarwinProcessRunning('C.app/Contents/MacOS/', deps);
+    assert.equal(psCalls, 2, '过期后重新取快照');
+  });
+
+  // The updater pattern is anchored with `(^|/)`, so the ps fallback must match
+  // per line — a plain `includes` would miss it on multi-line output.
+  it('matches the anchored updater pattern line by line', () => {
+    const run = fakeSpawn({
+      pgrep: () => ({ status: 1 }),
+      ps: () => ({
+        stdout: '  1 /sbin/launchd\n 99 /Applications/Cursor.app/Contents/Frameworks/Squirrel.framework/Resources/ShipIt\n',
+      }),
+    });
+    assert.equal(isIdeUpdaterRunningDarwin('Cursor', { run }), true);
+    assert.equal(isIdeUpdaterRunningDarwin('CodeBuddy', { run }), false);
   });
 });

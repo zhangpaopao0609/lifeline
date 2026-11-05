@@ -94,7 +94,13 @@ export interface IdeDriver {
   cdpUrlOf: (config: AgentConfig) => string;
   /** DevToolsActivePort file candidates (auto-discover the port). */
   portCandidates: () => string[];
-  /** argv.json paths (current platform first; uninstall must also list paths written on other platforms). */
+  /**
+   * argv.json paths (current platform first; uninstall must also list paths written on other platforms).
+   *
+   * **Declarative list only** — no production code writes through it (nothing
+   * calls it but `tests/drivers.test.ts`). The real write path is
+   * `cli/src/cdp-argv-file.ts`; gating here would gate nothing.
+   */
   argvPaths: () => string[];
   /** Whether a GUI build is installed on this machine (live-ides quiet strategy, not a gate). */
   hasLiveApp: HasLiveApp;

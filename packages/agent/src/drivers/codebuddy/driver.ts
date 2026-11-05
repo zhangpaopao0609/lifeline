@@ -1,12 +1,14 @@
 import type { CdpClient } from '../../cdp/client.js';
 import type { ExecutorFactoryContext, ExtractorFactoryContext, IdeDriver, LiveSlotHandle } from '../types.js';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { codeBuddyArgvCandidates } from '../../../../cli/src/cdp-argv-file.js';
 import { CODEBUDDY_TITLE_SUFFIXES } from '../../cdp/bridge.js';
 import { codeBuddyActivePortCandidates } from '../../cdp/endpoint.js';
 import { cdpPortFromUrl, nextReconnectDelay } from '../../cdp/relaunch-engine.js';
+import { VSCODE_APP_NAME, vscodeCodeBuddyPluginInstalled } from '../../codebuddy-vscode.js';
 import { tryOpenCodeBuddyAdapter } from '../../content-runtime.js';
-import { codeBuddyExeCandidates } from '../../win-paths.js';
+import { codeBuddyExeCandidates, vscodeExeCandidates } from '../../win-paths.js';
 import { CodeBuddyExecutor } from './executor.js';
 import { CodeBuddyExtractor, pickCodingCopilotTarget } from './extractor.js';
 import {
@@ -131,26 +133,56 @@ export const codebuddyDriver: IdeDriver = {
   kind: 'codebuddy',
 
   cdpUrlOf: config => config.codebuddyCdpUrl,
-  portCandidates: codeBuddyActivePortCandidates,
-  argvPaths: codeBuddyArgvCandidates,
+  // VSCode (plugin host) port candidates are plugin-gated here — the pure
+  // candidate function defaults to "no VSCode" (see `withVscode` in endpoint.ts).
+  portCandidates: () => codeBuddyActivePortCandidates(
+    homedir(),
+    process.platform,
+    process.env,
+    { vscodePlugin: vscodeCodeBuddyPluginInstalled() },
+  ),
+  // ⚠️ **Nothing reads this to write a file** (only `tests/drivers.test.ts`
+  // shape-checks it). The real write path is `cli/src/cdp-argv-file.ts`
+  // (`ensureCodeBuddyCdpArgv`, one file per installed host). Do not read the
+  // gate below as "argv writes are gated here" — it gates nothing.
+  argvPaths: () => codeBuddyArgvCandidates(
+    homedir(),
+    process.platform,
+    process.env,
+    { includeVscode: vscodeCodeBuddyPluginInstalled() },
+  ),
 
   hasLiveApp(exists, home, platform, env) {
+    // Inject `exists`/`home` into the gate as well: without them it reads the real
+    // `homedir()`, so a "pure" predicate answered true on a dev machine (plugin
+    // installed) and false on CI — the same trap `argvCandidates` hit before.
+    const plugin = vscodeCodeBuddyPluginInstalled({ exists, home });
     if (platform === 'darwin') {
       return CODEBUDDY_APP_CANDIDATES.some(
         name => exists(`/Applications/${name}.app`) || exists(join(home, 'Applications', `${name}.app`)),
+      ) || (
+        // VSCode hosting the CodeBuddy plugin counts as a live CodeBuddy install.
+        plugin
+        && (exists(`/Applications/${VSCODE_APP_NAME}.app`) || exists(join(home, 'Applications', `${VSCODE_APP_NAME}.app`)))
       );
     }
     if (platform === 'win32') {
-      return codeBuddyExeCandidates(env, home).some(exists);
+      return codeBuddyExeCandidates(env, home).some(exists)
+        || (plugin && vscodeExeCandidates(env, home).some(exists));
     }
     return false;
   },
 
   bridgeOptions() {
     const resolved = resolveCodeBuddyAppName();
-    const appNames = resolved
+    const appNames: string[] = resolved
       ? [resolved, ...CODEBUDDY_APP_CANDIDATES.filter(name => name !== resolved)]
       : [...CODEBUDDY_APP_CANDIDATES];
+    // VSCode (plugin host) goes last for AXRaise: the osascript block list
+    // returns on the first window-title match, so the standalone IDE keeps
+    // priority on dual-install machines.
+    if (vscodeCodeBuddyPluginInstalled())
+      appNames.push(VSCODE_APP_NAME);
     // relauncher 与 quietWake 必须共享同一份 deps——唤醒判据偏离自愈判据就会
     // 出现"醒了却不动手 / 动了却没醒"的分叉。
     const deps = defaultCodeBuddyCdpRelaunchDeps();

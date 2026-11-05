@@ -1,10 +1,11 @@
 import { ArrowBendDownLeft, ArrowDown, ArrowUp } from '@phosphor-icons/react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useInstallOs } from '../lib/enroll-os';
+import { ideTitle } from '../lib/ide-label';
 import { machineLabel } from '../lib/machine-name';
 import { noteUserSwitch } from '../lib/useViewState';
 import { installCommand, setupCommand } from '../net/enroll';
-import { IDE_KINDS, IDE_LABELS } from '../net/protocol';
+import { IDE_KINDS } from '../net/protocol';
 import { sendCommand, sendCommandAwaitResult } from '../net/socket';
 import { cliSourceLabel, cliStatusLabel, paletteCliEntries, sessionsOf, useCliStore } from '../store/cli';
 import { activeTabOf, useIdesStore } from '../store/ides';
@@ -120,7 +121,7 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
       out.push({
         id: `ide:${ide}`,
         group: 'IDE',
-        label: IDE_LABELS[ide],
+        label: ideTitle(ide, ides[ide]?.host),
         hint: ide === selectedIde ? '当前' : undefined,
         run: finish(() => { setSelectedIde(ide); showIde(ide); }),
       });
