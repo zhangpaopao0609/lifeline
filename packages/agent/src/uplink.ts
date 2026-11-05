@@ -68,11 +68,12 @@ export class Uplink extends EventEmitter {
   /** Static CLI capability. Absent when this process does not speak CLI. */
   private readonly cliAcp: CliAcpCapability | undefined;
   /**
-   * Set when a server rejected a register that carried a non-darwin `cliAcp`. Servers that predate
-   * Linux CLI sessions validate `platform: 'darwin'` strictly and drop the whole register; the agent
-   * then registers without `cliAcp` for the rest of this process, so it still comes online.
+   * Set when a server rejected a register whose `cliAcp` an older server cannot parse (a linux
+   * platform, or a source it does not know such as `codex-cli`). Such servers validate `cliAcp`
+   * strictly and drop the whole register; the agent then registers with `legacyCliAcp()` for the rest
+   * of this process, so it still comes online.
    */
-  private cliAcpDropped = false;
+  private cliAcpLegacy = false;
   private watchdog: UplinkWatchdog;
 
   constructor(
@@ -177,12 +178,14 @@ export class Uplink extends EventEmitter {
     });
 
     socket.on('agent:rejected', (payload?: unknown) => {
-      // A server older than Linux CLI sessions rejects the linux `cliAcp` schema and with it the whole
-      // register. Retry once without it on this socket (a reconnect re-registers the same way).
+      // An older server rejects a `cliAcp` it cannot parse, and with it the whole register. Retry once
+      // with what such a server accepts, on this socket (a reconnect re-registers the same way).
       const reason = (payload as { reason?: unknown } | undefined)?.reason;
-      if (reason === 'reject-register' && !this.cliAcpDropped && this.cliAcp && this.cliAcp.platform !== 'darwin') {
-        this.cliAcpDropped = true;
-        console.warn(`[uplink] ${ts()} Server rejected the ${this.cliAcp.platform} CLI capability (older server?); registering without CLI sessions`);
+      if (reason === 'reject-register' && !this.cliAcpLegacy && this.cliAcp && !sameCliAcp(legacyCliAcp(this.cliAcp), this.cliAcp)) {
+        this.cliAcpLegacy = true;
+        const legacy = legacyCliAcp(this.cliAcp);
+        const fallback = legacy ? `with ${legacy.sources.map(row => row.source).join(', ')} only` : 'without CLI sessions';
+        console.warn(`[uplink] ${ts()} Server rejected the CLI capability (older server?); registering ${fallback}`);
         this.sendRegister(socket);
         return;
       }
@@ -204,7 +207,7 @@ export class Uplink extends EventEmitter {
     // platform must be self-reported by the machine, not guessed from the
     // browser UA. Omit if unrecognized; the web falls back to OS toggles.
     const platform = toAgentPlatform(process.platform);
-    const cliAcp = this.cliAcpDropped ? undefined : this.cliAcp;
+    const cliAcp = this.cliAcpLegacy && this.cliAcp ? legacyCliAcp(this.cliAcp) : this.cliAcp;
     socket.emit('agent:register', {
       agentId: this.agentId,
       hostname: hostname(),
@@ -288,4 +291,18 @@ export class Uplink extends EventEmitter {
     this.watchdog.stop();
     this.socket.disconnect();
   }
+}
+
+/** Platform and sources a server from before Linux CLI sessions and `codex-cli` accepts. */
+const LEGACY_CLI_SOURCES: ReadonlySet<string> = new Set(['cursor-cli', 'codebuddy-cli']);
+
+export function legacyCliAcp(cap: CliAcpCapability): CliAcpCapability | undefined {
+  if (cap.platform !== 'darwin')
+    return undefined;
+  const sources = cap.sources.filter(row => LEGACY_CLI_SOURCES.has(row.source));
+  return sources.length > 0 ? { ...cap, sources } : undefined;
+}
+
+function sameCliAcp(a: CliAcpCapability | undefined, b: CliAcpCapability): boolean {
+  return a != null && a.platform === b.platform && a.sources.length === b.sources.length;
 }

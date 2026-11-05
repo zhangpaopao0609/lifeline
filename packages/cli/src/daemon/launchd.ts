@@ -5,8 +5,9 @@ import type { DaemonOpts, DaemonOutcome } from '../ui.js';
 import { execSync, spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
-import { codebuddyAcpProfile, cursorAcpProfile } from '../../../agent/src/drivers/acp/profiles.js';
+import { acpProfileFor } from '../../../agent/src/drivers/acp/profiles.js';
 import { buildChildEnv, withCliBinOnPath } from '../../../agent/src/drivers/acp/readiness.js';
+import { CODEX_CLI_ENV, codexBridgeLaunch } from '../../../agent/src/drivers/codex/launch.js';
 import { BUILD_VERSION } from '../build-version.js';
 import { applyCodeBuddyCdpArgv, applyCursorCdpArgv, revertCodeBuddyCdpArgvIfManaged, revertCursorCdpArgvIfManaged } from '../cdp-argv-state.js';
 import { loadCliConfig, LOG_DIR, saveCliConfig } from '../config.js';
@@ -431,14 +432,18 @@ export function planLaunchdProviderSpawn(input: {
 }): LaunchdProviderPlan {
   if (!isAbsolute(input.command))
     throw new Error('CLI provider path must be an absolute path');
-  const profile = input.source === 'cursor-cli' ? cursorAcpProfile : codebuddyAcpProfile;
   const { env } = buildChildEnv({
     source: input.source,
     base: input.baseEnv,
     apiKey: input.apiKey,
     environment: input.environment,
   });
-  return { command: input.command, args: [...profile.args], env: withCliBinOnPath(env, input.command) };
+  if (input.source === 'codex-cli') {
+    // `command` is the Codex CLI; the spawned child is the built-in ACP bridge, which runs it.
+    const bridge = codexBridgeLaunch();
+    return { command: bridge.command, args: bridge.args, env: withCliBinOnPath({ ...env, [CODEX_CLI_ENV]: input.command }, bridge.command) };
+  }
+  return { command: input.command, args: [...acpProfileFor(input.source).args], env: withCliBinOnPath(env, input.command) };
 }
 
 /** Spawn wrapper. Tests pass `spawnImpl`. Does not call `launchctl`. */

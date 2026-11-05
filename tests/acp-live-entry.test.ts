@@ -451,6 +451,12 @@ describe('live ACP entry', () => {
     assert.equal(sourceRow(combined, 'codebuddy-cli')?.availability, 'unknown');
     assert.equal(probeSessions, 0);
 
+    // A third source joins the same report instead of being dropped.
+    await entry.probe('codex-cli');
+    const three = reports.at(-1);
+    assert.deepEqual(three?.sources.map(row => row.source), ['cursor-cli', 'codebuddy-cli', 'codex-cli']);
+    assert.equal(sourceRow(three, 'codex-cli')?.availability, 'binary-missing');
+
     const before = reports.length;
     const pending = entry.start({ source: 'codebuddy-cli', cwd: tempDir() });
     const pre = reports.at(-1);

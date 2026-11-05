@@ -33,6 +33,22 @@ index.ts (walks registeredDrivers() and wires them)
 5. CLI argv ensure/remove if that IDE needs it (table-driven at the function layer)
 6. Zero server changes (`Partial<Record<IdeKind, …>>` already fans out)
 
+## CLI sessions (ACP)
+
+The "Agent CLI" entry is not an IDE driver: the agent spawns a CLI as an ACP child over stdio (`drivers/acp/`) and the web talks to it through `command:cli_*`. Gate: `CLI_PLATFORMS` (`darwin | linux`), independent of `canControlIde()`.
+
+| Source | Binary (config / env) | Spawned child |
+|---|---|---|
+| `cursor-cli` | `cursorCliPath` / `LIFELINE_CURSOR_CLI` | `cursor-agent acp` |
+| `codebuddy-cli` | `codebuddyCliPath` / `LIFELINE_CODEBUDDY_CLI` | `codebuddy --acp` |
+| `codex-cli` | `codexCliPath` / `LIFELINE_CODEX_CLI` | built-in bridge: `node lifeline.mjs codex-acp-bridge`, which runs `<codex> app-server` |
+
+- **Codex has no ACP mode**, so `drivers/codex/bridge.ts` speaks ACP on stdio and drives `codex app-server` (JSON-RPC v2). The bridge ships inside the runtime bundle (`codexBridgeLaunch()`; from source it is `drivers/codex/main.ts` with the same loader flags). Any `codex`-compatible wrapper works as `codexCliPath`.
+- **The ACP session id is the Codex thread id.** `codex resume <id>` in a terminal and `session/load` after an agent restart (`thread/resume`) both work from it. A thread that never ran a turn has no rollout and cannot be loaded.
+- `session/load` replays at most the last 10 turns as summaries (prompt + final reply) within 8s: a full-history resume of a long thread can take minutes and Lifeline gives the load 15s.
+- Approval options use the ACP spec kinds (`allow_once` / `allow_always` / `reject_once`); a signed-out Codex fails `session/new` with JSON-RPC 401 (`credential-required`).
+- New source checklist: `CLI_SOURCES`, `acpProfileFor`, `resolveAcpLaunch` + `COMMAND_ENV`, catalog path in `acceptCatalog`, `cliResumeCommand`, cli config key + `agentRuntimeEnv`, web `CLI_SOURCE_LABEL` / `CLI_AGENT_LABEL` / `CliNewDialog`. An older server rejects an unknown source in `agent:register`: keep `legacyCliAcp()` in `uplink.ts` in step.
+
 ## Pitfalls (criteria)
 
 - **Runtime callback signatures include an `ide` parameter.** `ContentLiveRuntime` onSessionFull/Append/Patch/Sync is `(sessionId, messages, ide, seq)` — the runtime passes `adapter.ide`. Do not shadow it with an outer loop variable (equivalent, but missing the parameter fails TS).

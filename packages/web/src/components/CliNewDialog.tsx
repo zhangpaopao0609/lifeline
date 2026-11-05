@@ -50,8 +50,9 @@ export function CliNewDialog({
     return watchCatalog(source, undefined, source, setLoaded);
   }, [source]);
 
+  // CodeBuddy and Codex report models from `session/new` in the chosen directory.
   useEffect(() => {
-    if (source !== 'codebuddy-cli' || !trimmed.startsWith('/'))
+    if ((source !== 'codebuddy-cli' && source !== 'codex-cli') || !trimmed.startsWith('/'))
       return;
     return watchCatalog(source, trimmed, source, setLoaded);
   }, [source, trimmed]);

@@ -1,3 +1,4 @@
+import { CODEX_BRIDGE_SUBCOMMAND } from '../../agent/src/drivers/codex/launch.js';
 import { BUILD_VERSION as VERSION } from './build-version.js';
 import { cmdDaemon } from './commands/daemon.js';
 import { cmdOpen } from './commands/open.js';
@@ -91,6 +92,13 @@ async function main(): Promise<void> {
     case 'config':
       log(cliConfigPath());
       break;
+    // Internal, not in HELP: the agent spawns this as the ACP child of a Codex CLI session.
+    // stdout is the ACP channel, so nothing else may print here.
+    case CODEX_BRIDGE_SUBCOMMAND: {
+      const { runCodexAcpBridge } = await import('../../agent/src/drivers/codex/bridge.js');
+      await runCodexAcpBridge();
+      break;
+    }
     case undefined:
     case 'help':
     case '--help':

@@ -203,7 +203,7 @@ describe('Uplink agent:superseded', () => {
 const DARWIN_CLI_ACP: CliAcpCapability = {
   protocolVersion: 1,
   platform: 'darwin',
-  sources: [{ source: 'cursor-cli' }, { source: 'codebuddy-cli' }],
+  sources: [{ source: 'cursor-cli' }, { source: 'codebuddy-cli' }, { source: 'codex-cli' }],
 };
 
 describe('static cliAcp', () => {
@@ -255,8 +255,27 @@ describe('static cliAcp', () => {
     uplink.disconnect();
   });
 
-  it('does not retry for a darwin cliAcp or for other rejection reasons', () => {
-    const darwin = makeUplink(25, 'proc-1', staticCliAcp('darwin', {}));
+  it('re-registers a darwin cliAcp without codex-cli when an older server rejects it', () => {
+    const { uplink, sockets } = makeUplink(25, 'proc-1', staticCliAcp('darwin', {}));
+    let rejected = 0;
+    uplink.on('rejected', () => rejected++);
+    const registers = () => sockets[0]!.sent.filter(entry => entry.event === 'agent:register').map(entry => entry.payload as { cliAcp?: CliAcpCapability });
+    sockets[0]!.fire('connect');
+    sockets[0]!.fire('agent:rejected', { reason: 'reject-register' });
+    assert.equal(rejected, 0);
+    assert.deepEqual(registers()[1]?.cliAcp, {
+      protocolVersion: 1,
+      platform: 'darwin',
+      sources: [{ source: 'cursor-cli' }, { source: 'codebuddy-cli' }],
+    });
+    sockets[0]!.fire('agent:rejected', { reason: 'reject-register' });
+    assert.equal(rejected, 1);
+    uplink.disconnect();
+  });
+
+  it('does not retry a cliAcp an older server already accepts, or for other rejection reasons', () => {
+    const legacy: CliAcpCapability = { protocolVersion: 1, platform: 'darwin', sources: [{ source: 'cursor-cli' }, { source: 'codebuddy-cli' }] };
+    const darwin = makeUplink(25, 'proc-1', legacy);
     let darwinRejected = 0;
     darwin.uplink.on('rejected', () => darwinRejected++);
     darwin.sockets[0]!.fire('connect');

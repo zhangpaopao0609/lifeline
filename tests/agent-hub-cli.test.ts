@@ -330,7 +330,7 @@ describe('AgentDirectory CLI forwarding', () => {
     assert.deepEqual(cliAcp, {
       protocolVersion: 1,
       platform: 'darwin',
-      sources: [{ source: 'cursor-cli' }, { source: 'codebuddy-cli' }],
+      sources: [{ source: 'cursor-cli' }, { source: 'codebuddy-cli' }, { source: 'codex-cli' }],
     });
     const agent = fakeSocket('sa');
     const browser = fakeSocket('br');
@@ -389,6 +389,7 @@ describe('AgentDirectory CLI forwarding', () => {
     assert.deepEqual(listed?.cliSources, [
       { source: 'cursor-cli', availability: 'unknown' },
       { source: 'codebuddy-cli', availability: 'ready' },
+      { source: 'codex-cli', availability: 'unknown' },
     ]);
     d.sendCommand('agent-l', 'command:cli_start', {
       commandId: 'c-linux',

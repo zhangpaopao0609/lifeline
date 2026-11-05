@@ -1,7 +1,11 @@
 import type { ChatElement } from './wire.js';
 import { isAbsolute } from 'node:path';
 
-export const CLI_SOURCES = ['cursor-cli', 'codebuddy-cli'] as const;
+/**
+ * `codex-cli` has no native ACP mode: the agent runs its built-in bridge, which drives `codex app-server`
+ * (packages/agent/src/drivers/codex/).
+ */
+export const CLI_SOURCES = ['cursor-cli', 'codebuddy-cli', 'codex-cli'] as const;
 export type CliSource = (typeof CLI_SOURCES)[number];
 
 /**
@@ -113,7 +117,7 @@ export interface CliCapabilities {
 export interface CliCatalogPayload {
   commandId: string;
   source: CliSource;
-  /** Required for a CodeBuddy probe. Cursor's `--list-models` does not use it. */
+  /** Required for a CodeBuddy / Codex probe (`session/new` in that cwd). Cursor's `--list-models` does not use it. */
   cwd?: string;
 }
 

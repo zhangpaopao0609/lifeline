@@ -30,7 +30,7 @@ browser  --HTTP/WS-->  packages/server  <--outbound WS /agent-io + per-machine t
 | Outbound connection | `packages/agent/src/uplink.ts` |
 | IDE adapters | `packages/agent/src/drivers/` (see [`ide-drivers.md`](docs/ide-drivers.md)) |
 | Composer attachments | `packages/agent/src/attachments.ts` (write) + `attach-files.ts` (native paste), text contract in `packages/protocol/src/attachments.ts` |
-| CLI ACP | `packages/agent/src/drivers/acp/` |
+| CLI ACP | `packages/agent/src/drivers/acp/`; Codex bridge in `drivers/codex/` (see [`ide-drivers.md`](docs/ide-drivers.md#cli-sessions-acp)) |
 | Shared wire types | `packages/protocol` (`@lifeline/protocol`) |
 | Auth exemption | `packages/server/src/public-paths.ts` (only `/public/*`, `/healthz`, `/agent-io`) |
 | Browser auth | `packages/server/src/auth/` (matrix in root `.env.example`) |

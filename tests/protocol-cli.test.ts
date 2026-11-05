@@ -63,10 +63,12 @@ function throws(fn: () => unknown, pattern: RegExp): void {
 }
 
 describe('CliSource', () => {
-  it('accepts only cursor-cli and codebuddy-cli', () => {
-    assert.deepEqual(CLI_SOURCES, ['cursor-cli', 'codebuddy-cli']);
+  it('accepts only cursor-cli, codebuddy-cli and codex-cli', () => {
+    assert.deepEqual(CLI_SOURCES, ['cursor-cli', 'codebuddy-cli', 'codex-cli']);
     assert.equal(isCliSource('cursor-cli'), true);
     assert.equal(isCliSource('codebuddy-cli'), true);
+    assert.equal(isCliSource('codex-cli'), true);
+    assert.equal(isCliSource('codex'), false);
     assert.equal(isCliSource('cursor'), false);
     assert.equal(isCliSource('codebuddy'), false);
     assert.equal(isCliSource(''), false);

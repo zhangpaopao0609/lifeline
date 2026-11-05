@@ -259,4 +259,30 @@ describe('cli acp config', () => {
     assert.equal(relative.LIFELINE_CURSOR_CLI, undefined);
     assert.equal(JSON.stringify(relative).includes(FAKE_KEY), false);
   });
+
+  it('persists codexCliPath, finds codex on PATH at setup, and forwards it to the agent', () => {
+    const file = tempFile();
+    writeFileSync(file, `${JSON.stringify({ serverUrl: 'https://lifeline.example', agentToken: 'token-1' })}\n`);
+    const loaded = readCliConfigFile(file);
+    assert.ok(loaded);
+    writeCliConfigFile({ ...loaded, codexCliPath: '/home/me/.local/bin/my-codex' }, file);
+    assert.equal(readCliConfigFile(file)?.codexCliPath, '/home/me/.local/bin/my-codex');
+    assert.throws(() => writeCliConfigFile({ ...loaded, codexCliPath: 'codex' }, file));
+
+    const rebuilt = withPersistedCliProviders({
+      config: baseConfig({}),
+      existing: null,
+      lookup: source => (source === 'codex-cli' ? '/usr/local/bin/codex' : undefined),
+    });
+    assert.equal(rebuilt.codexCliPath, '/usr/local/bin/codex');
+    const kept = withPersistedCliProviders({
+      config: baseConfig({}),
+      existing: baseConfig({ codexCliPath: '/home/me/.local/bin/my-codex' }),
+      lookup: () => '/usr/local/bin/codex',
+    });
+    assert.equal(kept.codexCliPath, '/home/me/.local/bin/my-codex');
+
+    assert.equal(agentRuntimeEnv(baseConfig({ codexCliPath: '/usr/local/bin/codex' }), {}).LIFELINE_CODEX_CLI, '/usr/local/bin/codex');
+    assert.equal('LIFELINE_CODEX_CLI' in agentRuntimeEnv(baseConfig({}), { LIFELINE_CODEX_CLI: '/stale' }), false);
+  });
 });

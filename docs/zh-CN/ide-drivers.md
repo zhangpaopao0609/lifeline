@@ -33,6 +33,22 @@ index.ts（遍历 registeredDrivers() 组装）
 5. CLI 的 argv ensure/remove 若该 IDE 需要（函数层表驱动）
 6. server 侧零改动（`Partial<Record<IdeKind, …>>` 已扩散）
 
+## 命令行会话（ACP）
+
+「Agent CLI」不是 IDE 驱动：agent 通过 stdio 以 ACP 子进程的方式启动一个 CLI（`drivers/acp/`），网页经 `command:cli_*` 与它交互。平台门：`CLI_PLATFORMS`（`darwin | linux`），与 `canControlIde()` 无关。
+
+| 来源 | 可执行文件（配置 / 环境变量） | 实际启动的子进程 |
+|---|---|---|
+| `cursor-cli` | `cursorCliPath` / `LIFELINE_CURSOR_CLI` | `cursor-agent acp` |
+| `codebuddy-cli` | `codebuddyCliPath` / `LIFELINE_CODEBUDDY_CLI` | `codebuddy --acp` |
+| `codex-cli` | `codexCliPath` / `LIFELINE_CODEX_CLI` | 内置桥接：`node lifeline.mjs codex-acp-bridge`，由它再启动 `<codex> app-server` |
+
+- **Codex 没有 ACP 模式**，所以 `drivers/codex/bridge.ts` 在 stdio 上说 ACP，背后驱动 `codex app-server`（JSON-RPC v2）。桥接随 runtime 打包（`codexBridgeLaunch()`；源码运行时是 `drivers/codex/main.ts`，带同样的 loader 参数）。任何兼容 `codex` 的包装命令都可以填进 `codexCliPath`。
+- **ACP 会话 id 就是 Codex 线程 id。** 终端里 `codex resume <id>`、agent 重启后的 `session/load`（`thread/resume`）都靠它。一次回合都没跑过的线程没有 rollout，无法恢复。
+- `session/load` 最多回放最近 10 个回合的摘要（用户输入 + 最终回复），限时 8 秒：长线程整段恢复可能要好几分钟，而 Lifeline 只给 15 秒。
+- 审批选项用 ACP 规范的 kind（`allow_once` / `allow_always` / `reject_once`）；Codex 未登录时 `session/new` 返回 JSON-RPC 401（`credential-required`）。
+- 加新来源的清单：`CLI_SOURCES`、`acpProfileFor`、`resolveAcpLaunch` 与 `COMMAND_ENV`、`acceptCatalog` 里的模型目录读法、`cliResumeCommand`、cli 配置项与 `agentRuntimeEnv`、网页的 `CLI_SOURCE_LABEL` / `CLI_AGENT_LABEL` / `CliNewDialog`。旧 server 会因为不认识的来源拒绝整个 `agent:register`：同步更新 `uplink.ts` 的 `legacyCliAcp()`。
+
 ## 踩坑（判据）
 
 - **runtime 回调签名带 `ide` 参数位**：`ContentLiveRuntime` 的 onSessionFull/Append/Patch/Sync 是 `(sessionId, messages, ide, seq)`——runtime 自己传 `adapter.ide`，别用外层循环变量遮蔽（等价但少了参数位会 TS 报错）。
