@@ -2,6 +2,13 @@
 
 **English** | [简体中文](./CHANGELOG.zh-CN.md)
 
+## [0.6.0] - 2026-11-06
+
+### Features
+
+- On Linux, start a command-line session from the console. Cursor, CodeBuddy, and Codex run there; the graphical IDE stays read-only.
+- A Linux machine is listed with the others. An IDE row that only has saved sessions is marked read-only, and Agent CLI is its own row you can use.
+
 ## [0.5.0] - 2026-11-06
 
 ### Features
