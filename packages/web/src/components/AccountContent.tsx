@@ -6,6 +6,7 @@ import { APP_VERSION } from '../lib/app-version';
 import { LANDING_PATH } from '../lib/routes';
 import { useUserStore } from '../store/user';
 import { Avatar } from './Avatar';
+import { ThemeSwitch } from './ThemeSwitch';
 
 const SHORTCUTS: [string, string][] = [
   ['⌘K', '命令面板'],
@@ -42,6 +43,10 @@ export function AccountContent() {
           <div className="font-semibold">{userId || '本地模式'}</div>
           <div className="text-[length:var(--text-chrome)] text-[var(--text-weak)]">{authLabel(userId, authKind)}</div>
         </div>
+      </div>
+
+      <div className="border-t border-[var(--hairline)] p-2.5">
+        <ThemeSwitch />
       </div>
 
       {isDesktop && (

@@ -4,6 +4,22 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="color-scheme" content="dark" />
+    <script>
+      (() => {
+        let preference = 'dark';
+        try {
+          const saved = localStorage.getItem('lifeline:theme');
+          if (saved === 'light' || saved === 'system') preference = saved;
+        }
+        catch {}
+        const theme = preference === 'system'
+          ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+          : preference;
+        document.documentElement.dataset.themePreference = preference;
+        document.documentElement.dataset.theme = theme;
+        document.documentElement.style.colorScheme = theme;
+      })();
+    </script>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="description" content="Lifeline（生命线）· 把你的 CodeBuddy / Cursor 装进口袋。线不断，人就自由。" />
     <title>Lifeline · 把你的 CodeBuddy / Cursor 装进口袋</title>

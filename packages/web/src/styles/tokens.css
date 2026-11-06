@@ -1,7 +1,7 @@
 @import 'tailwindcss';
 
 /* ============================================================
-   Design Tokens — dark Minimalism
+   Design Tokens — Minimalism (dark by default)
    Source of truth: this file (shared by the console and the marketing site)
    ============================================================ */
 
@@ -50,11 +50,38 @@
 
   /* Shadow: cards have none; overlays only */
   --shadow-overlay: 0 8px 32px rgba(0, 0, 0, .5);
+  --shadow-phone: 0 24px 64px rgba(0, 0, 0, .55), 0 0 0 1px var(--accent-faint);
+  --bg-nav: rgba(9, 9, 11, .86);
 
   /* Motion */
   --ease-spring: cubic-bezier(.2, .8, .2, 1);
   --duration-fast: 150ms;
   --duration-base: 250ms;
+}
+
+:root[data-theme="light"] {
+  --bg-0: #fff;
+  --bg-1: #f8f9fb;
+  --bg-2: #f0f2f5;
+  --bg-3: #e4e7ec;
+
+  --text-primary: #18181b;
+  --text-secondary: #52525b;
+  --text-weak: #63636d;
+  --text-inverse: #fff;
+
+  --accent: #1d64b3;
+  --accent-soft: rgba(29, 100, 179, .12);
+  --accent-faint: rgba(29, 100, 179, .06);
+  --ok: #087f5b;
+  --error: #d91c40;
+  --warning: #926000;
+
+  --hairline: rgba(24, 24, 27, .1);
+  --hairline-strong: rgba(24, 24, 27, .18);
+  --shadow-overlay: 0 8px 32px rgba(0, 0, 0, .12);
+  --shadow-phone: 0 24px 64px rgba(0, 0, 0, .1), 0 0 0 1px var(--accent-faint);
+  --bg-nav: rgba(255, 255, 255, .86);
 }
 
 /* ------------------------------------------------------------
@@ -1401,7 +1428,7 @@ body.is-col-resizing * {
   padding: 8px 0;
   padding-top: max(8px, env(safe-area-inset-top));
   border-bottom: 1px solid var(--hairline);
-  background: rgba(9, 9, 11, .86);
+  background: var(--bg-nav);
   backdrop-filter: blur(12px);
 }
 
@@ -1537,7 +1564,7 @@ body.is-col-resizing * {
   border: 1px solid var(--hairline-strong);
   border-radius: 34px;
   background: var(--bg-1);
-  box-shadow: 0 24px 64px rgba(0, 0, 0, .55), 0 0 0 1px var(--accent-faint);
+  box-shadow: var(--shadow-phone);
 }
 
 .phone-notch {
