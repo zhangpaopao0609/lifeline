@@ -175,7 +175,10 @@ describe('Codex CLI native app-server', () => {
         await f.client.sessionLoad({ cwd: f.dir, sessionId: 'codex-provider-thread' });
         const chunks = f.events.flatMap(event => event.type === 'update' ? [(event.update as any).content?.text] : []).filter(Boolean);
         assert.deepEqual(chunks, ['Earlier question', 'Earlier answer']);
-        assert.equal(frames(f.trace).filter(frame => frame.method === 'thread/items/list').length, paginated ? 2 : 0);
+        const resumes = frames(f.trace).filter(frame => frame.method === 'thread/resume');
+        assert.equal(resumes.length, 1);
+        assert.equal(resumes[0]?.params.excludeTurns, true);
+        assert.equal(frames(f.trace).filter(frame => frame.method === 'thread/items/list').length, 2);
       }
       finally { await f.cleanup(); }
     });
@@ -189,9 +192,29 @@ describe('Codex CLI native app-server', () => {
       await f.client.cancel();
       assert.deepEqual(await pending, { stopReason: 'cancelled' });
       await assert.rejects(f.client.prompt('__FAIL__'), /failed/);
-      await assert.rejects(f.client.prompt('__UNSUPPORTED__'), /failed/);
+      await assert.rejects(f.client.prompt('__UNSUPPORTED__'), (err: unknown) => {
+        assert.equal(err instanceof Error && err.message, 'unsupported-request');
+        assert.equal(String(err).includes('private provider'), false);
+        return true;
+      });
       assert.equal(frames(f.trace).find(frame => frame.id === 'unsupported')?.error?.code, -32601);
       await assert.rejects(f.client.prompt('__CRASH__'), /process exited/);
+    }
+    finally { await f.cleanup(); }
+  });
+
+  it('replays legacy history from a full resume when item pages are unavailable', async () => {
+    const f = setup({ CODEX_FIXTURE_NO_ITEMS: '1' });
+    try {
+      await f.client.start(); await f.client.initialize();
+      await f.client.sessionLoad({ cwd: f.dir, sessionId: 'codex-provider-thread' });
+      const chunks = f.events.flatMap(event => event.type === 'update' ? [(event.update as any).content?.text] : []).filter(Boolean);
+      assert.deepEqual(chunks, ['Earlier question', 'Earlier answer']);
+      const resumes = frames(f.trace).filter(frame => frame.method === 'thread/resume');
+      assert.equal(resumes.length, 2);
+      assert.equal(resumes[0]?.params.excludeTurns, true);
+      assert.equal(resumes[1]?.params.excludeTurns, undefined);
+      assert.equal(frames(f.trace).some(frame => frame.method === 'thread/archive' || frame.method === 'thread/delete'), false);
     }
     finally { await f.cleanup(); }
   });
@@ -200,6 +223,33 @@ describe('Codex CLI native app-server', () => {
     const f = setup({ CODEX_FIXTURE_NO_AUTH: '1' });
     try { await f.client.start(); await assert.rejects(f.client.initialize(), /login required/); }
     finally { await f.cleanup(); }
+  });
+
+  it('reads the model catalog without starting a Codex thread', async () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'lifeline-codex-catalog-')));
+    const trace = join(dir, 'trace.jsonl');
+    const entry = createLiveCliEntry({
+      epoch,
+      platform: 'darwin' as const,
+      env: { ...process.env, LIFELINE_CODEX_CLI: '/opt/bin/codex' },
+      emit: () => {},
+      construct: (input: ConstructorParameters<typeof CodexClient>[0]) => new CodexClient({ ...input, command: process.execPath, args: [fixture, trace], killGraceMs: 5 }),
+    });
+    try {
+      const result = await entry.manager.readCatalog({ source: 'codex-cli', cwd: dir });
+      assert.equal(result.ok, true);
+      if (!result.ok)
+        return;
+      assert.deepEqual(result.data.catalog?.models.map(model => model.id), ['model-a', 'model-b']);
+      assert.equal(result.data.catalog?.currentModelId, 'model-b');
+      assert.deepEqual(result.data.catalog?.models[0]?.thinking?.levels.map(level => level.value), ['medium', 'high']);
+      const methods = frames(trace).map(frame => frame.method);
+      assert.equal(methods.includes('model/list'), true);
+      assert.equal(methods.includes('thread/start'), false);
+      assert.equal(methods.includes('thread/archive'), false);
+      assert.equal(methods.includes('thread/delete'), false);
+    }
+    finally { await entry.manager.closeAll(); rmSync(dir, { recursive: true, force: true }); }
   });
 
   it('reuses the production session manager for selection, errors, retry, and restart recovery', async () => {
@@ -231,7 +281,12 @@ describe('Codex CLI native app-server', () => {
       assert.equal(readCliSessionLedger(ledger)[0]?.thinking, 'high');
       entry.manager.prompt({ ...target, text: '__FAIL__', clientMessageId: 'fail' });
       await until(() => status()?.error ? true : undefined);
-      assert.match(status().error, /Codex 请求失败/);
+      assert.equal(status().error, 'Codex 请求失败，请重试。');
+      assert.equal(JSON.stringify(events).includes('private provider failure detail'), false);
+      entry.manager.prompt({ ...target, text: '__UNSUPPORTED__', clientMessageId: 'unsupported' });
+      await until(() => typeof status()?.error === 'string' && status().error.includes('无法在 Lifeline') ? true : undefined);
+      assert.equal(status().error, '该请求无法在 Lifeline 里完成。');
+      assert.equal(JSON.stringify(events).includes('private provider failure detail'), false);
       entry.manager.prompt({ ...target, text: 'Retry', clientMessageId: 'retry' });
       await until(() => status()?.status === 'idle' ? true : undefined);
       assert.equal(status().error, undefined);

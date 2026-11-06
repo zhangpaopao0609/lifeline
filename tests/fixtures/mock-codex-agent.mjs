@@ -34,7 +34,7 @@ for await (const line of createInterface({ input: process.stdin })) {
   else if (method === 'model/list') {
     reply(id, {
       data: params.cursor
-        ? [{ id: 'b', model: 'model-b', displayName: 'Model B', defaultReasoningEffort: 'low', supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'high' }] }]
+        ? [{ id: 'b', model: 'model-b', displayName: 'Model B', isDefault: true, defaultReasoningEffort: 'low', supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'high' }] }]
         : [{ id: 'a', model: 'model-a', displayName: 'Model A', defaultReasoningEffort: 'medium', supportedReasoningEfforts: [{ reasoningEffort: 'medium' }, { reasoningEffort: 'high' }] }],
       nextCursor: params.cursor ? null : 'second-page',
     });
@@ -46,14 +46,17 @@ for await (const line of createInterface({ input: process.stdin })) {
   }
   else if (method === 'thread/resume') {
     assert.equal(params.threadId, threadId);
-    assert.equal(params.excludeTurns, true);
     const result = response();
-    if (!process.env.CODEX_FIXTURE_PAGINATED)
+    if (params.excludeTurns !== true)
       result.thread.turns = [{ items: [{ type: 'userMessage', id: 'old-human', content: [{ type: 'text', text: 'Earlier question' }] }, { type: 'agentMessage', id: 'old-answer', text: 'Earlier answer' }] }];
     reply(id, result);
   }
   else if (method === 'thread/items/list') {
     assert.equal(params.sortDirection, 'desc');
+    if (process.env.CODEX_FIXTURE_NO_ITEMS) {
+      send({ id, error: { code: -32601, message: 'Method not found' } });
+      continue;
+    }
     reply(id, { data: [{ item: params.cursor ? { type: 'userMessage', id: 'old-human', content: [{ type: 'text', text: 'Earlier question' }] } : { type: 'agentMessage', id: 'old-answer', text: 'Earlier answer' } }], nextCursor: params.cursor ? null : 'older-items' });
   }
   else if (method === 'turn/start') {

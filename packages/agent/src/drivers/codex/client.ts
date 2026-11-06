@@ -1,4 +1,4 @@
-import type { AcpClientEvent, AcpClientOptions, AcpSessionNewResult } from '../acp/types.js';
+import type { AcpClientEvent, AcpClientOptions, AcpInitializeResult, AcpSessionNewResult } from '../acp/types.js';
 import { CLI_MODEL_LIMIT, CLI_SESSION_BODY_MAX_ELEMENTS } from '@lifeline/protocol';
 import { BUILD_VERSION } from '../../../../cli/src/build-version.js';
 import { JsonlRpc, JsonlRpcError, JsonlRpcMethodNotFound, JsonlRpcRemoteError } from '../acp/jsonl-rpc.js';
@@ -26,6 +26,8 @@ export class CodexClient {
   private threadId?: string;
   private pending?: TurnWaiter;
   private closing?: Promise<void>;
+  /** Set when this turn asked for an interaction Lifeline cannot answer. */
+  private blocked = false;
 
   constructor(options: AcpClientOptions) {
     this.onEvent = options.onEvent;
@@ -48,7 +50,7 @@ export class CodexClient {
     return this.rpc.start();
   }
 
-  async initialize(): Promise<{ protocolVersion: number }> {
+  async initialize(): Promise<AcpInitializeResult> {
     await this.rpc.sendRequest('initialize', {
       clientInfo: { name: 'lifeline', title: 'Lifeline', version: BUILD_VERSION },
       capabilities: {},
@@ -71,8 +73,14 @@ export class CodexClient {
       cursor = next || undefined;
     } while (cursor && this.models.length < CLI_MODEL_LIMIT);
     this.models = this.models.slice(0, CLI_MODEL_LIMIT);
+    if (!this.model) {
+      const preferred = this.models.find(model => model.isDefault === true) ?? this.models[0];
+      this.model = text(preferred?.model);
+      this.effort = text(preferred?.defaultReasoningEffort);
+    }
+    const catalog = readSessionCatalog(this.configState());
     // This is the normalized Lifeline CLI contract version, not Codex's wire protocol.
-    return { protocolVersion: 1 };
+    return { protocolVersion: 1, ...(catalog ? { catalog } : {}) };
   }
 
   async sessionNew(input: { cwd: string }): Promise<AcpSessionNewResult> {
@@ -80,24 +88,9 @@ export class CodexClient {
   }
 
   async sessionLoad(input: { cwd: string; sessionId: string }): Promise<AcpSessionNewResult> {
-    const result = record(await this.rpc.sendRequest('thread/resume', {
-      threadId: input.sessionId,
-      cwd: input.cwd,
-      excludeTurns: true,
-    }).response);
+    const result = record(await this.resume(input, true));
     const payload = this.adopt(result);
-    const thread = record(result?.thread);
-    const turns = Array.isArray(thread?.turns) ? thread.turns : [];
-    if (turns.length > 0) {
-      for (const turn of turns.slice(-CLI_SESSION_BODY_MAX_ELEMENTS)) {
-        const items = record(turn)?.items;
-        for (const item of Array.isArray(items) ? items : [])
-          this.item(item, true);
-      }
-    }
-    else if (thread?.historyMode === 'paginated') {
-      await this.replayHistory();
-    }
+    await this.hydrate(input, result);
     return payload;
   }
 
@@ -125,6 +118,7 @@ export class CodexClient {
     this.streamed.clear();
     this.completed.clear();
     this.toolTitles.clear();
+    this.blocked = false;
     return new Promise((resolve, reject) => {
       const start = this.rpc.sendRequest('turn/start', {
         threadId: this.threadId,
@@ -215,6 +209,46 @@ export class CodexClient {
     };
   }
 
+  private resume(input: { cwd: string; sessionId: string }, excludeTurns: boolean): Promise<unknown> {
+    return this.rpc.sendRequest('thread/resume', {
+      threadId: input.sessionId,
+      cwd: input.cwd,
+      ...(excludeTurns ? { excludeTurns: true } : {}),
+    }).response;
+  }
+
+  /**
+   * `excludeTurns` leaves `thread.turns` empty for both history modes.
+   * Page recent items when the store can. A store that has not grown pagination
+   * answers `thread/items/list` with -32601; resume again so the legacy turns
+   * come back inline.
+   */
+  private async hydrate(input: { cwd: string; sessionId: string }, result: Record<string, unknown> | undefined): Promise<void> {
+    const turns = record(result?.thread)?.turns;
+    if (Array.isArray(turns) && turns.length > 0) {
+      this.replayTurns(turns);
+      return;
+    }
+    try {
+      await this.replayHistory();
+    }
+    catch (error) {
+      if (!(error instanceof JsonlRpcRemoteError) || error.rpcCode !== -32601)
+        throw error;
+      const full = record(await this.resume(input, false));
+      const recovered = record(full?.thread)?.turns;
+      this.replayTurns(Array.isArray(recovered) ? recovered : []);
+    }
+  }
+
+  private replayTurns(turns: unknown[]): void {
+    for (const turn of turns.slice(-CLI_SESSION_BODY_MAX_ELEMENTS)) {
+      const items = record(turn)?.items;
+      for (const item of Array.isArray(items) ? items : [])
+        this.item(item, true);
+    }
+  }
+
   private async replayHistory(): Promise<void> {
     const items: unknown[] = [];
     let cursor: string | undefined;
@@ -255,7 +289,7 @@ export class CodexClient {
       if (turn?.status === 'completed' || turn?.status === 'interrupted')
         waiter.resolve({ stopReason: turn.status === 'completed' ? 'end_turn' : 'cancelled' });
       else
-        waiter.reject(new JsonlRpcError('provider-error', 'Codex turn failed'));
+        waiter.reject(this.turnFailure());
     }
     else if (method === 'item/started' || method === 'item/completed') {
       this.item(params.item, false, method === 'item/completed');
@@ -302,7 +336,10 @@ export class CodexClient {
 
   private request(method: string, raw: unknown): Promise<unknown> {
     const params = record(raw);
-    if (!params || !this.threadId || (method !== 'item/commandExecution/requestApproval' && method !== 'item/fileChange/requestApproval') || params.threadId !== this.threadId)
+    const supported = method === 'item/commandExecution/requestApproval' || method === 'item/fileChange/requestApproval';
+    if (!supported && params?.threadId === this.threadId)
+      this.blocked = true;
+    if (!params || !this.threadId || !supported || params.threadId !== this.threadId)
       throw new JsonlRpcMethodNotFound(method);
     const network = record(params.networkApprovalContext);
     const operation = text(params.command) || this.toolTitles.get(text(params.itemId)) || 'File changes';
@@ -338,6 +375,15 @@ export class CodexClient {
   private cancelPermissions(): void {
     for (const settle of this.permissions)
       settle('cancel');
+  }
+
+  /** Provider error text stays off this error. The page maps the code. */
+  private turnFailure(): JsonlRpcError {
+    const blocked = this.blocked;
+    this.blocked = false;
+    return blocked
+      ? new JsonlRpcError('unsupported-request', 'unsupported-request')
+      : new JsonlRpcError('provider-error', 'Codex turn failed');
   }
 
   private rejectTurn(error: Error): void {

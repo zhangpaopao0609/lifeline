@@ -518,6 +518,8 @@ export class CliSessionManager {
       const initialized = await client.initialize();
       if (initialized.protocolVersion !== 1)
         throw new JsonlRpcError('unsupported-acp-version', 'unsupported-acp-version');
+      if (initialized.catalog && initialized.catalog.models.length > 0)
+        return { ok: true, data: { catalog: this.rememberCatalog(source, initialized.catalog) } };
       const created = await client.sessionNew({ cwd });
       if (created.catalog && created.catalog.models.length > 0)
         return { ok: true, data: { catalog: this.rememberCatalog(source, created.catalog) } };
@@ -551,7 +553,7 @@ export class CliSessionManager {
     });
     void session.client.prompt(input.text).then(
       () => this.finishPrompt(session),
-      () => this.failPrompt(session),
+      (err: unknown) => this.failPrompt(session, err),
     );
     return { ok: true };
   }
@@ -900,11 +902,18 @@ export class CliSessionManager {
     this.followExternalTranscripts();
   }
 
-  /** A rejected prompt ends the turn. Only an unexpected `exit` is a crash. */
-  private failPrompt(session: LiveSession): void {
+  /**
+   * A rejected prompt ends the turn. Only an unexpected `exit` is a crash.
+   * The text is chosen here. A provider's own error string is not shown.
+   */
+  private failPrompt(session: LiveSession, err?: unknown): void {
     this.finishPrompt(session);
-    if (session.source === 'codex-cli' && !session.closed && !session.crashed)
-      this.setStatus(session, 'idle', 'Codex 请求失败，请检查本机登录状态和模型配置后重试。');
+    if (session.source !== 'codex-cli' || session.closed || session.crashed)
+      return;
+    const unsupported = err instanceof JsonlRpcError && err.code === 'unsupported-request';
+    this.setStatus(session, 'idle', unsupported
+      ? '该请求无法在 Lifeline 里完成。'
+      : 'Codex 请求失败，请重试。');
   }
 
   private crashSession(session: LiveSession): void {
