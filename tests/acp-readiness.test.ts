@@ -2,7 +2,7 @@ import type { CliCapabilities, CommandErrorCode } from '@lifeline/protocol';
 import type { ChildProcess } from 'node:child_process';
 import type { CheckedAtState, ReadinessClient } from '../packages/agent/src/drivers/acp/readiness.js';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
@@ -13,6 +13,7 @@ import {
   classifyReadinessSignal,
   probeReadiness,
   startProviderSession,
+  withCliBinOnPath,
 } from '../packages/agent/src/drivers/acp/readiness.js';
 import {
   planLaunchdProviderSpawn,
@@ -630,6 +631,39 @@ rl.on('line', (line) => {
     assert.equal(called, false);
     assert.equal(message.includes('absolute'), true);
     assert.equal(message.includes(FAKE_KEY), false);
+  });
+
+  it('puts the shebang interpreter on PATH when a shim is linked away from its install', () => {
+    const root = tempDir();
+    const scriptDir = join(root, 'installation', 'lib', 'node_modules', '@openai', 'codex', 'bin');
+    const nodeDir = join(root, 'installation', 'bin');
+    const linkDir = join(root, 'local', 'bin');
+    mkdirSync(scriptDir, { recursive: true });
+    mkdirSync(nodeDir, { recursive: true });
+    mkdirSync(linkDir, { recursive: true });
+    const script = join(scriptDir, 'codex.js');
+    writeFileSync(script, '#!/usr/bin/env node\n');
+    writeFileSync(join(nodeDir, 'node'), '');
+    const link = join(linkDir, 'codex');
+    symlinkSync(script, link);
+
+    const env = withCliBinOnPath({ PATH: '/usr/bin:/bin' }, link);
+
+    assert.equal(env.PATH, `${realpathSync(nodeDir)}:${linkDir}:/usr/bin:/bin`);
+  });
+
+  it('does not walk ancestors for a command that has no env shebang', () => {
+    const root = tempDir();
+    const bin = join(root, 'installation', 'bin');
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, 'node'), '');
+    const command = join(root, 'Vendor', 'codex');
+    mkdirSync(join(root, 'Vendor'), { recursive: true });
+    writeFileSync(command, '');
+
+    const env = withCliBinOnPath({ PATH: '/usr/bin:/bin' }, command);
+
+    assert.equal(env.PATH, `${join(root, 'Vendor')}:/usr/bin:/bin`);
   });
 });
 
