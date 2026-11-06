@@ -1,7 +1,10 @@
-import { ArrowRight, Broadcast, CaretDown, DeviceMobile, Heartbeat, SealCheck } from '@phosphor-icons/react';
+import { ArrowRight, Broadcast, CaretDown, DeviceMobile, Heartbeat, SealCheck, Sun } from '@phosphor-icons/react';
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { CommandBlock } from '../components/CommandBlock';
+import { FloatLayer } from '../components/FloatLayer';
 import { installOsHint, OsSwitch } from '../components/OsSwitch';
+import { ThemeSwitch } from '../components/ThemeSwitch';
 import { useInstallOs } from '../lib/enroll-os';
 import { CONSOLE_PATH } from '../lib/routes';
 import { installCommand, setupCommand } from '../net/enroll';
@@ -128,6 +131,7 @@ function PhoneMock() {
 
 export function LandingPage() {
   const installOs = useInstallOs();
+  const [themeOpen, setThemeOpen] = useState(false);
   return (
     <div className="landing h-full overflow-y-auto">
       <nav className="landing-nav">
@@ -144,6 +148,16 @@ export function LandingPage() {
               </button>
             ))}
           </div>
+          <FloatLayer
+            open={themeOpen}
+            onOpenChange={setThemeOpen}
+            align="right"
+            label="外观"
+            contentClassName="w-[260px]"
+            trigger={<button type="button" aria-label="外观" title="外观" className="icon-btn min-h-11 min-w-11 shrink-0 lg:min-h-8 lg:min-w-8"><Sun size={20} /></button>}
+          >
+            <div className="p-2"><ThemeSwitch /></div>
+          </FloatLayer>
           <Link to={CONSOLE_PATH} className="btn btn-primary min-h-11 lg:min-h-8">
             开始使用
           </Link>

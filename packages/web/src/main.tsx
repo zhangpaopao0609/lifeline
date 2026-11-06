@@ -4,7 +4,9 @@ import { BrowserRouter } from 'react-router-dom';
 import { App } from './App';
 import { installPageZoomLock } from './lib/page-zoom';
 import { bindSocket } from './net/bind';
+import { installTheme } from './store/theme';
 
+installTheme();
 installPageZoomLock();
 bindSocket();
 
