@@ -456,7 +456,7 @@ export class AgentDirectory extends EventEmitter {
         // Read-only: inputAvailable=false and no approval/Live actions; the page only uses this to read the body.
         chatTabs: tabs,
         activeComposerId: tabs[0]?.composerId ?? '',
-        windows: [{ id: windowId, title: '内容源', url: '', chatTabs: tabs }],
+        windows: [{ id: windowId, title: '会话源·只读', url: '', chatTabs: tabs }],
         activeWindowId: windowId,
         cdpIssue: live?.cdpIssue ?? null,
         liveIssue: live?.liveIssue ?? null,

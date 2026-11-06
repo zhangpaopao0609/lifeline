@@ -43,22 +43,20 @@ describe('machineNotice', () => {
     assert.equal(notice.displaced, '已顶替旧 agent');
   });
 
-  it('is rendered by both row kinds, normal machines and content sources', () => {
-    // The shared copy is the point of the requirement, so this asserts the wiring rather than the
-    // wording twice: `MachineList` must call the function for both maps and render both markers.
+  it('is rendered on every machine row, including read-only ones', () => {
+    // One row template draws controllable and content-only machines. The notice has to live in that
+    // template: a second list that forgot it would hide a displaced Linux agent.
     const list = readFileSync(
       fileURLToPath(new URL('../packages/web/src/components/MachineList.tsx', import.meta.url)),
       'utf-8',
     );
-    // Slice per row kind: counting occurrences over the whole file would stay green if one row kind
-    // lost the notice and the other grew a second copy of it.
-    const contentSourcesAt = list.indexOf('contentSources.map');
-    assert.notEqual(contentSourcesAt, -1, 'missing the content-source map');
-    const rowsByKind = [['normal', list.slice(0, contentSourcesAt)], ['content-source', list.slice(contentSourcesAt)]] as const;
-    for (const [kind, rows] of rowsByKind) {
-      assert.match(rows, /machineNotice\(m\)/, `${kind} rows must compute the notice`);
-      assert.match(rows, /\{notice\.displaced &&/, `${kind} rows must render the notice`);
-      assert.match(rows, /\{notice\.devBuild &&/, `${kind} rows must render the dev marker`);
-    }
+    const mapAt = list.indexOf('machines.map');
+    assert.notEqual(mapAt, -1, 'missing the machine map');
+    assert.equal(list.includes('contentSources.map'), false);
+    const rows = list.slice(mapAt);
+    assert.match(rows, /machineNotice\(m\)/);
+    assert.match(rows, /\{notice\.displaced &&/);
+    assert.match(rows, /\{notice\.devBuild &&/);
+    assert.match(rows, /m\.contentOnly/);
   });
 });
