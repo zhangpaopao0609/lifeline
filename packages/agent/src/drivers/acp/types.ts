@@ -36,6 +36,8 @@ export interface AcpSessionNewResult {
 
 export interface AcpInitializeResult {
   protocolVersion: number;
+  /** Model list already known after initialize. A catalog probe can skip session creation. */
+  catalog?: CliModelCatalog;
 }
 
 export interface AcpPromptResult {

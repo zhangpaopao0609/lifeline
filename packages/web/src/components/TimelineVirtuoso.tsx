@@ -3,6 +3,7 @@ import type { ListRange, VirtuosoHandle } from 'react-virtuoso';
 import type { PagingState } from '../lib/timeline-paging';
 import type { TlSnapshot } from '../lib/timeline-persist';
 import type { Segment } from './timeline-segments';
+import { ArrowDown } from '@phosphor-icons/react';
 import { forwardRef, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso } from 'react-virtuoso';
 import { markWork } from '../lib/cursor-activity';
@@ -39,6 +40,13 @@ const OVERSCAN_PX = 600;
 
 /** Paging re-arm distance: after a page fires, scrolling below this re-arms (anti chain-drag). */
 const REARM_PX = 50;
+
+/**
+ * "回到底部" affordance: show once the view is this far from the tail, hide again only near the tail.
+ * Two thresholds = hysteresis, so a view resting near the edge does not flicker.
+ */
+const JUMP_SHOW_PX = 320;
+const JUMP_HIDE_PX = 48;
 
 /**
  * Production default for `onMaybePage`: resolve the cursor from the store and emit `session:get { before }` —
@@ -223,6 +231,24 @@ export function TimelineVirtuoso({ sessionKey, bindHandle, bindScroller, onMaybe
   const touchGuardRef = useRef(onTouchMoveGuard);
   touchGuardRef.current = onTouchMoveGuard;
   /**
+   * "回到底部" visibility. The new-message pill only covers "away from the bottom *while* messages arrive";
+   * a plain scroll-up (or a restored mid-history reading position) used to leave no way back but flicking.
+   *
+   * Measured from the scroller, not read off `atBottomStateChange`: that flips at ~4px, which would pop the
+   * button on every tiny nudge. `scrollHeight - scrollTop - clientHeight` covers the whole loaded body
+   * (virtual spacers included), and the functional updater means a non-changing verdict bails out of re-render.
+   */
+  const [showJumpToBottom, setShowJumpToBottom] = useState(false);
+  const updateJumpToBottom = useCallback(() => {
+    const sc = scrollerElRef.current;
+    if (!sc)
+      return;
+    const distance = sc.scrollHeight - sc.scrollTop - sc.clientHeight;
+    setShowJumpToBottom(prev => (prev ? distance > JUMP_HIDE_PX : distance > JUMP_SHOW_PX));
+  }, []);
+  const updateJumpRef = useRef(updateJumpToBottom);
+  updateJumpRef.current = updateJumpToBottom;
+  /**
    * Identity-stable on purpose: the library re-publishes `scrollerRef` on every parent re-render and calls
    * it with null then the same element — with a per-render identity that re-fired the null-out branch below
    * and re-attached all listeners per re-render (measured: listener count grows linearly in a streaming
@@ -249,6 +275,7 @@ export function TimelineVirtuoso({ sessionKey, bindHandle, bindScroller, onMaybe
     el.addEventListener('scroll', () => {
       onScrollPagingRef.current();
       schedulePersistRef.current();
+      updateJumpRef.current();
     }, { passive: true });
     node.addEventListener('touchmove', (e: TouchEvent) => touchGuardRef.current(e), { passive: false });
   }, []);
@@ -473,6 +500,13 @@ export function TimelineVirtuoso({ sessionKey, bindHandle, bindScroller, onMaybe
     if (atBottom)
       setPill(p => pillCount(p, { type: 'bottom', atBottom: true }));
   }, []);
+  /** One action behind both faces of the affordance (count pill / plain "回到底部"). */
+  const jumpToBottom = useCallback(() => {
+    setPill(p => pillCount(p, { type: 'seen' }));
+    const sc = scrollerElRef.current;
+    if (sc)
+      sc.scrollTop = sc.scrollHeight;
+  }, []);
 
   // `components` must stay an object — passing `undefined` overwrites the library's internal default {} and crashes it.
   // Memoized: a fresh object each render would churn the library's component-context subscribers.
@@ -529,18 +563,15 @@ export function TimelineVirtuoso({ sessionKey, bindHandle, bindScroller, onMaybe
           );
         }}
       />
-      {pill > 0 && (
+      {(pill > 0 || showJumpToBottom) && (
         <button
           type="button"
+          aria-label="回到底部"
           className="btn btn-primary absolute bottom-3 right-4 z-10 rounded-full px-3.5 py-1.5 shadow-md"
-          onClick={() => {
-            setPill(p => pillCount(p, { type: 'seen' }));
-            const sc = scrollerElRef.current;
-            if (sc)
-              sc.scrollTop = sc.scrollHeight;
-          }}
+          onClick={jumpToBottom}
         >
           {pill > 1 ? `${pill} 条新消息` : '回到底部'}
+          <ArrowDown size={14} weight="bold" />
         </button>
       )}
     </div>

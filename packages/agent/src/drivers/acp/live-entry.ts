@@ -4,19 +4,20 @@ import type { CheckedAtState, ReadinessClient, ReadinessReport } from './readine
 import type { AcpClientOptions } from './types.js';
 import { tmpdir } from 'node:os';
 import { isAbsolute } from 'node:path';
-import { assertCliCatalog, assertCliStart, assertCliTarget, isCliPlatform } from '@lifeline/protocol';
+import { assertCliCatalog, assertCliStart, assertCliTarget, CLI_SOURCES, isCliPlatform } from '@lifeline/protocol';
 import { CliSessionManager } from '../../cli-session-manager.js';
 import { readServerCommand } from '../../server-inbound.js';
-import { AcpClient } from './client.js';
 import { listCursorModels } from './cursor-models.js';
 import { JsonlRpcError, JsonlRpcRemoteError } from './jsonl-rpc.js';
-import { codebuddyAcpProfile, cursorAcpProfile } from './profiles.js';
+import { acpProfileFor } from './profiles.js';
+import { createProviderClient } from './provider-client.js';
 import { acpSpawnAllowed, buildChildEnv, probeReadiness, takeCheckedAt, withCliBinOnPath } from './readiness.js';
 import { isCursorModelId } from './session-catalog.js';
 
-const COMMAND_ENV: Record<CliSource, 'LIFELINE_CURSOR_CLI' | 'LIFELINE_CODEBUDDY_CLI'> = {
+const COMMAND_ENV: Record<CliSource, string> = {
   'cursor-cli': 'LIFELINE_CURSOR_CLI',
   'codebuddy-cli': 'LIFELINE_CODEBUDDY_CLI',
+  'codex-cli': 'LIFELINE_CODEX_CLI',
 };
 
 export interface LiveAcpClientInput {
@@ -106,7 +107,7 @@ export function attachLiveCliListeners(
  * The returned env is the only place a CodeBuddy key is copied.
  */
 export function buildLiveAcpClientOptions(input: LiveAcpClientInput): AcpClientOptions {
-  const profile = input.source === 'cursor-cli' ? cursorAcpProfile : codebuddyAcpProfile;
+  const profile = acpProfileFor(input.source);
   const command = savedCommand(input.env, input.source);
   if (command == null)
     throw new JsonlRpcError('binary-missing', 'binary-missing');
@@ -132,7 +133,7 @@ export function buildLiveAcpClientOptions(input: LiveAcpClientInput): AcpClientO
 /** Platform gate runs before `construct`, so a refused host never builds a client. */
 export function openLiveAcpClient(
   input: LiveAcpClientInput,
-  construct: (options: AcpClientOptions) => CliSessionClient = options => new AcpClient(options),
+  construct: (options: AcpClientOptions) => CliSessionClient = createProviderClient,
 ): CliSessionClient {
   if (!acpSpawnAllowed(input.platform ?? process.platform, input.env))
     throw new JsonlRpcError('unsupported-platform', 'unsupported-platform');
@@ -145,7 +146,7 @@ export function createLiveCliEntry(options: LiveCliEntryOptions): LiveCliEntry {
   const parentEnv = options.env ?? process.env;
   const platform = options.platform ?? process.platform;
   const now = options.now ?? Date.now;
-  const construct = options.construct ?? (clientOptions => new AcpClient(clientOptions));
+  const construct = options.construct ?? createProviderClient;
   const manager = new CliSessionManager({
     epoch: options.epoch,
     emit: options.emit,
@@ -203,7 +204,7 @@ export function createLiveCliEntry(options: LiveCliEntryOptions): LiveCliEntry {
 
   function orderedCapabilityRows(): CliSourceAvailability[] {
     const ordered: CliSourceAvailability[] = [];
-    for (const source of ['cursor-cli', 'codebuddy-cli'] as const) {
+    for (const source of CLI_SOURCES) {
       const row = capabilityRows.get(source);
       if (row)
         ordered.push(row);

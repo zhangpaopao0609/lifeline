@@ -1,4 +1,4 @@
-import type { CliApproval, CliApprovalOptionKind } from '@lifeline/protocol';
+import type { CliApproval, CliApprovalOptionKind, CliSource } from '@lifeline/protocol';
 import type { AcpEnvInput, AcpProfile } from './types.js';
 
 const CURSOR_KINDS = new Map<string, CliApprovalOptionKind>([
@@ -44,6 +44,35 @@ export const codebuddyAcpProfile: AcpProfile = {
     return codebuddyEnv(input);
   },
 };
+
+const CODEX_KINDS = new Map<string, CliApprovalOptionKind>([
+  ['allow_once', 'allow_once'],
+  ['reject_once', 'reject_once'],
+]);
+
+/** Spawn and normalized approval metadata; CodexClient speaks native app-server. */
+export const codexCliProfile: AcpProfile = {
+  source: 'codex-cli',
+  command: 'codex',
+  args: ['app-server', '--listen', 'stdio://'],
+  mapOptionKind: kind => mapKind(CODEX_KINDS, kind),
+  toCliApproval: (raw, approvalId, sessionId) => buildCliApproval(CODEX_KINDS, raw, approvalId, sessionId),
+  childEnv(input) {
+    const env = omitCodebuddyEnv(input?.base);
+    delete env.DEEPSEEK_API_KEY;
+    return env;
+  },
+};
+
+const CLI_PROFILES: Record<CliSource, AcpProfile> = {
+  'cursor-cli': cursorAcpProfile,
+  'codebuddy-cli': codebuddyAcpProfile,
+  'codex-cli': codexCliProfile,
+};
+
+export function acpProfileFor(source: CliSource): AcpProfile {
+  return CLI_PROFILES[source];
+}
 
 function mapKind(table: ReadonlyMap<string, CliApprovalOptionKind>, kind: string): CliApprovalOptionKind {
   return table.get(kind) ?? 'unknown';

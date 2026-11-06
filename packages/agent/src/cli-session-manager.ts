@@ -32,8 +32,8 @@ import { catalogFreshness, readStoredCatalog, writeStoredCatalog } from './drive
 import { codebuddyProjectSlug, createCodebuddyCliFollow, projectCodebuddyCliGrowth, readCodebuddyCliGrowth } from './drivers/acp/codebuddy-cli-transcript.js';
 import { peekCursorModels } from './drivers/acp/cursor-models.js';
 import { JsonlRpcError } from './drivers/acp/jsonl-rpc.js';
-import { codebuddyAcpProfile, cursorAcpProfile } from './drivers/acp/profiles.js';
-import { currentModelLabel, cursorEffortOf, cursorListedId, cursorListIdFromParameters, cursorModelFamily, impliedCursorEffort, readCursorParameters, resolveCursorListSelection, rewriteCursorEffort } from './drivers/acp/session-catalog.js';
+import { acpProfileFor } from './drivers/acp/profiles.js';
+import { currentModelLabel, cursorEffortOf, cursorListedId, cursorListIdFromParameters, cursorModelFamily, impliedCursorEffort, readCursorParameters, readSessionCatalog, resolveCursorListSelection, rewriteCursorEffort } from './drivers/acp/session-catalog.js';
 import { cliResumeCommand, readCliSessionLedger, writeCliSessionLedger } from './drivers/acp/session-ledger.js';
 
 const SYNC_RETRY_AFTER_MS = 120_000;
@@ -518,6 +518,8 @@ export class CliSessionManager {
       const initialized = await client.initialize();
       if (initialized.protocolVersion !== 1)
         throw new JsonlRpcError('unsupported-acp-version', 'unsupported-acp-version');
+      if (initialized.catalog && initialized.catalog.models.length > 0)
+        return { ok: true, data: { catalog: this.rememberCatalog(source, initialized.catalog) } };
       const created = await client.sessionNew({ cwd });
       if (created.catalog && created.catalog.models.length > 0)
         return { ok: true, data: { catalog: this.rememberCatalog(source, created.catalog) } };
@@ -551,7 +553,7 @@ export class CliSessionManager {
     });
     void session.client.prompt(input.text).then(
       () => this.finishPrompt(session),
-      () => this.failPrompt(session),
+      (err: unknown) => this.failPrompt(session, err),
     );
     return { ok: true };
   }
@@ -601,7 +603,8 @@ export class CliSessionManager {
           return { ok: false, errorCode: 'provider-error' };
       }
       else {
-        await client.setConfigOption(session.modelConfigId, input.modelId);
+        const result = await client.setConfigOption(session.modelConfigId, input.modelId);
+        refreshCodexCatalog(session.source, session, result);
       }
     }
     catch {
@@ -656,7 +659,8 @@ export class CliSessionManager {
         return { ok: false, errorCode: 'invalid-payload' };
       if (input.thinking !== (model?.thinking?.current ?? catalog?.thinking?.current)) {
         try {
-          await client.setConfigOption(session.thinkingConfigId, input.thinking);
+          const result = await client.setConfigOption(session.thinkingConfigId, input.thinking);
+          refreshCodexCatalog(session.source, session, result);
         }
         catch {
           return { ok: false, errorCode: 'provider-error' };
@@ -898,9 +902,18 @@ export class CliSessionManager {
     this.followExternalTranscripts();
   }
 
-  /** A rejected prompt ends the turn. Only an unexpected `exit` is a crash. */
-  private failPrompt(session: LiveSession): void {
+  /**
+   * A rejected prompt ends the turn. Only an unexpected `exit` is a crash.
+   * The text is chosen here. A provider's own error string is not shown.
+   */
+  private failPrompt(session: LiveSession, err?: unknown): void {
     this.finishPrompt(session);
+    if (session.source !== 'codex-cli' || session.closed || session.crashed)
+      return;
+    const unsupported = err instanceof JsonlRpcError && err.code === 'unsupported-request';
+    this.setStatus(session, 'idle', unsupported
+      ? '该请求无法在 Lifeline 里完成。'
+      : 'Codex 请求失败，请重试。');
   }
 
   private crashSession(session: LiveSession): void {
@@ -1072,7 +1085,8 @@ export class CliSessionManager {
       if (!related || !session.modelConfigId)
         return false;
       try {
-        await client.setConfigOption(session.modelConfigId, record.modelId);
+        const result = await client.setConfigOption(session.modelConfigId, record.modelId);
+        refreshCodexCatalog(session.source, session, result);
       }
       catch {
         return false;
@@ -1087,7 +1101,7 @@ export class CliSessionManager {
       if (label)
         session.modelLabel = label;
     }
-    if (session.source === 'codebuddy-cli' && record.thinking) {
+    if (session.source !== 'cursor-cli' && record.thinking) {
       const chosen = catalog.models.find(model => model.id === catalog.currentModelId);
       const levels = chosen?.thinking?.levels ?? catalog.thinking?.levels;
       const current = chosen?.thinking?.current ?? catalog.thinking?.current;
@@ -1095,7 +1109,8 @@ export class CliSessionManager {
         return !record.modelId || catalog.currentModelId === record.modelId;
       if (record.thinking !== current) {
         try {
-          await client.setConfigOption(session.thinkingConfigId, record.thinking);
+          const result = await client.setConfigOption(session.thinkingConfigId, record.thinking);
+          refreshCodexCatalog(session.source, session, result);
         }
         catch {
           return false;
@@ -1135,7 +1150,7 @@ export class CliSessionManager {
   private onPermission(session: LiveSession, event: AcpPermissionEvent): void {
     if (session.closed || session.crashed || !session.ready)
       return;
-    const profile = session.source === 'cursor-cli' ? cursorAcpProfile : codebuddyAcpProfile;
+    const profile = acpProfileFor(session.source);
     const approval = profile.toCliApproval(event.raw, randomUUID(), session.sessionId);
     session.approvals.push({ ...approval, respond: event.respond });
     this.emitIncremental('cli:approval', {
@@ -1305,6 +1320,23 @@ export class CliSessionManager {
   }
 }
 
+/** Codex model changes replace the complete, model-dependent effort state. */
+function refreshCodexCatalog(source: CliSource, target: { catalog?: CliModelCatalog }, result: unknown): void {
+  if (source !== 'codex-cli')
+    return;
+  const catalog = readSessionCatalog(result);
+  if (!catalog)
+    return;
+  if (target.catalog) {
+    delete target.catalog.thinking;
+    delete target.catalog.currentModelId;
+    Object.assign(target.catalog, catalog);
+  }
+  else {
+    target.catalog = catalog;
+  }
+}
+
 function freezeSession(session: LiveSession): FrozenSession {
   const view = session.assembler.trim();
   return {
@@ -1385,7 +1417,7 @@ function fullPayload(epoch: string, snapshotId: string, session: LiveSession) {
 function recordedSelection(session: LiveSession): { modelId?: string; thinking?: string } {
   const modelId = session.catalog?.currentModelId;
   const model = session.catalog?.models.find(item => item.id === modelId);
-  const thinking = session.source === 'codebuddy-cli'
+  const thinking = session.source !== 'cursor-cli'
     ? (model?.thinking?.current ?? session.catalog?.thinking?.current)
     : undefined;
   return {
@@ -1501,7 +1533,8 @@ async function applyRequestedSelection(
         throw new JsonlRpcError('provider-error', 'cursor model was not applied');
     }
     else {
-      await client.setConfigOption(created.modelConfigId, input.modelId);
+      const result = await client.setConfigOption(created.modelConfigId, input.modelId);
+      refreshCodexCatalog(input.source, created, result);
     }
     catalog.currentModelId = input.modelId;
   }
@@ -1515,7 +1548,8 @@ async function applyRequestedSelection(
     && levels.some(level => level.value === input.thinking)
   ) {
     try {
-      await client.setConfigOption(created.thinkingConfigId, input.thinking);
+      const result = await client.setConfigOption(created.thinkingConfigId, input.thinking);
+      refreshCodexCatalog(input.source, created, result);
       if (catalog.thinking)
         catalog.thinking.current = input.thinking;
     }

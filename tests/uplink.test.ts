@@ -203,11 +203,11 @@ describe('Uplink agent:superseded', () => {
 const DARWIN_CLI_ACP: CliAcpCapability = {
   protocolVersion: 1,
   platform: 'darwin',
-  sources: [{ source: 'cursor-cli' }, { source: 'codebuddy-cli' }],
+  sources: [{ source: 'cursor-cli' }, { source: 'codebuddy-cli' }, { source: 'codex-cli' }],
 };
 
 describe('static cliAcp', () => {
-  it('declares both CLI sources on darwin and linux and omits the field elsewhere', () => {
+  it('declares supported CLI sources on darwin and linux and omits the field elsewhere', () => {
     assert.deepEqual(staticCliAcp('darwin', { LIFELINE_LINUX_CDP: '1' }), DARWIN_CLI_ACP);
     assert.deepEqual(staticCliAcp('darwin', {}), DARWIN_CLI_ACP);
     assert.deepEqual(staticCliAcp('linux', {}), { ...DARWIN_CLI_ACP, platform: 'linux' });
