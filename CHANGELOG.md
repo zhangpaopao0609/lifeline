@@ -9,6 +9,8 @@
 - On a Mac, start a Codex session from the console, beside the Cursor and CodeBuddy command-line sessions.
 - Choose the model and thinking level. Command and file-change approvals use the same approval bar.
 - Opening a session again shows the recent conversation.
+- Scroll up away from the latest message and a "Back to bottom" button appears — no need to flick all the way down. It still turns into "N new messages" when messages arrive while you are reading history.
+- It shows up past a real distance from the bottom and only hides once you are back at the tail, so nudging near the bottom does not make it flicker. Reopening a session at an old reading position shows it too.
 
 ### Bug Fixes
 
