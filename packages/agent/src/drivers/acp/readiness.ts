@@ -1,10 +1,9 @@
 import type { CliAvailability, CliCapabilities, CliSource, CommandErrorCode } from '@lifeline/protocol';
-import type { AcpProfile } from './types.js';
-import { statSync } from 'node:fs';
-import { dirname, isAbsolute } from 'node:path';
-import { AcpClient } from './client.js';
+import { closeSync, openSync, readSync, realpathSync, statSync } from 'node:fs';
+import { dirname, isAbsolute, join } from 'node:path';
 import { JsonlRpcError, JsonlRpcRemoteError } from './jsonl-rpc.js';
-import { codebuddyAcpProfile, cursorAcpProfile } from './profiles.js';
+import { acpProfileFor } from './profiles.js';
+import { createProviderClient } from './provider-client.js';
 
 const DETAIL_MAX = 160;
 
@@ -95,7 +94,7 @@ export function buildChildEnv(input: ChildEnvInput): { env: NodeJS.ProcessEnv; h
   const base: NodeJS.ProcessEnv = { ...input.base };
   delete base.AGENT_TOKEN;
   delete base.REMOTE_URL;
-  const env = profileFor(input.source).childEnv({
+  const env = acpProfileFor(input.source).childEnv({
     base,
     apiKey: input.apiKey,
     environment: input.environment,
@@ -107,18 +106,92 @@ export function buildChildEnv(input: ChildEnvInput): { env: NodeJS.ProcessEnv; h
 }
 
 /**
- * launchd's PATH is `/usr/bin:/bin`. CodeBuddy is `#!/usr/bin/env node`, and fnm
- * keeps that `node` beside the CLI shim. An absolute command still fails without it.
+ * launchd's PATH is `/usr/bin:/bin`. A `#!/usr/bin/env node` shim still has to find
+ * that interpreter. The command directory covers a shim that sits beside `node`.
+ * A symlink elsewhere resolves to the real file, then walks up to the install's
+ * `bin/<interpreter>`. A native binary has no env shebang and only contributes
+ * its own directory.
  */
 export function withCliBinOnPath(env: NodeJS.ProcessEnv, command: string): NodeJS.ProcessEnv {
-  const bin = dirname(command);
-  if (!isAbsolute(bin))
-    return env;
+  const dirs: string[] = [];
+  const commandDir = dirname(command);
+  if (isAbsolute(commandDir))
+    dirs.push(commandDir);
+  const resolved = resolvedCommand(command);
+  const tool = envShebangTool(resolved);
+  if (tool) {
+    const interpreterDir = interpreterDirectory(resolved, tool);
+    if (interpreterDir)
+      dirs.unshift(interpreterDir);
+  }
+  return prependPath(env, dirs);
+}
+
+function resolvedCommand(command: string): string {
+  try {
+    return realpathSync(command);
+  }
+  catch {
+    return command;
+  }
+}
+
+/** Interpreter name from `#!/usr/bin/env [-S] name`. An absolute shebang needs no PATH entry. */
+function envShebangTool(file: string): string | undefined {
+  let fd: number;
+  try {
+    fd = openSync(file, 'r');
+  }
+  catch {
+    return undefined;
+  }
+  try {
+    const buf = Buffer.alloc(160);
+    const n = readSync(fd, buf, 0, buf.length, 0);
+    const line = buf.subarray(0, n).toString('utf8').split('\n', 1)[0] ?? '';
+    return /^#!\s*\/usr\/bin\/env(?:\s+-S)?\s+([\w.+-]+)/.exec(line)?.[1];
+  }
+  finally {
+    closeSync(fd);
+  }
+}
+
+/** Nearest directory that contains `tool`, either beside this file or in an ancestor `bin`. */
+function interpreterDirectory(file: string, tool: string): string | undefined {
+  let dir = dirname(file);
+  for (;;) {
+    if (isFile(join(dir, tool)))
+      return dir;
+    if (isFile(join(dir, 'bin', tool)))
+      return join(dir, 'bin');
+    const parent = dirname(dir);
+    if (parent === dir)
+      return undefined;
+    dir = parent;
+  }
+}
+
+function isFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  }
+  catch {
+    return false;
+  }
+}
+
+function prependPath(env: NodeJS.ProcessEnv, dirs: readonly string[]): NodeJS.ProcessEnv {
   const current = env.PATH ?? '';
   const parts = current.split(':').filter(part => part.length > 0);
-  if (parts.includes(bin))
+  const prefix: string[] = [];
+  for (const dir of dirs) {
+    if (!isAbsolute(dir) || prefix.includes(dir) || parts.includes(dir))
+      continue;
+    prefix.push(dir);
+  }
+  if (prefix.length === 0)
     return env;
-  return { ...env, PATH: [bin, ...parts].join(':') };
+  return { ...env, PATH: [...prefix, ...parts].join(':') };
 }
 
 /** Short-circuit: platform, cwd, spawn, ACP version, credential, then provider-error. */
@@ -255,8 +328,8 @@ async function collect(input: ReadinessInput, session: boolean): Promise<{ verdi
 }
 
 function openDefault(input: ReadinessInput, env: NodeJS.ProcessEnv): ReadinessClient {
-  const profile = profileFor(input.source);
-  return new AcpClient({
+  const profile = acpProfileFor(input.source);
+  return createProviderClient({
     profile,
     command: input.command,
     args: input.args ? [...input.args] : [...profile.args],
@@ -343,8 +416,4 @@ function sanitizeCliDetail(text: string, secrets: readonly string[]): string {
   if (out.length > DETAIL_MAX)
     out = out.slice(0, DETAIL_MAX);
   return out.trim() || text;
-}
-
-function profileFor(source: CliSource): AcpProfile {
-  return source === 'cursor-cli' ? cursorAcpProfile : codebuddyAcpProfile;
 }

@@ -1079,6 +1079,16 @@ describe('CLI 布局与 IDE 分界', () => {
 });
 
 describe('cli model catalog', () => {
+  it('clears a retryable Codex failure on the next status', () => {
+    let state = createCliState();
+    ({ state } = applyCliEvent(state, snapshotEvent('agent-a', snap('epoch-a', [snapSession({ source: 'codex-cli' })]), 0)));
+    const status = { epoch: 'epoch-a', source: 'codex-cli' as const, sessionId: 'sess-1', status: 'idle' as const };
+    ({ state } = applyCliEvent(state, { type: 'status', agentId: 'agent-a', status: { ...status, error: 'Codex request failed' } }));
+    assert.equal(cliSession(state, 'agent-a', 'sess-1')?.error, 'Codex request failed');
+    ({ state } = applyCliEvent(state, { type: 'status', agentId: 'agent-a', status: { ...status, status: 'running' } }));
+    assert.equal(cliSession(state, 'agent-a', 'sess-1')?.error, undefined);
+  });
+
   const catalog: CliModelCatalog = {
     models: [
       { id: 'glm-5.2', label: 'GLM 5.2' },

@@ -5,7 +5,7 @@ import type { DaemonOpts, DaemonOutcome } from '../ui.js';
 import { execSync, spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
-import { codebuddyAcpProfile, cursorAcpProfile } from '../../../agent/src/drivers/acp/profiles.js';
+import { acpProfileFor } from '../../../agent/src/drivers/acp/profiles.js';
 import { buildChildEnv, withCliBinOnPath } from '../../../agent/src/drivers/acp/readiness.js';
 import { BUILD_VERSION } from '../build-version.js';
 import { applyCodeBuddyCdpArgv, applyCursorCdpArgv, revertCodeBuddyCdpArgvIfManaged, revertCursorCdpArgvIfManaged } from '../cdp-argv-state.js';
@@ -431,7 +431,7 @@ export function planLaunchdProviderSpawn(input: {
 }): LaunchdProviderPlan {
   if (!isAbsolute(input.command))
     throw new Error('CLI provider path must be an absolute path');
-  const profile = input.source === 'cursor-cli' ? cursorAcpProfile : codebuddyAcpProfile;
+  const profile = acpProfileFor(input.source);
   const { env } = buildChildEnv({
     source: input.source,
     base: input.baseEnv,

@@ -65,13 +65,17 @@ export function cliResumeCommand(record: CliSessionRecord, platform: NodeJS.Plat
   const cd = platform === 'win32' ? `cd /d ${quote(record.cwd)}` : `cd ${quote(record.cwd)}`;
   const args = record.source === 'cursor-cli'
     ? ['cursor-agent', '--resume', quote(record.providerSessionId)]
-    : ['codebuddy', '--resume', quote(record.providerSessionId)];
+    : record.source === 'codex-cli'
+      ? ['codex', 'resume', quote(record.providerSessionId)]
+      : ['codebuddy', '--resume', quote(record.providerSessionId)];
   if (record.modelId) {
     const modelId = record.source === 'cursor-cli' ? cursorCliModelId(record.modelId) : record.modelId;
     args.push('--model', quote(modelId));
   }
   if (record.source === 'codebuddy-cli' && record.thinking)
     args.push('--effort', quote(record.thinking));
+  if (record.source === 'codex-cli' && record.thinking)
+    args.push('-c', quote(`model_reasoning_effort=${JSON.stringify(record.thinking)}`));
   return `${cd} && ${args.join(' ')}`;
 }
 

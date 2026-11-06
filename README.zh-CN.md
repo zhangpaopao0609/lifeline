@@ -51,6 +51,14 @@ lifeline setup --server-url http://<your-lifeline-server>
 
 `lifeline status` 会与最新版比对，落后即提示 `lifeline update`。
 
+## Codex 命令行（macOS）
+
+先在受控机器安装官方 [Codex CLI](https://developers.openai.com/codex/cli)，并运行 `codex login` 完成本机登录。`lifeline setup` 会从 PATH 发现 `codex`；已安装的用户可在 `~/.lifeline/config.json` 设置绝对路径 `codexCliPath`，升级 agent 和服务端后运行 `lifeline start`。
+
+在 Agent CLI 中新建会话，选择 **Codex**，填写工作目录的绝对路径。Lifeline 使用原生 `codex app-server --listen stdio://` 协议，沿用 CLI 本机的登录与沙箱设置，复用现有的模型/推理强度选择、时间线、命令/文件操作的单次审批、停止和重启恢复流程。关闭会话会取消订阅并结束进程，不归档已保存的 Codex 会话。终端恢复命令使用 `codex resume`。
+
+需要支持 app-server v2 和 `thread/resume` 的 Codex CLI；分页历史还需支持 `thread/items/list`。模型列表代表 CLI 的可选模型，不保证当前账号能调用。只提供命令/文件的单次审批，不自动接受永久授权或尚未支持的交互工具请求。此功能沿用 Lifeline 现有的 macOS CLI 控制范围。
+
 ## 卸载
 
 ```bash

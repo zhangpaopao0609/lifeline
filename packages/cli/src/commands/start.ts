@@ -96,6 +96,11 @@ export function agentRuntimeEnv(config: CliConfig, base: NodeJS.ProcessEnv = pro
     env.LIFELINE_CODEBUDDY_CLI = codebuddy;
   else
     delete env.LIFELINE_CODEBUDDY_CLI;
+  const codex = acceptedCliPath(config.codexCliPath);
+  if (codex)
+    env.LIFELINE_CODEX_CLI = codex;
+  else
+    delete env.LIFELINE_CODEX_CLI;
   delete env.CODEBUDDY_API_KEY;
   delete env.CODEBUDDY_INTERNET_ENVIRONMENT;
   return env;
