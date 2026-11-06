@@ -2,6 +2,20 @@
 
 **English** | [简体中文](./CHANGELOG.zh-CN.md)
 
+## [0.5.0] - 2026-11-06
+
+### Features
+
+- On a Mac, start a Codex session from the console, beside the Cursor and CodeBuddy command-line sessions.
+- Choose the model and thinking level. Command and file-change approvals use the same approval bar.
+- Opening a session again shows the recent conversation.
+
+### Bug Fixes
+
+- A command installed as a Node shim outside its Node directory still starts. The agent finds that install's `node` instead of expecting it on the background PATH.
+- Reading the model list no longer leaves an empty Codex thread behind.
+- A Codex request Lifeline cannot finish says so on the page, without copying the provider's own error text.
+
 ## [0.4.0] - 2026-11-05
 
 ### Features
