@@ -84,6 +84,30 @@
   --bg-nav: rgba(255, 255, 255, .86);
 }
 
+/* A theme change reveals the new appearance behind one straight edge, moving from the top-left toward the bottom-right. The edge is steep: about 2.2 viewport-heights of drop per viewport-width, so on a wide screen it stays nearer vertical than the screen diagonal. */
+::view-transition-group(root) {
+  animation-duration: 1800ms;
+}
+
+::view-transition-image-pair(root) {
+  isolation: auto;
+}
+
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
+::view-transition-new(root) {
+  animation: theme-wipe 1800ms cubic-bezier(.2, .8, .2, 1);
+}
+
+@keyframes theme-wipe {
+  from { clip-path: polygon(0 0, 0 0, 0 0); }
+  to { clip-path: polygon(0 0, 165% 0, 0 367%); }
+}
+
 /* ------------------------------------------------------------
    Base
    ------------------------------------------------------------ */

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
 import { JSDOM } from 'jsdom';
-import { installTheme, useThemeStore } from '../packages/web/src/store/theme.ts';
+import { installTheme, switchTheme, useThemeStore } from '../packages/web/src/store/theme.ts';
 
 const HTML = readFileSync(new URL('../packages/web/index.html', import.meta.url), 'utf8');
 
@@ -67,6 +67,7 @@ describe('web theme', () => {
       assert.equal(p.firstPaint, expected);
       assert.equal(p.root.dataset.theme, expected);
       assert.equal(p.root.style.colorScheme, expected);
+      assert.equal(useThemeStore.getState().theme, expected);
       assert.equal(useThemeStore.getState().preference, saved === 'light' || saved === 'system' ? saved : 'dark');
     });
   }
@@ -91,11 +92,21 @@ describe('web theme', () => {
     assert.equal(p.storage!.getItem('lifeline:theme'), 'system');
     p.systemChange(true);
     assert.equal(p.root.dataset.theme, 'dark');
+    assert.equal(useThemeStore.getState().theme, 'dark');
     assert.equal(p.root.style.colorScheme, 'dark');
     p.systemChange(false);
     assert.equal(p.root.dataset.theme, 'light');
     assert.equal(p.root.style.colorScheme, 'light');
     assert.equal(useThemeStore.getState().preference, 'system');
+  });
+
+  it('switches at once when the browser has no view transition', (t) => {
+    const p = page(t);
+    switchTheme('light');
+    assert.equal(p.root.dataset.theme, 'light');
+    assert.equal(useThemeStore.getState().preference, 'light');
+    switchTheme('light');
+    assert.equal(p.root.dataset.theme, 'light');
   });
 
   it('still switches when reading and writing storage is blocked', (t) => {

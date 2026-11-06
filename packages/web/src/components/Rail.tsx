@@ -7,6 +7,7 @@ import { useUserStore } from '../store/user';
 import { AccountContent } from './AccountContent';
 import { Avatar } from './Avatar';
 import { MachineList } from './MachineList';
+import { ThemeToggle } from './ThemeSwitch';
 
 function ConnStatus() {
   const status = useConnectionStore(s => s.status);
@@ -65,6 +66,7 @@ export function Rail() {
           <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[length:var(--text-chrome)]">
             {userId || '本地模式'}
           </span>
+          <ThemeToggle />
           <button
             type="button"
             aria-label="账户菜单"

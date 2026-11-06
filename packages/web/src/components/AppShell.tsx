@@ -25,6 +25,7 @@ import { Rail } from './Rail';
 import { SessionList } from './SessionList';
 import { SplitHandle } from './SplitHandle';
 import { TargetBar } from './TargetBar';
+import { ThemeToggle } from './ThemeSwitch';
 import { Timeline } from './Timeline';
 
 /**
@@ -287,6 +288,7 @@ function MobileShell({
                 </span>
               )}
         </button>
+        <ThemeToggle className="icon-btn min-h-11 min-w-11 shrink-0" />
         <button type="button" aria-label="我的" onClick={() => setAccountOpen(true)} className="shrink-0 cursor-pointer border-0 bg-transparent p-0">
           <Avatar src={avatar} name={userId} size={28} />
         </button>
