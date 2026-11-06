@@ -36,8 +36,9 @@ export interface UplinkOptions {
    */
   instanceId?: string;
   /**
-   * Static CLI capability for `agent:register`. Omit on linux and win32.
-   * Older servers ignore the field.
+   * Static CLI capability for `agent:register`. Sent on darwin and linux
+   * (`CLI_PLATFORMS`); omit on win32. An older server rejects a non-darwin
+   * value, and this uplink then registers once without it.
    */
   cliAcp?: CliAcpCapability;
 }
@@ -67,6 +68,12 @@ export class Uplink extends EventEmitter {
   private readonly instanceId: string;
   /** Static CLI capability. Absent when this process does not speak CLI. */
   private readonly cliAcp: CliAcpCapability | undefined;
+  /**
+   * Set when a server rejected a register that carried a non-darwin `cliAcp`. Servers that predate
+   * Linux CLI sessions validate `platform: 'darwin'` strictly and drop the whole register; the agent
+   * then registers without `cliAcp` for the rest of this process, so it still comes online.
+   */
+  private cliAcpDropped = false;
   private watchdog: UplinkWatchdog;
 
   constructor(
@@ -118,29 +125,7 @@ export class Uplink extends EventEmitter {
   private attachSocketHandlers(socket: Socket): void {
     socket.on('connect', () => {
       console.log(`[uplink] ${ts()} Connected to ${this.remoteUrl} (${socket.id})`);
-      // The console uses this to send uninstall/upgrade commands for **this
-      // machine** — the person on the web may be on a different OS, so the
-      // platform must be self-reported by the machine, not guessed from the
-      // browser UA. Omit if unrecognized; the web falls back to OS toggles.
-      const platform = toAgentPlatform(process.platform);
-      socket.emit('agent:register', {
-        agentId: this.agentId,
-        hostname: hostname(),
-        // Server stores this so the web can show "which version this box is"; older servers ignore it.
-        version: BUILD_VERSION,
-        // Stable across this process's rebuilds: a reconnect must not look like a takeover, and an
-        // old-code newcomer must not displace a process that can name itself (register-outcome.ts).
-        instanceId: this.instanceId,
-        ...(this.liveIdes !== undefined ? { liveIdes: this.liveIdes } : {}),
-        ...(platform !== undefined ? { platform } : {}),
-        // This machine is content-source only (Linux). The server uses this to
-        // file it under "content sources".
-        // The criterion is the **platform**, not "app not found in the
-        // inventory" — that would misclassify a normal install as a content
-        // source (review R1).
-        ...(this.contentSource !== undefined ? { contentSource: this.contentSource } : {}),
-        ...(this.cliAcp !== undefined ? { cliAcp: this.cliAcp } : {}),
-      });
+      this.sendRegister(socket);
       this.emit('connected');
       this.watchdog.notifyConnected();
     });
@@ -192,7 +177,16 @@ export class Uplink extends EventEmitter {
       this.emit('sync', payload);
     });
 
-    socket.on('agent:rejected', () => {
+    socket.on('agent:rejected', (payload?: unknown) => {
+      // A server older than Linux CLI sessions rejects the linux `cliAcp` schema and with it the whole
+      // register. Retry once without it on this socket (a reconnect re-registers the same way).
+      const reason = (payload as { reason?: unknown } | undefined)?.reason;
+      if (reason === 'reject-register' && !this.cliAcpDropped && this.cliAcp && this.cliAcp.platform !== 'darwin') {
+        this.cliAcpDropped = true;
+        console.warn(`[uplink] ${ts()} Server rejected the ${this.cliAcp.platform} CLI capability (older server?); registering without CLI sessions`);
+        this.sendRegister(socket);
+        return;
+      }
       this.emit('rejected');
     });
 
@@ -202,6 +196,33 @@ export class Uplink extends EventEmitter {
     // owns the lock (see superseded-outcome.ts).
     socket.on('agent:superseded', (payload?: unknown) => {
       this.emit('superseded', payload);
+    });
+  }
+
+  private sendRegister(socket: Socket): void {
+    // The console uses this to send uninstall/upgrade commands for **this
+    // machine** — the person on the web may be on a different OS, so the
+    // platform must be self-reported by the machine, not guessed from the
+    // browser UA. Omit if unrecognized; the web falls back to OS toggles.
+    const platform = toAgentPlatform(process.platform);
+    const cliAcp = this.cliAcpDropped ? undefined : this.cliAcp;
+    socket.emit('agent:register', {
+      agentId: this.agentId,
+      hostname: hostname(),
+      // Server stores this so the web can show "which version this box is"; older servers ignore it.
+      version: BUILD_VERSION,
+      // Stable across this process's rebuilds: a reconnect must not look like a takeover, and an
+      // old-code newcomer must not displace a process that can name itself (register-outcome.ts).
+      instanceId: this.instanceId,
+      ...(this.liveIdes !== undefined ? { liveIdes: this.liveIdes } : {}),
+      ...(platform !== undefined ? { platform } : {}),
+      // This machine is content-source only (Linux). The server uses this to
+      // file it under "content sources".
+      // The criterion is the **platform**, not "app not found in the
+      // inventory" — that would misclassify a normal install as a content
+      // source (review R1).
+      ...(this.contentSource !== undefined ? { contentSource: this.contentSource } : {}),
+      ...(cliAcp !== undefined ? { cliAcp } : {}),
     });
   }
 

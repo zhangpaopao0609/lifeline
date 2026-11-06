@@ -32,6 +32,7 @@ import {
   cliStatusSchema,
   COMMAND_ERROR_CODES,
   commandPayloadSchema,
+  isCliPlatform,
   isCliSource,
   isIdeKind,
   MACHINE_NAME_MAX_LENGTH,
@@ -455,7 +456,7 @@ export class AgentDirectory extends EventEmitter {
         // Read-only: inputAvailable=false and no approval/Live actions; the page only uses this to read the body.
         chatTabs: tabs,
         activeComposerId: tabs[0]?.composerId ?? '',
-        windows: [{ id: windowId, title: '内容源', url: '', chatTabs: tabs }],
+        windows: [{ id: windowId, title: '会话源·只读', url: '', chatTabs: tabs }],
         activeWindowId: windowId,
         cdpIssue: live?.cdpIssue ?? null,
         liveIssue: live?.liveIssue ?? null,
@@ -2277,7 +2278,7 @@ function cliCommandSource(event: string, payload: CommandPayload): string | unde
 
 function cliStaticAllowed(conn: AgentConn, source: string | undefined): boolean {
   const cap = conn.cliAcp;
-  if (!cap || cap.platform !== 'darwin' || !source)
+  if (!cap || !isCliPlatform(cap.platform) || !source)
     return false;
   return cap.sources.some(row => row.source === source);
 }
@@ -2304,7 +2305,7 @@ function readCommandId(payload: unknown): string {
 }
 
 function readCliAvailability(payload: unknown): Map<CliSource, CliAvailability> | null {
-  if (!isPlainObject(payload) || payload.platform !== 'darwin' || !Array.isArray(payload.sources))
+  if (!isPlainObject(payload) || !isCliPlatform(payload.platform) || !Array.isArray(payload.sources))
     return null;
   const reported = new Map<CliSource, CliAvailability>();
   for (const row of payload.sources) {

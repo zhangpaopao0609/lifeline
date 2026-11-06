@@ -258,7 +258,7 @@ export function Timeline() {
       return <SessionMissingNotice onRetry={retrySource} />;
     return (
       <div className="flex min-h-0 flex-1 flex-col">
-        {sourceUnavailable && <SourceUnavailable reason={state?.lastExtractionError ?? '内容源读取失败'} onRetry={retrySource} />}
+        {sourceUnavailable && <SourceUnavailable reason={state?.lastExtractionError ?? '会话源读取失败'} onRetry={retrySource} />}
         <TimelineSkeleton />
       </div>
     );
@@ -268,7 +268,7 @@ export function Timeline() {
   if (body.length === 0) {
     return (
       <div className="flex min-h-0 flex-1 flex-col">
-        {sourceUnavailable && <SourceUnavailable reason={state?.lastExtractionError ?? '内容源读取失败'} onRetry={retrySource} />}
+        {sourceUnavailable && <SourceUnavailable reason={state?.lastExtractionError ?? '会话源读取失败'} onRetry={retrySource} />}
         <div className="tl-hint">
           {sourceUnavailable ? '恢复后可继续浏览与发送' : '会话为空 —— 在下方输入框发一条消息试试。'}
         </div>
@@ -278,7 +278,7 @@ export function Timeline() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      {sourceUnavailable && <SourceUnavailable reason={state?.lastExtractionError ?? '内容源读取失败'} onRetry={retrySource} />}
+      {sourceUnavailable && <SourceUnavailable reason={state?.lastExtractionError ?? '会话源读取失败'} onRetry={retrySource} />}
       {TIMELINE_PROBE_ON && <TimelineProbe keys={segKeys} />}
       <TimelineVirtuoso sessionKey={liveKey} bindScroller={el => (scrollerRef.current = el)} />
     </div>

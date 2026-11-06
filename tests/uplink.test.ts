@@ -207,10 +207,11 @@ const DARWIN_CLI_ACP: CliAcpCapability = {
 };
 
 describe('static cliAcp', () => {
-  it('declares supported CLI sources on darwin and omits the field on linux and win32', () => {
+  it('declares supported CLI sources on darwin and linux and omits the field elsewhere', () => {
     assert.deepEqual(staticCliAcp('darwin', { LIFELINE_LINUX_CDP: '1' }), DARWIN_CLI_ACP);
     assert.deepEqual(staticCliAcp('darwin', {}), DARWIN_CLI_ACP);
-    assert.equal(staticCliAcp('linux', { LIFELINE_LINUX_CDP: '1' }), undefined);
+    assert.deepEqual(staticCliAcp('linux', {}), { ...DARWIN_CLI_ACP, platform: 'linux' });
+    assert.deepEqual(staticCliAcp('linux', { LIFELINE_LINUX_CDP: '1' }), { ...DARWIN_CLI_ACP, platform: 'linux' });
     assert.equal(staticCliAcp('win32', { LIFELINE_LINUX_CDP: '1' }), undefined);
     assert.equal(staticCliAcp('freebsd', { LIFELINE_LINUX_CDP: '1' }), undefined);
   });
@@ -229,6 +230,49 @@ describe('static cliAcp', () => {
     const without = plain.sockets[0]!.sent.find(entry => entry.event === 'agent:register');
     assert.equal('cliAcp' in (without?.payload as object), false);
     plain.uplink.disconnect();
+  });
+
+  it('re-registers once without a linux cliAcp when an older server rejects it', () => {
+    const cap = staticCliAcp('linux', {});
+    assert.ok(cap);
+    const { uplink, sockets } = makeUplink(25, 'proc-1', cap);
+    let rejected = 0;
+    uplink.on('rejected', () => rejected++);
+    const registers = () => sockets[0]!.sent.filter(entry => entry.event === 'agent:register').map(entry => entry.payload as { cliAcp?: unknown });
+
+    sockets[0]!.fire('connect');
+    assert.equal(registers()[0]?.cliAcp !== undefined, true);
+    sockets[0]!.fire('agent:rejected', { reason: 'reject-register' });
+    assert.equal(rejected, 0);
+    assert.equal(registers().length, 2);
+    assert.equal('cliAcp' in (registers()[1] as object), false);
+
+    // Later reconnects keep it off; a second rejection is a real one.
+    sockets[0]!.fire('connect');
+    assert.equal('cliAcp' in (registers()[2] as object), false);
+    sockets[0]!.fire('agent:rejected', { reason: 'reject-register' });
+    assert.equal(rejected, 1);
+    uplink.disconnect();
+  });
+
+  it('does not retry for a darwin cliAcp or for other rejection reasons', () => {
+    const darwin = makeUplink(25, 'proc-1', staticCliAcp('darwin', {}));
+    let darwinRejected = 0;
+    darwin.uplink.on('rejected', () => darwinRejected++);
+    darwin.sockets[0]!.fire('connect');
+    darwin.sockets[0]!.fire('agent:rejected', { reason: 'reject-register' });
+    assert.equal(darwinRejected, 1);
+    assert.equal(darwin.sockets[0]!.sent.filter(entry => entry.event === 'agent:register').length, 1);
+    darwin.uplink.disconnect();
+
+    const linux = makeUplink(25, 'proc-2', staticCliAcp('linux', {}));
+    let linuxRejected = 0;
+    linux.uplink.on('rejected', () => linuxRejected++);
+    linux.sockets[0]!.fire('connect');
+    linux.sockets[0]!.fire('agent:rejected', { reason: 'owner-mismatch' });
+    assert.equal(linuxRejected, 1);
+    assert.equal(linux.sockets[0]!.sent.filter(entry => entry.event === 'agent:register').length, 1);
+    linux.uplink.disconnect();
   });
 
   it('forwards cli:sync and still drops unrelated events', () => {

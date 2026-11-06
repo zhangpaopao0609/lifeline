@@ -50,7 +50,7 @@ describe('acp readiness', { concurrency: 1, timeout: 20_000 }, () => {
       ok: false,
     };
     const rows: Array<{ platform: NodeJS.Platform; patch: Partial<typeof later>; errorCode: CommandErrorCode; availability: string }> = [
-      { platform: 'linux', patch: {}, errorCode: 'unsupported-platform', availability: 'error' },
+      { platform: 'win32', patch: {}, errorCode: 'unsupported-platform', availability: 'error' },
       { platform: 'darwin', patch: { cwdAbsoluteDirectory: false }, errorCode: 'invalid-cwd', availability: 'error' },
       { platform: 'darwin', patch: { cwdAbsoluteDirectory: true }, errorCode: 'binary-missing', availability: 'binary-missing' },
       { platform: 'darwin', patch: { cwdAbsoluteDirectory: true, spawnCode: 'EACCES' }, errorCode: 'binary-not-executable', availability: 'error' },
@@ -97,10 +97,13 @@ describe('acp readiness', { concurrency: 1, timeout: 20_000 }, () => {
     assert.equal((startOk.detail ?? '').includes('凭据已验证'), false);
   });
 
-  it('does not treat linux or win32 as spawnable when LIFELINE_LINUX_CDP=1', () => {
-    assert.equal(acpSpawnAllowed('linux', { LIFELINE_LINUX_CDP: '1' }), false);
-    assert.equal(acpSpawnAllowed('win32', { LIFELINE_LINUX_CDP: '1' }), false);
-    assert.equal(acpSpawnAllowed('darwin', { LIFELINE_LINUX_CDP: '1' }), true);
+  it('spawns CLI sessions on darwin and linux, independent of LIFELINE_LINUX_CDP', () => {
+    for (const env of [{}, { LIFELINE_LINUX_CDP: '1' }]) {
+      assert.equal(acpSpawnAllowed('darwin', env), true);
+      assert.equal(acpSpawnAllowed('linux', env), true);
+      assert.equal(acpSpawnAllowed('win32', env), false);
+      assert.equal(acpSpawnAllowed('freebsd', env), false);
+    }
     const source = readFileSync(new URL('../packages/agent/src/drivers/acp/readiness.ts', import.meta.url), 'utf8');
     assert.equal(source.includes('canControlIde'), false);
   });
@@ -161,7 +164,7 @@ describe('acp readiness', { concurrency: 1, timeout: 20_000 }, () => {
       source: 'cursor-cli',
       command: '/usr/local/bin/cursor-agent',
       cwd,
-      platform: 'linux',
+      platform: 'win32',
       env: { LIFELINE_LINUX_CDP: '1' },
       epoch: EPOCH,
       open: () => {
@@ -507,6 +510,30 @@ rl.on('line', (line) => {
     assert.equal(reports[1]?.sources[0]?.availability, 'credential-required');
     assert.equal((reports[1]?.sources[0]?.checkedAt ?? 0) >= (reports[0]?.sources[0]?.checkedAt ?? 0), true);
     assert.equal(JSON.stringify(reports).includes(FAKE_KEY), false);
+  });
+
+  it('starts and reports on linux with the linux platform tag', async () => {
+    const reports: CliCapabilities[] = [];
+    const calls: string[] = [];
+    const report = await startProviderSession({
+      source: 'codebuddy-cli',
+      command: '/usr/local/bin/codebuddy',
+      cwd: tempDir(),
+      platform: 'linux',
+      epoch: EPOCH,
+      checkedAt: {},
+      emit: (event, payload) => {
+        assert.equal(event, 'cli:capabilities');
+        reports.push(payload);
+      },
+      baseEnv: { PATH: '/usr/bin:/bin', HOME: '/home/me' },
+      open: () => client(calls),
+    });
+    assert.equal(report.ok, true);
+    assert.equal(report.availability, 'ready');
+    assert.equal(calls.includes('session/new'), true);
+    assert.deepEqual(reports.map(r => r.platform), ['linux', 'linux']);
+    assert.deepEqual(reports.map(r => r.sources[0]?.availability), ['unknown', 'ready']);
   });
 
   it('builds a child env without lifeline secrets and reads hasKey from the result', () => {

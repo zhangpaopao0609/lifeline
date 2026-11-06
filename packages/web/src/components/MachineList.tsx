@@ -1,9 +1,10 @@
-import type { IdeKind } from '../net/protocol';
-import { ArrowCircleUp, Cpu, Database, Plus, TerminalWindow, WarningCircle } from '@phosphor-icons/react';
+import type { IdeKind, MachineInfo } from '../net/protocol';
+import { ArrowCircleUp, Cpu, Plus, TerminalWindow, WarningCircle } from '@phosphor-icons/react';
 import { useState } from 'react';
 import { machineNotice } from '../lib/duplicate-agent';
 import { ideTitle } from '../lib/ide-label';
 import { machineLabel } from '../lib/machine-name';
+import { SESSION_SOURCE_LABEL, sessionSourceIdes } from '../lib/session-source';
 import { noteUserSwitch } from '../lib/useViewState';
 import { isOutdated } from '../lib/version';
 import { IDE_KINDS } from '../net/protocol';
@@ -26,22 +27,22 @@ export function MachineList({ onNavigate }: { onNavigate?: () => void }) {
   const setSelectedIde = useIdesStore(s => s.setSelectedIde);
   const activeTarget = useUiStore(s => s.activeTarget);
   const [enrollOpen, setEnrollOpen] = useState(false);
-  // Content-only machines (remote dev boxes) don't occupy a machine slot: they have no live state, so they go in the "content sources" group, expandable to manage.
-  const [showContentSources, setShowContentSources] = useState(false);
-  const liveMachines = machines.filter(m => !m.contentOnly);
-  const contentSources = machines.filter(m => m.contentOnly);
 
   const approvalsOf = (ide: IdeKind) => ides[ide]?.pendingApprovals?.length ?? 0;
   const ideConnected = (ide: IdeKind) => ides[ide]?.connected === true;
 
   return (
     <div className="flex flex-col gap-0.5">
-      {liveMachines.map((m) => {
+      {machines.map((m) => {
         const selected = m.agentId === selectedAgentId;
         const notice = machineNotice(m);
         const cliAgent = cliAgents[m.agentId];
+        const cliSources = visibleCliSources(m);
         const liveSessions = selected && cliAgent?.epoch ? cliAgent.order.length : undefined;
-        const cliDot = cliRailDot(m.connected, visibleCliSources(m), liveSessions);
+        const cliDot = cliRailDot(m.connected, cliSources, liveSessions);
+        const readOnlyIdes = m.contentOnly ? sessionSourceIdes(m.contentIdes) : [];
+        // A controllable machine always offers Agent CLI. A read-only machine offers it only when this agent declared sources.
+        const showCli = !m.contentOnly || cliSources.length > 0;
         return (
           <div key={m.agentId}>
             {/* Don't absolutely-position ⋯ over the row: a 44px hit area would cover the trailing "offline / updatable"
@@ -54,7 +55,7 @@ export function MachineList({ onNavigate }: { onNavigate?: () => void }) {
             >
               <button
                 type="button"
-                onClick={() => { selectMachine(m.agentId); onNavigate?.(); }}
+                onClick={() => openMachine(m, selectedIde, setSelectedIde, selectMachine, onNavigate)}
                 className={`flex min-w-0 flex-1 items-center gap-2 self-stretch border-0 bg-transparent px-2.5 py-2 text-left ${
                   m.connected ? 'text-[var(--text-primary)]' : 'text-[var(--text-weak)]'
                 }`}
@@ -101,123 +102,71 @@ export function MachineList({ onNavigate }: { onNavigate?: () => void }) {
 
             {/* IDE sub-rows are expanded by default: you can see each IDE's status and pending approvals without clicking the machine. */}
             <div className="mt-1 flex flex-col gap-0.5">
-              {IDE_KINDS.map((ide) => {
-                // The selected machine uses the live store (faster); others only have the summary from machines:list.
-                const status = selected
-                  ? { connected: ideConnected(ide), pendingApprovals: approvalsOf(ide), host: ides[ide]?.host }
-                  : m.ides?.[ide];
-                const n = status?.pendingApprovals ?? 0;
-                // When the machine is offline, IDE status is frozen and a green dot would be a lie.
-                const ideOnline = m.connected && status?.connected === true;
-                const active = selected && activeTarget.kind === 'ide' && ide === selectedIde;
-                return (
-                  <button
-                    key={ide}
-                    type="button"
-                    onClick={() => { noteUserSwitch(); selectMachine(m.agentId); setSelectedIde(ide); useUiStore.getState().showIde(ide); onNavigate?.(); }}
-                    className={`ml-5 flex w-[calc(100%-20px)] items-center gap-2 rounded-[var(--radius-md)] border-0 px-2.5 py-1.5 text-left text-[length:var(--text-chrome)] text-[var(--text-secondary)] ${
-                      active ? 'bg-[var(--bg-3)]' : 'bg-transparent'
-                    }`}
-                  >
-                    <Cpu size={14} />
-                    {/* `truncate`: the plugin label ("CodeBuddy · VS Code 插件") is ~2x the name — the rail is 240px and must not wrap. */}
-                    <span className="flex-1 truncate">{ideTitle(ide, status?.host)}</span>
-                    {/* No summary (older server): don't draw a dot. Not drawing = unknown, more honest than a gray dot. */}
-                    {status && (
-                      <span className={`dot-sm ${ideOnline ? 'bg-[var(--ok)]' : 'bg-[var(--text-weak)]'}`} />
-                    )}
-                    {n > 0 && (
-                      <span className="inline-flex items-center gap-0.5 text-[11px] text-[var(--accent)]">
-                        <WarningCircle size={12} weight="fill" />
-                        {n}
-                      </span>
-                    )}
-                  </button>
-                );
-              })}
-              <button
-                type="button"
-                onClick={() => {
-                  noteUserSwitch();
-                  selectMachine(m.agentId);
-                  useUiStore.getState().showCliHome(m.agentId);
-                  onNavigate?.();
-                }}
-                className={`ml-5 flex w-[calc(100%-20px)] items-center gap-2 rounded-[var(--radius-md)] border-0 px-2.5 py-1.5 text-left text-[length:var(--text-chrome)] text-[var(--text-secondary)] ${
-                  selected && (activeTarget.kind === 'cli' || activeTarget.kind === 'cli-home') && activeTarget.agentId === m.agentId
-                    ? 'bg-[var(--bg-3)]'
-                    : 'bg-transparent'
-                }`}
-              >
-                <TerminalWindow size={14} />
-                <span className="flex-1">Agent CLI</span>
-                {cliDot !== 'hidden' && (
-                  <span className={`dot-sm ${cliDot === 'on' ? 'bg-[var(--ok)]' : 'bg-[var(--text-weak)]'}`} />
-                )}
-              </button>
+              {m.contentOnly
+                ? readOnlyIdes.map(ide => (
+                    <SessionSourceRow
+                      key={ide}
+                      ide={ide}
+                      active={selected && activeTarget.kind === 'ide' && ide === selectedIde}
+                      onOpen={() => {
+                        noteUserSwitch();
+                        setSelectedIde(ide);
+                        selectMachine(m.agentId);
+                        useUiStore.getState().showIde(ide);
+                        onNavigate?.();
+                      }}
+                    />
+                  ))
+                : IDE_KINDS.map((ide) => {
+                    // The selected machine uses the live store (faster); others only have the summary from machines:list.
+                    const status = selected
+                      ? { connected: ideConnected(ide), pendingApprovals: approvalsOf(ide), host: ides[ide]?.host }
+                      : m.ides?.[ide];
+                    const n = status?.pendingApprovals ?? 0;
+                    // When the machine is offline, IDE status is frozen and a green dot would be a lie.
+                    const ideOnline = m.connected && status?.connected === true;
+                    const active = selected && activeTarget.kind === 'ide' && ide === selectedIde;
+                    return (
+                      <button
+                        key={ide}
+                        type="button"
+                        onClick={() => { noteUserSwitch(); selectMachine(m.agentId); setSelectedIde(ide); useUiStore.getState().showIde(ide); onNavigate?.(); }}
+                        className={`ml-5 flex w-[calc(100%-20px)] items-center gap-2 rounded-[var(--radius-md)] border-0 px-2.5 py-1.5 text-left text-[length:var(--text-chrome)] text-[var(--text-secondary)] ${
+                          active ? 'bg-[var(--bg-3)]' : 'bg-transparent'
+                        }`}
+                      >
+                        <Cpu size={14} />
+                        {/* `truncate`: the plugin label ("CodeBuddy · VS Code 插件") is ~2x the name — the rail is 240px and must not wrap. */}
+                        <span className="flex-1 truncate">{ideTitle(ide, status?.host)}</span>
+                        {/* No summary (older server): don't draw a dot. Not drawing = unknown, more honest than a gray dot. */}
+                        {status && (
+                          <span className={`dot-sm ${ideOnline ? 'bg-[var(--ok)]' : 'bg-[var(--text-weak)]'}`} />
+                        )}
+                        {n > 0 && (
+                          <span className="inline-flex items-center gap-0.5 text-[11px] text-[var(--accent)]">
+                            <WarningCircle size={12} weight="fill" />
+                            {n}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+              {showCli && (
+                <CliEntryRow
+                  active={selected && (activeTarget.kind === 'cli' || activeTarget.kind === 'cli-home') && activeTarget.agentId === m.agentId}
+                  dot={cliDot}
+                  onOpen={() => {
+                    noteUserSwitch();
+                    selectMachine(m.agentId);
+                    useUiStore.getState().showCliHome(m.agentId);
+                    onNavigate?.();
+                  }}
+                />
+              )}
             </div>
           </div>
         );
       })}
-
-      {contentSources.length > 0 && (
-        <div className="mt-1 flex flex-col gap-0.5">
-          <button
-            type="button"
-            aria-expanded={showContentSources}
-            onClick={() => setShowContentSources(v => !v)}
-            className="flex min-h-11 w-full items-center gap-2 rounded-[var(--radius-md)] border-0 bg-transparent px-2.5 py-2 text-left text-[length:var(--text-chrome)] text-[var(--text-weak)]"
-          >
-            <Database size={14} />
-            <span className="flex-1">
-              内容源 ·
-              {contentSources.length}
-            </span>
-            <span>{showContentSources ? '收起' : '展开'}</span>
-          </button>
-          {showContentSources && contentSources.map((m) => {
-            const selected = m.agentId === selectedAgentId;
-            const notice = machineNotice(m);
-            // Content sources must also be selectable: the server delivers body and conversation index for "the currently selected machine",
-            // so you could never see this machine's sessions. Also switch to an IDE it actually has content for,
-            // otherwise the list filters by the current IDE → it looks like "this machine has no sessions".
-            const onSelect = () => {
-              noteUserSwitch();
-              const ide = m.contentIdes?.[0];
-              if (ide && !m.contentIdes?.includes(selectedIde))
-                setSelectedIde(ide);
-              selectMachine(m.agentId);
-              useUiStore.getState().showIde(ide ?? selectedIde);
-              onNavigate?.();
-            };
-            return (
-              <div key={m.agentId} className="ml-5 flex items-center gap-1">
-                <button
-                  type="button"
-                  onClick={onSelect}
-                  className={`flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-[var(--radius-md)] border-0 px-2.5 py-1.5 text-left transition-colors duration-[var(--duration-fast)] ${
-                    selected ? 'bg-[var(--accent-soft)]' : 'bg-transparent'
-                  }`}
-                >
-                  <span className={`dot-sm ${m.connected ? 'bg-[var(--ok)]' : 'bg-[var(--text-weak)]'}`} />
-                  <span className="mono min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[length:var(--text-chrome)] text-[var(--text-secondary)]">
-                    {machineLabel(m)}
-                  </span>
-                  <span className="text-[length:var(--text-chrome)] text-[var(--text-weak)]">仅内容</span>
-                  {/* Same copy as a normal row: a content source can be displaced too. */}
-                  {notice.displaced && (
-                    <span className="shrink-0 text-[length:var(--text-chrome)] text-[var(--text-weak)]">{notice.displaced}</span>
-                  )}
-                  {notice.devBuild && (
-                    <span className="shrink-0 text-[length:var(--text-chrome)] text-[var(--text-weak)]">dev</span>
-                  )}
-                </button>
-                <MachineRowMenu machine={m} />
-              </div>
-            );
-          })}
-        </div>
-      )}
 
       <button
         type="button"
@@ -231,5 +180,64 @@ export function MachineList({ onNavigate }: { onNavigate?: () => void }) {
 
       {enrollOpen && <EnrollDialog onClose={() => setEnrollOpen(false)} />}
     </div>
+  );
+}
+
+function openMachine(
+  machine: MachineInfo,
+  selectedIde: IdeKind,
+  setSelectedIde: (ide: IdeKind) => void,
+  selectMachine: (agentId: string) => void,
+  onNavigate?: () => void,
+): void {
+  if (!machine.contentOnly) {
+    selectMachine(machine.agentId);
+    onNavigate?.();
+    return;
+  }
+  // The session list is filtered by the current IDE. Land on one this machine actually has,
+  // otherwise a Linux box looks empty until the matching row is clicked.
+  noteUserSwitch();
+  const sources = sessionSourceIdes(machine.contentIdes);
+  const nextIde = sources.includes(selectedIde) ? selectedIde : (sources[0] ?? selectedIde);
+  if (nextIde !== selectedIde)
+    setSelectedIde(nextIde);
+  selectMachine(machine.agentId);
+  useUiStore.getState().showIde(nextIde);
+  onNavigate?.();
+}
+
+function SessionSourceRow({ ide, active, onOpen }: { ide: IdeKind; active: boolean; onOpen: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className={`ml-5 flex w-[calc(100%-20px)] items-center gap-2 rounded-[var(--radius-md)] border-0 px-2.5 py-1.5 text-left text-[length:var(--text-chrome)] text-[var(--text-secondary)] ${
+        active ? 'bg-[var(--bg-3)]' : 'bg-transparent'
+      }`}
+    >
+      <Cpu size={14} />
+      <span className="min-w-0 flex-1 truncate">{ideTitle(ide)}</span>
+      <span className="shrink-0 text-[length:var(--text-chrome)] text-[var(--text-weak)]">{SESSION_SOURCE_LABEL}</span>
+    </button>
+  );
+}
+
+/** "Agent CLI" sub-row under a machine. */
+function CliEntryRow({ active, dot, onOpen }: { active: boolean; dot: ReturnType<typeof cliRailDot>; onOpen: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className={`ml-5 flex w-[calc(100%-20px)] items-center gap-2 rounded-[var(--radius-md)] border-0 px-2.5 py-1.5 text-left text-[length:var(--text-chrome)] text-[var(--text-secondary)] ${
+        active ? 'bg-[var(--bg-3)]' : 'bg-transparent'
+      }`}
+    >
+      <TerminalWindow size={14} />
+      <span className="flex-1">Agent CLI</span>
+      {dot !== 'hidden' && (
+        <span className={`dot-sm ${dot === 'on' ? 'bg-[var(--ok)]' : 'bg-[var(--text-weak)]'}`} />
+      )}
+    </button>
   );
 }

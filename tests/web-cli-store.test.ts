@@ -949,8 +949,12 @@ describe('Agent CLI rail dot', () => {
 });
 
 describe('CLI 入口', () => {
-  it('只列出 darwin 上机器列表投影出来的 source', () => {
-    assert.deepEqual(visibleCliSources({ platform: 'linux', cliSources: [{ source: 'cursor-cli', availability: 'ready' }] }), []);
+  it('只列出 darwin / linux 上机器列表投影出来的 source', () => {
+    assert.deepEqual(visibleCliSources({ platform: 'win32', cliSources: [{ source: 'cursor-cli', availability: 'ready' }] }), []);
+    assert.deepEqual(
+      visibleCliSources({ platform: 'linux', cliSources: [{ source: 'cursor-cli', availability: 'ready' }] }).map(row => row.source),
+      ['cursor-cli'],
+    );
     assert.deepEqual(visibleCliSources({ platform: 'darwin' }), []);
     assert.deepEqual(visibleCliSources(undefined), []);
     const only = visibleCliSources({

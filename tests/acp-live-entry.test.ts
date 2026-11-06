@@ -30,7 +30,7 @@ describe('live ACP entry', () => {
   }
 
   it('returns unsupported-platform before constructing a client', async () => {
-    for (const platform of ['linux', 'win32'] as const) {
+    for (const platform of ['win32', 'freebsd'] as const) {
       let constructions = 0;
       const entry = createLiveCliEntry({
         epoch: EPOCH,

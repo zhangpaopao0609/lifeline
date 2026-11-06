@@ -4,6 +4,18 @@ import { isAbsolute } from 'node:path';
 export const CLI_SOURCES = ['cursor-cli', 'codebuddy-cli', 'codex-cli'] as const;
 export type CliSource = (typeof CLI_SOURCES)[number];
 
+/**
+ * Platforms that run ACP CLI sessions. A CLI session is a stdio child process with no GUI or CDP,
+ * so headless Linux qualifies even though Linux stays a content source for IDE control.
+ * win32 is out: the spawn path relies on POSIX process groups and `:`-joined PATH.
+ */
+export const CLI_PLATFORMS = ['darwin', 'linux'] as const;
+export type CliPlatform = (typeof CLI_PLATFORMS)[number];
+
+export function isCliPlatform(value: unknown): value is CliPlatform {
+  return typeof value === 'string' && (CLI_PLATFORMS as readonly string[]).includes(value);
+}
+
 export const CLI_UNAVAILABLE_REASONS = ['binary-missing', 'credential-required', 'error'] as const;
 export type CliUnavailableReason = (typeof CLI_UNAVAILABLE_REASONS)[number];
 
@@ -81,7 +93,7 @@ export interface CliApproval {
 /** Static registration capability. Dynamic credential state lives on `cli:capabilities`. */
 export interface CliAcpCapability {
   protocolVersion: 1;
-  platform: 'darwin';
+  platform: CliPlatform;
   sources: Array<{ source: CliSource }>;
 }
 
@@ -94,7 +106,7 @@ export interface CliSourceAvailability {
 
 export interface CliCapabilities {
   epoch: string;
-  platform: 'darwin';
+  platform: CliPlatform;
   sources: CliSourceAvailability[];
 }
 

@@ -66,7 +66,13 @@ describe('Codex CLI native app-server', () => {
       assert.deepEqual(planLaunchdProviderSpawn({ source: 'codex-cli', command: binary, baseEnv: env }).args, options.args);
       assert.equal(cliAgentLabel('codex-cli'), 'Codex');
       assert.equal(commandPayloadSchema.safeParse({ commandId: epoch, source: 'codex-cli', cwd: dir }).success, true);
-      assert.throws(() => openLiveAcpClient({ source: 'codex-cli', cwd: dir, env, platform: 'linux' }), /unsupported-platform/);
+      assert.throws(() => openLiveAcpClient({ source: 'codex-cli', cwd: dir, env, platform: 'win32' }), /unsupported-platform/);
+      let linuxConstructions = 0;
+      openLiveAcpClient({ source: 'codex-cli', cwd: dir, env, platform: 'linux' }, () => {
+        linuxConstructions += 1;
+        return undefined as never;
+      });
+      assert.equal(linuxConstructions, 1);
       assert.match(cliResumeCommand({ source: 'codex-cli', cwd: dir, providerSessionId: 'codex-thread', modelId: 'model-a', thinking: 'high' })!, /codex resume 'codex-thread'.*model_reasoning_effort/);
     }
     finally { rmSync(dir, { recursive: true, force: true }); }

@@ -368,6 +368,38 @@ describe('AgentDirectory CLI forwarding', () => {
     );
   });
 
+  it('forwards cli_start to a linux content source and projects its availability', () => {
+    const cliAcp = staticCliAcp('linux', {});
+    assert.equal(cliAcp?.platform, 'linux');
+    const agent = fakeSocket('sa');
+    const browser = fakeSocket('br');
+    d.register(agent, {
+      agentId: 'agent-l',
+      hostname: 'L',
+      platform: 'linux',
+      contentSource: true,
+      cliAcp,
+    });
+    d.ingestAgentCli(agent, 'cli:capabilities', {
+      epoch: EPOCH,
+      platform: 'linux',
+      sources: [{ source: 'codebuddy-cli', availability: 'ready', checkedAt: 1 }],
+    });
+    const listed = d.listMachines().find(m => m.agentId === 'agent-l');
+    assert.deepEqual(listed?.cliSources, [
+      { source: 'cursor-cli', availability: 'unknown' },
+      { source: 'codebuddy-cli', availability: 'ready' },
+      { source: 'codex-cli', availability: 'unknown' },
+    ]);
+    d.sendCommand('agent-l', 'command:cli_start', {
+      commandId: 'c-linux',
+      source: 'codebuddy-cli',
+      cwd: '/tmp/work',
+    }, browser);
+    assert.equal(named(agent.events, 'command:cli_start').length, 1);
+    assert.deepEqual(browser.events, []);
+  });
+
   it('rejects a cli command before pending or emit when cliAcp was not declared', () => {
     const agent = fakeSocket('sa');
     const browser = fakeSocket('br');
@@ -394,7 +426,7 @@ describe('AgentDirectory CLI forwarding', () => {
     assert.equal(browser.events.length, 1);
   });
 
-  it('rejects cli commands when the static platform is not darwin', () => {
+  it('rejects cli commands when the static platform is not a CLI platform', () => {
     const agent = fakeSocket('sa');
     const browser = fakeSocket('br');
     d.register(agent, {

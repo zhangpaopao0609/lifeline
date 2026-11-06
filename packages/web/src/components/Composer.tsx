@@ -270,7 +270,7 @@ function IdeComposer() {
               : cdpIssue
                 ? cdpIssueCopy(cdpIssue, ideLabel).text
                 : machineContentOnly
-                  ? '内容源（只读）：这台机器不接管输入'
+                  ? '会话源·只读：这台机器不接管输入'
                   : machineOffline
                     ? '机器已离线，无法发送'
                     : isDraftTab(tab)

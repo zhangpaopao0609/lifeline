@@ -181,8 +181,12 @@ describe('agentRegisterSchema', () => {
     assert.equal(agentRegisterSchema.safeParse({ ...uplink, token: 'secret' }).success, false);
     assert.equal(agentRegisterSchema.safeParse({
       ...uplink,
-      cliAcp: { protocolVersion: 1, platform: 'linux', sources: [] },
+      cliAcp: { protocolVersion: 1, platform: 'win32', sources: [] },
     }).success, false);
+    assert.equal(agentRegisterSchema.safeParse({
+      ...uplink,
+      cliAcp: { protocolVersion: 1, platform: 'linux', sources: [{ source: 'codebuddy-cli' }] },
+    }).success, true);
     assert.equal(agentRegisterSchema.safeParse({
       ...uplink,
       cliAcp: { protocolVersion: 2, platform: 'darwin', sources: [] },
