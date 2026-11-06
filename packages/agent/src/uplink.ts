@@ -36,8 +36,9 @@ export interface UplinkOptions {
    */
   instanceId?: string;
   /**
-   * Static CLI capability for `agent:register`. Omit on linux and win32.
-   * Older servers ignore the field.
+   * Static CLI capability for `agent:register`. Sent on darwin and linux
+   * (`CLI_PLATFORMS`); omit on win32. An older server rejects a non-darwin
+   * value, and this uplink then registers once without it.
    */
   cliAcp?: CliAcpCapability;
 }
