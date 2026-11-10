@@ -18,12 +18,15 @@ import { enrollAgentToken, TEST_AUTH_HEADER, TEST_OWNER, userHeaders } from './r
  */
 const SHARED_TOKEN = 'test-agent-token';
 
-/** The server release version on machines:list = package.json (the same number build:cli bakes into the CLI). */
-const SERVER_VERSION = (
-  JSON.parse(
-    readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf-8'),
-  ) as { version: string }
-).version;
+const PKG = JSON.parse(
+  readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf-8'),
+) as { version: string; cliVersion?: string };
+
+/**
+ * The version machines:list publishes = `package.json#cliVersion` (the machine-side artifact, the same number
+ * build:cli bakes into the CLI) — **not** the product `version` (docs/release.md).
+ */
+const CLI_VERSION = PKG.cliVersion ?? PKG.version;
 
 interface MachineRow {
   agentId: string;
@@ -189,7 +192,7 @@ describe('relay protocol (MODE=server)', { concurrency: 1 }, () => {
     const { events } = await connectBrowser();
     await waitUntil(() => events['machines:list'].length > 0 && events['agent:uplink'].length > 0);
     // cliLatest = this machine's release version; the web UI uses it to mark lagging machines as "updatable"
-    assert.deepEqual(events['machines:list'][0], { machines: [], cliLatest: SERVER_VERSION });
+    assert.deepEqual(events['machines:list'][0], { machines: [], cliLatest: CLI_VERSION });
     assert.deepEqual(events['agent:uplink'][0], { connected: false });
     assert.equal(events['state:full'].length, 0);
   });
@@ -207,7 +210,7 @@ describe('relay protocol (MODE=server)', { concurrency: 1 }, () => {
       cliLatest: string;
     };
     assert.equal(payload.machines[0].cliVersion, '0.0.1');
-    assert.equal(payload.cliLatest, SERVER_VERSION);
+    assert.equal(payload.cliLatest, CLI_VERSION);
   });
 
   it('machine:select of a known id binds and emits that machine state:full', async () => {

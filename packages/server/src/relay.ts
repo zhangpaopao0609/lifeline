@@ -18,7 +18,7 @@ import { bootstrapDataDir } from './db/open.js';
 import { machineRoom, trySendFile, userRoom } from './http.js';
 import { IdentityStore } from './identity-store.js';
 import { isPublicPath } from './public-paths.js';
-import { readServerVersion, clientDir as resolveClientDir } from './server-version.js';
+import { readCliVersion, clientDir as resolveClientDir } from './server-version.js';
 import {
   SOCKET_MAX_HTTP_BUFFER_SIZE,
   SOCKET_PING_INTERVAL_MS,
@@ -29,7 +29,12 @@ import { timingLog, timingPreview } from './timing-log.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const SERVER_VERSION = readServerVersion();
+/**
+ * Machine-side version handed to the page as `cliLatest`. Deliberately not the product version: the page
+ * compares a machine's reported CLI against it to badge 「可更新」, so it must follow the agent artifact only
+ * (`docs/release.md`).
+ */
+const CLI_VERSION = readCliVersion();
 
 export interface MachineSelectState {
   generation: number;
@@ -623,7 +628,7 @@ export class Relay {
   private machinesPayload(
     userId?: string,
   ): { machines: ReturnType<AgentHub['listMachines']>; cliLatest: string } {
-    return { machines: this.agentHub.listMachines(userId) ?? [], cliLatest: SERVER_VERSION };
+    return { machines: this.agentHub.listMachines(userId) ?? [], cliLatest: CLI_VERSION };
   }
 
   private broadcastMachines(): void {

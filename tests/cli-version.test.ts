@@ -1,6 +1,6 @@
 import type { AddressInfo } from 'node:net';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join, sep } from 'node:path';
@@ -14,6 +14,7 @@ import {
   parseVersionText,
   updateHint,
 } from '../packages/cli/src/version.js';
+import { readCliVersion, readServerVersion } from '../packages/server/src/server-version.js';
 import { isOutdated } from '../packages/web/src/lib/version.js';
 import { cliVersion, writeLatestVersionFile } from '../scripts/build-cli.js';
 
@@ -160,9 +161,40 @@ describe('web isOutdated', () => {
 });
 
 describe('cli version source', () => {
-  it('build:cli injects package.json version and publishes the manifest', () => {
+  it('build:cli stamps package.json#cliVersion and publishes it as the manifest', () => {
+    const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8')) as {
+      version: string;
+      cliVersion?: string;
+    };
+    assert.equal(cliVersion(ROOT), pkg.cliVersion ?? pkg.version);
+  });
+
+  /**
+   * The split that keeps a web-only release from nagging machines (docs/release.md): the manifest and the
+   * page's badge source follow the machine-side artifact, the banner follows the product release.
+   */
+  it('the server hands the page the CLI version, not the product version', () => {
+    assert.equal(readCliVersion(), cliVersion(ROOT));
+  });
+
+  it('the server banner reports the product version', () => {
     const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8')) as { version: string };
-    assert.equal(cliVersion(ROOT), pkg.version);
+    assert.equal(readServerVersion(), pkg.version);
+  });
+
+  it('takes the manifest number from cliVersion, not from the product version', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cli-pkg-'));
+    try {
+      const write = (pkg: Record<string, string>): void => writeFileSync(join(dir, 'package.json'), JSON.stringify(pkg));
+      write({ name: 'lifeline', version: '1.0.0', cliVersion: '2.0.0' });
+      assert.equal(cliVersion(dir), '2.0.0');
+      // Old checkouts / forks without the field keep building off the single number.
+      write({ name: 'lifeline', version: '1.0.0' });
+      assert.equal(cliVersion(dir), '1.0.0');
+    }
+    finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('writes a one-line manifest', () => {

@@ -29,31 +29,52 @@ export function repoRoot(from: string = dirname(fileURLToPath(import.meta.url)))
   return walkForPackage(from) ?? from;
 }
 
+interface VersionFields {
+  version?: string;
+  cliVersion?: string;
+}
+
+function readVersionFields(): VersionFields {
+  const root = walkForPackage(dirname(fileURLToPath(import.meta.url)));
+  if (!root)
+    return {};
+  try {
+    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf-8')) as VersionFields & { name?: string };
+    if (pkg.name === 'lifeline')
+      return { version: pkg.version, cliVersion: pkg.cliVersion };
+  }
+  catch {
+    /* fall through */
+  }
+  return {};
+}
+
 /**
- * Which version this process's server is running = `package.json` version.
+ * The **product version** this process's server is running (banner, support reports).
  *
- * That is also the number `build:cli` stamps into the CLI and this host publishes as `/cli-latest.txt`,
- * so the page uses it as "latest version" to decide whether a machine's agent is behind.
+ * Not the update signal: that is `readCliVersion`. Separate because the two move on different schedules —
+ * the product version follows a release (a batch of user-visible changes), the CLI version follows a real
+ * change to the machine-side artifact (docs/release.md).
  *
  * If package.json cannot be read, return 'unknown' — callers must treat unknown as
  * "incomparable", not "oldest", or the UI fills with false update badges.
  */
 export function readServerVersion(): string {
-  const root = walkForPackage(dirname(fileURLToPath(import.meta.url)));
-  if (!root)
-    return 'unknown';
-  try {
-    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf-8')) as {
-      name?: string;
-      version?: string;
-    };
-    if (pkg.name === 'lifeline' && pkg.version)
-      return pkg.version;
-  }
-  catch {
-    /* fall through */
-  }
-  return 'unknown';
+  return readVersionFields().version ?? 'unknown';
+}
+
+/**
+ * The **machine-side** version (CLI + agent): what `build:cli` bakes in and publishes as `/cli-latest.txt`,
+ * and what the page receives as `cliLatest` to decide whether a machine's agent is behind.
+ *
+ * Must stay tied to that artifact, never to the product release: bumping it for a web-only change tells every
+ * machine to pull an identical agent (and lights 「可更新」 for nothing).
+ *
+ * Falls back to the product version for checkouts that predate the split.
+ */
+export function readCliVersion(): string {
+  const fields = readVersionFields();
+  return fields.cliVersion ?? fields.version ?? 'unknown';
 }
 
 export function clientDir(from: string = dirname(fileURLToPath(import.meta.url))): string {

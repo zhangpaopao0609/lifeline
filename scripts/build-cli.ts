@@ -18,14 +18,26 @@ const outfile = 'dist/cli/lifeline.mjs';
 /** Served under /public next to the runtime tarballs; see server/public-paths.ts. */
 const latestFile = 'dist/client/public/cli-latest.txt';
 
-/** The one source of the CLI version: package.json (bump it there). */
+/**
+ * The one source of the CLI version: `package.json#cliVersion` (bump it there, see docs/release.md).
+ *
+ * Two numbers live in that file and they move for different reasons:
+ *  - `version`    — the product release (CHANGELOG top entry, server banner). Nobody compares it;
+ *  - `cliVersion` — the machine-side artifact (CLI + agent), i.e. the manifest `/cli-latest.txt` publishes and
+ *                   `lifeline update` compares. It may only move when `packages/agent|cli|protocol` changed,
+ *                   otherwise every machine is told to pull an identical build.
+ *
+ * Falls back to `version` so old checkouts and forks keep building.
+ */
 export function cliVersion(root = process.cwd()): string {
   const pkg = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf-8')) as {
     version?: string;
+    cliVersion?: string;
   };
-  if (!pkg.version)
-    throw new Error('version missing from package.json');
-  return pkg.version;
+  const found = pkg.cliVersion ?? pkg.version;
+  if (!found)
+    throw new Error('cliVersion/version missing from package.json');
+  return found;
 }
 
 export function writeLatestVersionFile(version: string, path = latestFile): void {

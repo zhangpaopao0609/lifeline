@@ -34,7 +34,7 @@ pnpm install
 | `pnpm run build:runtime` | Agent runtime tarball (server distributes it under `/public/`) |
 | `pnpm run build:docker` | Self-host image (see [`docs/selfhost.md`](docs/selfhost.md)) |
 
-Version number source of truth is the root `package.json`. Client upgrades go through `lifeline update` (compared against the server's `/public/cli-latest.txt`).
+Two version numbers live in the root `package.json`: `cliVersion` is the machine-side artifact (the number `lifeline update` compares against the server's `/public/cli-latest.txt`) and `version` is the product release (the top entry in [`CHANGELOG.md`](CHANGELOG.md)). They move on different schedules — bump `cliVersion` only when `packages/agent`, `packages/cli`, or `packages/protocol` changes.
 
 Lint + format is `@antfu/eslint-config` (`eslint.config.mjs`) — there is no prettier. A handful of rules are deliberately overridden for this codebase (`node:test` titles, semicolons, the global `process`, one-line arrow bodies); each override carries its reason next to it. The advisory rules at the end of the config are expected to pass as warnings: they flag pre-linter code that still needs a human pass.
 

@@ -34,7 +34,7 @@ pnpm install
 | `pnpm run build:runtime` | agent runtime tarball（server 经 `/public/` 分发） |
 | `pnpm run build:docker` | 自托管镜像（见 [`docs/zh-CN/selfhost.md`](docs/zh-CN/selfhost.md)） |
 
-版本号唯一真源是根 `package.json`；客户端升级走 `lifeline update`（与 server 的 `/public/cli-latest.txt` 比对）。
+根 `package.json` 里有两个版本号：`cliVersion` 是机器侧产物（`lifeline update` 与 server 的 `/public/cli-latest.txt` 比对的就是它），`version` 是产品版本（[`CHANGELOG.zh-CN.md`](CHANGELOG.zh-CN.md) 的顶条）。两者节奏不同——只有 `packages/agent`、`packages/cli`、`packages/protocol` 变了才升 `cliVersion`。
 
 lint + 格式化用 `@antfu/eslint-config`（`eslint.config.mjs`），没有 prettier。少数规则按本仓库习惯显式覆盖（node:test 的用例标题、分号、全局 `process`、单行箭头函数体），每条覆盖旁边都写了理由。配置末尾的 advisory 规则允许以 warning 通过：它们盯的是引入 lint 之前的老代码，需要人工过一遍。
 
