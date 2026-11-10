@@ -2,6 +2,10 @@
 
 **English** | [简体中文](./CHANGELOG.zh-CN.md)
 
+## Unreleased
+
+Cursor tool groups show search terms, commands, and expandable saved output. Open a subagent conversation from its task and return to the parent without switching the IDE; opened children keep receiving disk updates. Requires machine-side Lifeline 0.5.8.
+
 ## [0.5.1] - 2026-11-06
 
 ### Features

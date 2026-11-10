@@ -24,6 +24,7 @@ import { MachineList } from './MachineList';
 import { Rail } from './Rail';
 import { SessionList } from './SessionList';
 import { SplitHandle } from './SplitHandle';
+import { SubagentView } from './SubagentView';
 import { TargetBar } from './TargetBar';
 import { ThemeToggle } from './ThemeSwitch';
 import { Timeline } from './Timeline';
@@ -310,6 +311,16 @@ function MobileShell({
 export function AppShell() {
   const isDesktop = useIsDesktop();
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const agentId = useMachinesStore(s => s.selectedAgentId);
+  const selectedIde = useIdesStore(s => s.selectedIde);
+  const targetKind = useUiStore(s => s.activeTarget.kind);
+  const subagent = useUiStore(s => s.subagentPath.at(-1));
+  const backFromSubagent = useUiStore(s => s.backFromSubagent);
+  const closeSubagents = useUiStore(s => s.closeSubagents);
+
+  useEffect(() => {
+    closeSubagents();
+  }, [agentId, selectedIde, targetKind, closeSubagents]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -323,7 +334,12 @@ export function AppShell() {
   }, []);
 
   const onClosePalette = () => setPaletteOpen(false);
-  if (isDesktop)
-    return <DesktopShell paletteOpen={paletteOpen} onClosePalette={onClosePalette} />;
-  return <MobileShell paletteOpen={paletteOpen} onClosePalette={onClosePalette} />;
+  return (
+    <>
+      {isDesktop
+        ? <DesktopShell paletteOpen={paletteOpen} onClosePalette={onClosePalette} />
+        : <MobileShell paletteOpen={paletteOpen} onClosePalette={onClosePalette} />}
+      {subagent && <SubagentView key={subagent.sessionId} {...subagent} onClose={backFromSubagent} />}
+    </>
+  );
 }

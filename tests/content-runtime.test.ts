@@ -354,6 +354,70 @@ describe('ContentLiveRuntime', () => {
     assert.equal(rec.append.length, 0);
   });
 
+  it('keeps a requested Cursor session live alongside the DOM-active session, then expires it', (t) => {
+    seed();
+    let now = 1000;
+    t.mock.method(Date, 'now', () => now);
+    adapter = new CursorAdapter(dbPath);
+    const rec = recorder();
+    const rt = new ContentLiveRuntime(adapter, rec.handlers);
+    rt.requestSession('cid1');
+    rt.setActiveSession('other');
+    addAssistant('a2', 'child update');
+    rt.tick();
+    assert.equal(rt.getActiveSession(), 'other');
+    assert.equal(rec.append[0].sessionId, 'cid1');
+    assert.equal((rec.append[0].messages[0] as AssistantMessage).text, 'child update');
+
+    now += 120_001;
+    addAssistant('a3', 'after close');
+    rt.tick();
+    assert.equal(rec.append.length, 1, 'an expired request no longer follows disk writes');
+  });
+
+  it('follows at most four recently requested Cursor sessions', () => {
+    seed();
+    adapter = new CursorAdapter(dbPath);
+    const rec = recorder();
+    const rt = new ContentLiveRuntime(adapter, rec.handlers);
+    rt.requestSession('cid1');
+    for (let i = 0; i < 4; i++) {
+      const sessionId = `child-${i}`;
+      const db = new Database(dbPath);
+      db.prepare('INSERT INTO cursorDiskKV VALUES (?, ?)').run(`composerData:${sessionId}`, '{}');
+      db.close();
+      rt.requestSession(sessionId);
+    }
+    addAssistant('a2', 'not followed');
+    rt.tick();
+    assert.equal(rec.append.length, 0);
+  });
+
+  it('links a running task when Cursor writes the child association before its result', () => {
+    seed({ loadingTool: true });
+    const db = new Database(dbPath);
+    const put = db.prepare('INSERT OR REPLACE INTO cursorDiskKV VALUES (?, ?)');
+    const task = { bubbleId: 't1', type: 2, createdAt: 3, text: '', toolFormerData: { name: 'task_v2', toolCallId: 'tc1', status: 'loading' } };
+    put.run('bubbleId:cid1:t1', JSON.stringify(task));
+    adapter = new CursorAdapter(dbPath);
+    const rec = recorder();
+    const rt = new ContentLiveRuntime(adapter, rec.handlers);
+    rt.setActiveSession('cid1');
+    rt.tick();
+
+    const row = db.prepare('SELECT value FROM cursorDiskKV WHERE key = ?').get('composerData:cid1') as { value: string };
+    put.run('composerData:cid1', JSON.stringify({ ...JSON.parse(row.value), subagentComposerIds: ['child', 'foreign'] }));
+    put.run('composerData:child', JSON.stringify({ subagentInfo: { parentComposerId: 'cid1', toolCallId: 'tc-new', toolCallIdHistory: ['tc1'] } }));
+    put.run('composerData:foreign', JSON.stringify({ subagentInfo: { parentComposerId: 'elsewhere', toolCallId: 'tc1' } }));
+    db.close();
+    rt.tick();
+    const tool = rec.append.flatMap(p => p.messages).find(m => m.type === 'tool') as ToolCallElement;
+    assert.equal(tool.childSessionId, 'child');
+    assert.equal(adapter.isSubagentSession('child'), true);
+    assert.equal(adapter.isSubagentSession('cid1'), false);
+    assert.equal(adapter.projectSession('cid1', ['t1'])[0].type, 'tool');
+  });
+
   it('skips ticks while paused so a command is not blocked by projection', () => {
     seed();
     adapter = new CursorAdapter(dbPath);
