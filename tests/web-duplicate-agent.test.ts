@@ -54,9 +54,9 @@ describe('machineNotice', () => {
     assert.notEqual(mapAt, -1, 'missing the machine map');
     assert.equal(list.includes('contentSources.map'), false);
     const rows = list.slice(mapAt);
-    assert.match(rows, /machineNotice\(m\)/);
+    assert.match(rows, /machineNotice\((m|machine)\)/);
     assert.match(rows, /\{notice\.displaced &&/);
     assert.match(rows, /\{notice\.devBuild &&/);
-    assert.match(rows, /m\.contentOnly/);
+    assert.match(rows, /(m|machine)\.contentOnly/);
   });
 });

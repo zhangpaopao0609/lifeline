@@ -633,6 +633,14 @@ body.is-col-resizing * {
   user-select: none !important;
 }
 
+/* Machine-rail drag sorting: the row itself is the handle (move cursor + hover tint, component-side);
+   @dnd-kit moves rows out of the way live, so there is no drop indicator and nothing rendered here.
+   Unlayered on purpose: the global `button { cursor: pointer }` above is unlayered too, and unlayered
+   rules beat @layer utilities — a Tailwind cursor utility would never win. */
+.machine-row-drag {
+  cursor: move;
+}
+
 .icon-btn {
   background: none;
   border: 0;

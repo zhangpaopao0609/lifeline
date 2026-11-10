@@ -19,6 +19,8 @@ interface MachinesStore {
   selectMachine: (agentId: string) => void;
   /** Re-emit machine:select after a socket reconnect (used by bind.ts). */
   reselect: () => void;
+  /** Drag sorting: apply the new rail order optimistically; the server ack confirms (revert on refusal). */
+  reorderMachines: (orderedAgentIds: string[]) => void;
 }
 
 export const useMachinesStore = create<MachinesStore>()((set, get) => ({
@@ -65,6 +67,26 @@ export const useMachinesStore = create<MachinesStore>()((set, get) => ({
     const { selectedAgentId } = get();
     if (selectedAgentId)
       socket.emit('machine:select', { agentId: selectedAgentId });
+  },
+
+  reorderMachines: (orderedAgentIds) => {
+    const prev = get().machines;
+    const byId = new Map(prev.map(m => [m.agentId, m]));
+    const next = orderedAgentIds.map(id => byId.get(id));
+    // A stale order (machine set changed under us) is not applied locally — the server broadcast wins.
+    if (next.length !== prev.length || next.some(m => !m))
+      return;
+    // No-op (e.g. keyboard ↑ at the first slot): don't touch state or emit — the server would
+    // broadcast machines:list to every open client for nothing.
+    if (next.every((m, i) => m === prev[i]))
+      return;
+    set({ machines: next as MachineInfo[] });
+    socket.emit('machines:reorder', { agentIds: orderedAgentIds }, (r?: { ok?: boolean }) => {
+      // Server refusal (stale set / unknown id): snap back to the previous order if ours is still showing.
+      if (r?.ok || get().machines.map(m => m.agentId).join('\u0000') !== orderedAgentIds.join('\u0000'))
+        return;
+      set({ machines: prev });
+    });
   },
 }));
 
