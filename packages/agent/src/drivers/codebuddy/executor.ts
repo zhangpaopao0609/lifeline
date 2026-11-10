@@ -25,6 +25,16 @@ import {
 import { DENY_RE } from './live.js';
 
 const INSERT_WAIT_MS = 300;
+/**
+ * How long to keep watching the composer after onEnter before calling the send a failure. The plugin
+ * clears the editor on its own schedule (the send is already in flight), so an immediate read is not
+ * proof of anything.
+ */
+const SEND_VERIFY_BUDGET_MS = 1500;
+const SEND_VERIFY_POLL_MS = 150;
+/** One retry after a missed/mislanded tab click: the sidebar re-renders a beat after a window switch. */
+const TAB_CLICK_ATTEMPTS = 2;
+const TAB_CLICK_RETRY_PAUSE_MS = 250;
 const DROPDOWN_WAIT_MS = 250;
 const NOT_IMPLEMENTED = 'not implemented';
 
@@ -210,25 +220,58 @@ export class CodeBuddyExecutor {
         error: entered?.err || entered?.error,
       });
       let snapshot: unknown;
+      let stillContains = false;
       try {
-        const snapshotStarted = Date.now();
-        snapshot = await client.evaluate(FIBER_COMPOSER_TEXT_JS);
-        timingLog('codebuddy-send:snapshot', {
-          commandId,
-          ms: Date.now() - snapshotStarted,
-        });
+        // The plugin empties the editor **asynchronously** after onEnter: a snapshot taken right after
+        // the callback still shows the text of a message that WAS sent (measured 2026-11-09 on the
+        // vscode slot: the turn reached the disk, yet the send reported "onEnter returned early" and
+        // the page offered 重试/填回 — retrying would have duplicated the message). Poll until the
+        // composer clears, but only while Enter actually ran: anything other than `called === true`
+        // (false / absent / an onEnter error) means nothing was submitted, so waiting the whole budget
+        // there is pure latency — and with an occluded window each evaluate can take 12s.
+        const deadline = Date.now() + SEND_VERIFY_BUDGET_MS;
+        for (;;) {
+          const snapshotStarted = Date.now();
+          snapshot = await client.evaluate(FIBER_COMPOSER_TEXT_JS);
+          stillContains = composerStillContains(snapshot, text);
+          timingLog('codebuddy-send:snapshot', {
+            commandId,
+            ms: Date.now() - snapshotStarted,
+            stillContains,
+          });
+          if (!stillContains || Date.now() >= deadline || entered?.called !== true)
+            break;
+          await this.wait(SEND_VERIFY_POLL_MS);
+        }
       }
       catch (err) {
         const error = err instanceof Error ? err.message : String(err);
         timingLog('codebuddy-send:verify-skip', { commandId, error });
         const ok = entered?.called !== false && !entered?.err && !entered?.error;
         timingLog('codebuddy-send:done', { commandId, ok, error, ms: Date.now() - started });
-        return { commandId, ok };
+        // A skipped verification is exactly the "Enter ran but we could not prove it" case: say
+        // unverified instead of passing it off as confirmed.
+        return ok
+          ? { commandId, ok, data: { unverified: true, reason: 'verify-skipped' } }
+          : { commandId, ok };
+      }
+      // Enter ran and the text never left the composer within the budget. That is **not** proof of a
+      // failed send — the plugin can clear later (the same async clear that caused the original false
+      // negative). Reporting a failure here makes the page offer 重试, and a retry duplicates a message
+      // that already went out; an unverified "sent" only costs a stuck bubble. Say so explicitly.
+      if (stillContains && entered?.called === true && !entered.err && !entered.error) {
+        timingLog('codebuddy-send:done', {
+          commandId,
+          ok: true,
+          unverified: true,
+          ms: Date.now() - started,
+        });
+        return { commandId, ok: true, data: { unverified: true, reason: 'composer-still-contains' } };
       }
       const outcome = interpretFiberSendResult({
         inserted,
         entered,
-        stillContains: composerStillContains(snapshot, text),
+        stillContains,
       });
       timingLog('codebuddy-send:done', {
         commandId,
@@ -410,17 +453,40 @@ export class CodeBuddyExecutor {
     try {
       // 1) Click by id: the expression compares data-session-tab-id first (the title branch will not false-hit an id)
       if (wantId) {
-        const byId = await client.evaluate(codebuddyClickByValueExpression('tab', wantId));
-        if (byId && (byId as { ok?: boolean }).ok === true) {
-          const landed = await this.awaitLandedTab(client, wantId);
-          if (landed && landed !== wantId) {
+        // Switching windows re-renders the sidebar asynchronously: the first click can hit nothing (row not in
+        // the DOM yet) and the "landed" read then reports the target window's previous session. Retry once
+        // before calling it a failure (measured 2026-11-09: 点了「X」但落到别的会话, over and over).
+        let clicked = false;
+        let landed = '';
+        // Last **definite** landing (never-falsy): an empty read on a later attempt must not erase a
+        // real misland we already saw, or a retry could launder a wrong switch into a fake success.
+        let lastSeen = '';
+        for (let attempt = 0; attempt < TAB_CLICK_ATTEMPTS; attempt++) {
+          if (attempt > 0)
+            await this.wait(TAB_CLICK_RETRY_PAUSE_MS);
+          const byId = await client.evaluate(codebuddyClickByValueExpression('tab', wantId));
+          if (!(byId && (byId as { ok?: boolean }).ok === true))
+            continue; // row not there yet — retry, then fall through to the old paths
+          clicked = true;
+          landed = await this.awaitLandedTab(client, wantId);
+          if (landed)
+            lastSeen = landed;
+          if (landed === wantId)
+            break;
+          if (!landed && attempt === TAB_CLICK_ATTEMPTS - 1)
+            break; // unreadable on the last attempt: nothing more to learn
+        }
+        if (clicked) {
+          const finalLanded = landed === wantId ? landed : lastSeen;
+          if (finalLanded && finalLanded !== wantId) {
             // Landed on another session (same title / order changed): fail; do not let the web leave highlight on the target as if it succeeded
-            const short = landed.slice(0, 8);
+            const short = finalLanded.slice(0, 8);
+            timingLog('codebuddy-switch:miss', { commandId, want: wantId.slice(0, 8), landed: short });
             return {
               commandId,
               ok: false,
               error: `点了「${tabTitle}」但落到别的会话（${short}…）`,
-              data: { landedComposerId: landed, via: 'id' },
+              data: { landedComposerId: finalLanded, via: 'id' },
             };
           }
           timingLog('codebuddy-switch', { commandId, byId: true, verified: !!landed });
