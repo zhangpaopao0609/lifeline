@@ -28,6 +28,8 @@ export interface ContentSource {
    * Default (adapter without this method / single-machine) is "has it".
    */
   hasSession?: (sessionId: string) => boolean;
+  /** Cursor children are read alongside their parent, rather than becoming the IDE-active session. */
+  isSubagentSession?: (sessionId: string) => boolean;
   /** PK `length(value)` per index bubble — skip projectSession when unchanged. */
   bubbleSizes?: (sessionId: string) => Map<string, number>;
   /** Fallback fingerprint when `bubbleSizes` is absent (e.g. CodeBuddy mtimes). */

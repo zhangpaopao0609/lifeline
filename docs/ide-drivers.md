@@ -35,6 +35,7 @@ index.ts (walks registeredDrivers() and wires them)
 
 ## Pitfalls (criteria)
 
+- **Cursor subagents are saved composers.** `task_v2.result.agentId` is the child composer id. Before that result is written, match the parent's `subagentComposerIds` against each child's `subagentInfo.parentComposerId` and `toolCallId` / `toolCallIdHistory`. Association changes must invalidate the projection even if the task bubble is unchanged. Reading a child follows it alongside the active/root session; it must not take over that session's follow target, including on content-only machines.
 - **Runtime callback signatures include an `ide` parameter.** `ContentLiveRuntime` onSessionFull/Append/Patch/Sync is `(sessionId, messages, ide, seq)` — the runtime passes `adapter.ide`. Do not shadow it with an outer loop variable (equivalent, but missing the parameter fails TS).
 - **`ContentSource.close()` is optional:** call `adapter.close?.()`.
 - **`CursorWindow['kind']` is optional** (`kind?`): the driver interface types windowKind as `WindowKind`; callers `?? 'project'`.

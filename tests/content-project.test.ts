@@ -9,6 +9,32 @@ function header(id: string, role: MessageHeader['role']): MessageHeader {
 }
 
 describe('project', () => {
+  it('preserves search terms, task links and bounded readable tool output', () => {
+    const calls = [
+      { name: 'web_search', params: { searchTerm: 'cursor agents' }, result: { markdown: 'search result' } },
+      { name: 'ripgrep_raw_search', params: { pattern: 'SessionRef', path: 'src' }, result: { error: 'no matches' } },
+      { name: 'task_v2', params: { description: 'Inspect routes' }, result: { agentId: 'child' } },
+      { name: 'run_terminal_command_v2', params: { command: 'pnpm test' }, result: { output: 'x'.repeat(5000) } },
+    ];
+    const { messages } = project(calls.map((_, i) => header(`t${i}`, 'assistant')), calls.map((toolFormerData, i) => ({
+      bubbleId: `t${i}`,
+      type: 2,
+      createdAt: 1,
+      text: '',
+      toolFormerData,
+    })));
+    const tools = messages.filter(m => m.type === 'tool');
+    assert.equal(tools[0].summaryText, 'cursor agents');
+    assert.equal(tools[0].output, 'search result');
+    assert.equal(tools[1].summaryText, 'SessionRef');
+    assert.equal(tools[1].filename, 'src');
+    assert.equal(tools[1].output, 'no matches');
+    assert.equal(tools[2].summaryText, 'Inspect routes');
+    assert.equal(tools[2].childSessionId, 'child');
+    assert.equal(tools[3].summaryText, 'pnpm test');
+    assert.equal(tools[3].output, `${'x'.repeat(4000)}\n…`);
+  });
+
   it('emits in index order and skips bubbles not in the index', () => {
     const bubbles: Bubble[] = [
       { bubbleId: 'ghost', type: 2, createdAt: 1, text: 'ghost' },

@@ -35,6 +35,7 @@ index.ts（遍历 registeredDrivers() 组装）
 
 ## 踩坑（判据）
 
+- **Cursor 子代理也是已保存的 composer 会话。** `task_v2.result.agentId` 就是子会话的 composer id；结果尚未落盘时，用父会话的 `subagentComposerIds` 对照子会话的 `subagentInfo.parentComposerId` 和 `toolCallId` / `toolCallIdHistory` 关联。即使任务 bubble 没变，关联变化也必须使投影指纹失效。阅读子会话时应与当前/父会话并行跟随，不能抢走其跟随目标；只读数据源机器也一样。
 - **runtime 回调签名带 `ide` 参数位**：`ContentLiveRuntime` 的 onSessionFull/Append/Patch/Sync 是 `(sessionId, messages, ide, seq)`——runtime 自己传 `adapter.ide`，别用外层循环变量遮蔽（等价但少了参数位会 TS 报错）。
 - **`ContentSource.close()` 是可选方法**：调用要 `adapter.close?.()`。
 - **`CursorWindow['kind']` 可选**（`kind?`）：driver 接口的 windowKind 标注用 `WindowKind`，调用方自己 `?? 'project'` 兜底。

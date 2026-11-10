@@ -420,16 +420,14 @@ async function main(): Promise<void> {
         uplink.send('session:missing', { sessionId, ide });
         return;
       }
-      // Follow this session so later disk-change deltas are pushed.
-      // In the cross-machine case (server names the content machine) this step
-      // makes the web "live", not a snapshot. On the same machine, DOM later
-      // overwrites it with the active session it sees.
-      target?.setActiveSession(sessionId);
+      // Keep root sessions following even on content-only machines; children follow on a bounded lease.
+      if (!source?.isSubagentSession?.(sessionId))
+        target.setActiveSession(sessionId);
       // sinceSeq is passed through: match → sync, mismatch → patch; do not
       // re-project the whole session. Local machine has no such session →
       // answer "missing" explicitly so the web does not retry forever
       // (2026-09-20 empty-session storm).
-      if (target?.requestSession(sessionId, payload?.sinceSeq) === false) {
+      if (target.requestSession(sessionId, payload?.sinceSeq) === false) {
         uplink.send('session:missing', { sessionId, ide });
       }
     },
