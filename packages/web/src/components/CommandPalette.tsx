@@ -4,8 +4,8 @@ import { useInstallOs } from '../lib/enroll-os';
 import { ideTitle } from '../lib/ide-label';
 import { machineLabel } from '../lib/machine-name';
 import { noteUserSwitch } from '../lib/useViewState';
+import { visibleSlots } from '../lib/visible-slots';
 import { installCommand, setupCommand } from '../net/enroll';
-import { IDE_KINDS } from '../net/protocol';
 import { sendCommand, sendCommandAwaitResult } from '../net/socket';
 import { cliSourceLabel, cliStatusLabel, paletteCliEntries, sessionsOf, useCliStore } from '../store/cli';
 import { activeTabOf, useIdesStore } from '../store/ides';
@@ -117,7 +117,7 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
       });
     }
 
-    IDE_KINDS.forEach((ide) => {
+    visibleSlots(Object.keys(ides)).forEach((ide) => {
       out.push({
         id: `ide:${ide}`,
         group: 'IDE',

@@ -28,6 +28,8 @@ export interface MachineRow {
   updatedAt: number;
   cliVersion?: string;
   owner?: string;
+  /** Manual rail position (drag sorting). undefined = never reordered → registration order, appended at the end. */
+  sortOrder?: number;
 }
 
 export interface HandshakeIdentity {
@@ -179,7 +181,9 @@ export class IdentityStore {
   // ------------------------------------------------------------- machines
 
   loadMachines(): MachineRow[] {
-    const rows = this.orm.select().from(machines).all();
+    // rowid = insertion order: the page's fallback for machines without a manual sort_order is
+    // "registration order", so make that explicit instead of relying on SQLite's scan order.
+    const rows = this.orm.select().from(machines).orderBy(sql`rowid`).all();
     const out: MachineRow[] = [];
     for (const row of rows) {
       let snapshot: AgentIdesState | null = null;
@@ -203,6 +207,7 @@ export class IdentityStore {
         updatedAt: row.updatedAt,
         ...(row.cliVersion ? { cliVersion: row.cliVersion } : {}),
         ...(row.ownerUserId ? { owner: row.ownerUserId } : {}),
+        ...(row.sortOrder != null ? { sortOrder: row.sortOrder } : {}),
       });
     }
     return out;
@@ -259,6 +264,20 @@ export class IdentityStore {
       .set({ displayName })
       .where(eq(machines.agentId, agentId))
       .run();
+  }
+
+  /** Write the manual rail order for the given machines (one row each, all-or-nothing). */
+  setMachineOrder(entries: Array<{ agentId: string; sortOrder: number }>): void {
+    const apply = this.sqlite.transaction(() => {
+      for (const { agentId, sortOrder } of entries) {
+        this.orm
+          .update(machines)
+          .set({ sortOrder })
+          .where(eq(machines.agentId, agentId))
+          .run();
+      }
+    });
+    apply();
   }
 
   renameMachine(oldAgentId: string, newAgentId: string): void {

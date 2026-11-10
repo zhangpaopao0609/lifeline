@@ -71,6 +71,12 @@ export function createCodeBuddyCdpRelauncher(opts: {
   cooldownMs?: number;
   graceMs?: number;
   deps: CodeBuddyCdpRelaunchDeps;
+  /**
+   * Name used in the relaunch log lines. The `vscode` slot reuses this relauncher but
+   * quits **VS Code**, so it must not say "CodeBuddy did not quit" while killing the
+   * user's editor (the same reason `ideSubject()` exists on the web side).
+   */
+  productName?: string;
 }): {
   maybeRelaunch: (port: number) => Promise<RelaunchResult>;
   noteConnected: () => void;
@@ -86,7 +92,7 @@ export function createCodeBuddyCdpRelauncher(opts: {
     log: opts.deps.log,
   };
   return createIdeCdpRelauncher({
-    productName: 'CodeBuddy',
+    productName: opts.productName ?? 'CodeBuddy',
     cooldownMs: opts.cooldownMs ?? CDP_RELAUNCH_COOLDOWN_MS,
     graceMs: opts.graceMs ?? CDP_RELAUNCH_GRACE_MS,
     deps: mapped,
@@ -368,6 +374,82 @@ export function defaultCodeBuddyCdpRelaunchDeps(opts: { exeTtlMs?: number; vscod
         },
       }, { vscodePlugin })
       : p => openCodeBuddyFamilyWithCdpDarwin(p, { lastQuitVscode, vscodePlugin }),
+    log: msg => console.log(`[cdp-bridge] ${msg}`),
+  };
+}
+
+/**
+ * Relaunch deps for the **`vscode` host slot**: quit and reopen VSCode only.
+ *
+ * The standalone CodeBuddy IDE belongs to the `codebuddy` slot and must never be
+ * touched here — two slots quitting each other's host is exactly what the split
+ * exists to prevent.
+ *
+ * ⚠️ **`isHostRunning` must branch on the platform.** The old merged code called
+ * `isVscodeRunningDarwin()` unconditionally; on Windows that spawns `pgrep`/`ps`
+ * (absent), so it answers false forever, `maybeRelaunch` returns
+ * `skipped-not-running` on its first line, and both self-heal and quiet-wake are
+ * dead for this slot. `platform` / `run` are injectable so a test can pin the
+ * Windows branch on macOS CI.
+ */
+export function defaultVscodeHostCdpRelaunchDeps(
+  opts: { platform?: NodeJS.Platform; run?: DarwinProcDeps['run']; exeTtlMs?: number } = {},
+): CodeBuddyCdpRelaunchDeps {
+  const platform = opts.platform ?? process.platform;
+  const win = platform === 'win32';
+  const procDeps = opts.run ? { run: opts.run } : {};
+  const resolveVscodeExe = memoizeExeWithTtl(
+    () => findIdeExe(vscodeExeCandidates(), VSCODE_APP_PATHS_EXES, {
+      queryRegistry: defaultQueryRegistry,
+      queryUninstall: defaultQueryUninstallRegistry,
+    }),
+    opts.exeTtlMs ?? 60_000,
+  );
+
+  const isHostRunning = (): boolean => {
+    if (win)
+      return isProcessRunningWin(VSCODE_IMAGE_NAME, procDeps);
+    return isVscodeRunningDarwin(procDeps);
+  };
+
+  const quitVscode = async (): Promise<boolean> => {
+    if (win)
+      return quitProcessWin([VSCODE_IMAGE_NAME]);
+    try {
+      await execFile('osascript', ['-e', `tell application "${VSCODE_APP_NAME}" to quit`], { timeout: 10_000 });
+    }
+    catch {
+      /* quit can fail if the app already exited */
+    }
+    const deadline = Date.now() + QUIT_WAIT_MS;
+    while (Date.now() < deadline) {
+      if (!isHostRunning())
+        return true;
+      await new Promise(r => setTimeout(r, QUIT_POLL_MS));
+    }
+    return !isHostRunning();
+  };
+
+  const openVscodeWithCdp = async (port: number): Promise<void> => {
+    if (win) {
+      await openIdeWithCdpWin(VSCODE_APP_NAME, () => resolveVscodeExe(), port);
+      return;
+    }
+    await execFile('open', ['-a', VSCODE_APP_NAME, '--args', `--remote-debugging-port=${port}`], {
+      timeout: 10_000,
+    });
+  };
+
+  return {
+    platform,
+    now: () => Date.now(),
+    isCodeBuddyRunning: isHostRunning,
+    // VSCode's macOS builds do not use Squirrel/ShipIt, so there is no updater
+    // stand-down for this host (same rationale as the codebuddy slot's comment).
+    isCodeBuddyUpdaterRunning: undefined,
+    canRelaunch: win ? () => resolveVscodeExe() !== undefined : undefined,
+    quitCodeBuddy: quitVscode,
+    openCodeBuddyWithCdp: openVscodeWithCdp,
     log: msg => console.log(`[cdp-bridge] ${msg}`),
   };
 }

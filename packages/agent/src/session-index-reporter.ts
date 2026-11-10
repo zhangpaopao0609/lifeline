@@ -12,6 +12,7 @@
  */
 import type { ContentSource } from './sources/content-source.js';
 import type { IdeKind, SessionMeta } from './sources/types.js';
+import { existsSync } from 'node:fs';
 
 export interface ReportedRemoval {
   ide: IdeKind;
@@ -19,9 +20,16 @@ export interface ReportedRemoval {
 }
 
 export interface SessionsIndexDelta {
+  /** Delta: only the changed rows. First round / after `reset()`: the slot's complete set. */
   sessions: SessionMeta[];
   removed: ReportedRemoval[];
-  mode: 'delta';
+  /**
+   * Omitted on the **authoritative** round (first round of a process, and after
+   * `reset()`): the server then rewrites that slot's index instead of merging, so
+   * rows it can no longer explain — e.g. the `VSCode/` sessions an older agent
+   * labelled `codebuddy` — are deleted rather than lingering forever.
+   */
+  mode?: 'delta';
   reportedIdes: IdeKind[];
 }
 
@@ -55,11 +63,21 @@ export class SessionIndexReporter {
   private timer: ReturnType<typeof setInterval> | null = null;
   private readonly lastSignal = new Map<IdeKind, number>();
   private readonly reported = new Map<string, ReportedRow>();
+  /**
+   * Slots whose **next** round is authoritative (see `SessionsIndexDelta.mode`).
+   *
+   * Per source, not one global counter: a source that throws or is unreadable on its
+   * first round must keep the flag, otherwise it silently loses its only authoritative
+   * round and the ledger never gets rewritten.
+   */
+  private readonly pendingFull = new Set<IdeKind>();
 
   constructor(private readonly opts: SessionIndexReporterOptions) {
     this.intervalMs = opts.intervalMs ?? DEFAULT_INTERVAL_MS;
     this.send = opts.send;
     this.log = opts.log ?? (() => {});
+    for (const source of opts.sources)
+      this.pendingFull.add(source.ide);
   }
 
   start(): void {
@@ -86,6 +104,10 @@ export class SessionIndexReporter {
   reset(): void {
     this.lastSignal.clear();
     this.reported.clear();
+    // The server lost (or deleted) the ledger: re-report as authoritative, or an
+    // unchanged fingerprint would skip every round and the page stays empty.
+    for (const source of this.opts.sources)
+      this.pendingFull.add(source.ide);
   }
 
   /** One round: return immediately if the fingerprint is unchanged; otherwise rebuild the list and send a delta. */
@@ -101,6 +123,21 @@ export class SessionIndexReporter {
     }
   }
 
+  /**
+   * Can this source be read **at all** right now? `probe().ok` is not the right signal:
+   * the CodeBuddy adapter answers `ok: false` for a readable root with no `history/`
+   * (the plugin-only machine), which is exactly the empty-but-authoritative case. The
+   * root's existence is.
+   */
+  private rootReachable(source: ContentSource): boolean {
+    try {
+      return existsSync(source.probe().rootPath);
+    }
+    catch {
+      return false;
+    }
+  }
+
   private tickSource(source: ContentSource): void {
     let signal: number | undefined;
     try {
@@ -109,13 +146,26 @@ export class SessionIndexReporter {
     catch {
       signal = undefined;
     }
-    if (signal !== undefined) {
-      if (this.lastSignal.get(source.ide) === signal)
-        return;
-      this.lastSignal.set(source.ide, signal);
-    }
+    const authoritative = this.pendingFull.has(source.ide);
+    // The fingerprint shortcut must not swallow a pending authoritative round: that is
+    // the one round a slot cannot afford to skip, and its signal is unchanged by design.
+    if (!authoritative && signal !== undefined && this.lastSignal.get(source.ide) === signal)
+      return;
 
     const heads = source.listSessionHeads?.() ?? source.listSessions();
+
+    // A transiently unreachable root (unmounted disk, permissions) must not delete the
+    // ledger: an authoritative round would prune the whole slot, and an "everything
+    // disappeared" delta would send removals for every row. Checked **before** the
+    // fingerprint/ledger are touched, so the next round retries instead of being skipped
+    // as "unchanged".
+    if ((authoritative || (heads.length === 0 && this.reportedFor(source.ide) > 0)) && !this.rootReachable(source)) {
+      this.log(`[session-index] ${source.ide}: root unreachable, holding the round`);
+      return;
+    }
+    if (signal !== undefined)
+      this.lastSignal.set(source.ide, signal);
+
     const seen = new Set<string>();
     const changed: SessionMeta[] = [];
     for (const meta of heads) {
@@ -143,15 +193,29 @@ export class SessionIndexReporter {
       removed.push({ ide: row.meta.ref.ide, sessionId: row.meta.ref.sessionId });
       this.reported.delete(key);
     }
-    if (changed.length === 0 && removed.length === 0)
+    if (!authoritative && changed.length === 0 && removed.length === 0)
       return;
 
-    this.log(`[session-index] ${source.ide}: +${changed.length} -${removed.length}`);
-    this.send({
-      sessions: changed,
-      removed,
-      mode: 'delta',
-      reportedIdes: [source.ide],
-    });
+    this.log(
+      authoritative
+        ? `[session-index] ${source.ide}: authoritative ${heads.length} row(s)`
+        : `[session-index] ${source.ide}: +${changed.length} -${removed.length}`,
+    );
+    this.send(authoritative
+      // The slot's complete set: the server's `writeIndex` deletes what is not in
+      // here for this ide. `removed` is meaningless to that path, so it stays empty.
+      ? { sessions: heads, removed: [], reportedIdes: [source.ide] }
+      : { sessions: changed, removed, mode: 'delta', reportedIdes: [source.ide] });
+    // Only now is the authoritative round actually delivered; a held round keeps the flag.
+    this.pendingFull.delete(source.ide);
+  }
+
+  private reportedFor(ide: IdeKind): number {
+    let n = 0;
+    for (const row of this.reported.values()) {
+      if (row.meta.ref.ide === ide)
+        n += 1;
+    }
+    return n;
   }
 }

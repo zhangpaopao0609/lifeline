@@ -18,6 +18,8 @@ export const machines = sqliteTable('machines', {
   lastSeenAt: integer('last_seen_at').notNull(),
   updatedAt: integer('updated_at').notNull(),
   snapshotJson: text('snapshot_json'),
+  /** Manual rail position (drag sorting). null = never reordered → registration order, appended at the end. */
+  sortOrder: integer('sort_order'),
 });
 
 export const machineTokens = sqliteTable('machine_tokens', {

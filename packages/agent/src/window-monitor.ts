@@ -46,6 +46,15 @@ export function shouldParallelExtractLive(_kind: IdeKind): boolean {
   return true;
 }
 
+/**
+ * Slots whose windows are polled through the CodeBuddy extension webview: the standalone IDE and the
+ * plugin inside VS Code run the same extension, so both read live state the same way. Only Cursor
+ * (a workbench with its own extraction function) is different.
+ */
+export function isCodeBuddyHost(kind: IdeKind | undefined): boolean {
+  return kind === 'codebuddy' || kind === 'vscode';
+}
+
 export interface WindowMonitorOptions {
   kind?: IdeKind;
   /**
@@ -498,7 +507,11 @@ export class WindowMonitor extends EventEmitter {
   }
 
   private async pollWindowParallel(win: CursorWindow): Promise<void> {
-    if (this.kind === 'codebuddy') {
+    // Both CodeBuddy hosts (the standalone IDE and the plugin inside VS Code) read the same extension
+    // webview, one per window. Only the Cursor path needs the workbench `wsUrl` — a VSCode window has
+    // none, so sending the `vscode` slot down that path left every non-home window with zero tabs and
+    // the console hid those groups (measured 2026-11-09: two windows open, one row shown).
+    if (isCodeBuddyHost(this.kind)) {
       await this.pollCodeBuddyWindow(win);
       return;
     }
@@ -741,8 +754,8 @@ export class WindowMonitor extends EventEmitter {
   }
 
   private async extractFromClient(client: CdpClient, windowTitle: string): Promise<CursorState | null> {
-    if (this.kind === 'codebuddy') {
-      throw new Error('Cursor extractionFunction must not run on a codebuddy slot');
+    if (isCodeBuddyHost(this.kind)) {
+      throw new Error(`Cursor extractionFunction must not run on a ${this.kind} slot`);
     }
     try {
       const { extractionFunction } = await import('./drivers/cursor/extractor.js');

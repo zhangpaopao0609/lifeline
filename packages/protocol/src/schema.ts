@@ -187,6 +187,13 @@ export const agentRegisterSchema = z.object({
   version: z.string().optional(),
   owner: z.string().optional(),
   liveIdes: z.array(ideKindSchema).optional(),
+  /**
+   * Routing capability: the slots this process can actually serve. Free-form
+   * strings on purpose — a future slot must not force another wire change here
+   * (the server intersects with its own `IDE_KINDS`); `liveIdes` stays the enum
+   * "what is installed", used for the quiet strategy.
+   */
+  slots: z.array(z.string()).optional(),
   contentSource: z.boolean().optional(),
   platform: z.enum(AGENT_PLATFORMS).optional(),
   instanceId: z.string().min(1).optional(),

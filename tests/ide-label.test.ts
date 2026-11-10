@@ -20,6 +20,13 @@ describe('ideTitle', () => {
     assert.equal(ideTitle('cursor', 'vscode'), 'Cursor');
     assert.equal(ideTitle('cursor', undefined), 'Cursor');
   });
+
+  // Slot = host: the split slot's label already names the app, so it must not read
+  // "VS Code · VS Code 插件".
+  it('does not repeat the app name for the vscode slot', () => {
+    assert.equal(ideTitle('vscode', 'vscode'), 'VS Code');
+    assert.equal(ideTitle('vscode', undefined), 'VS Code');
+  });
 });
 
 describe('ideSubject', () => {

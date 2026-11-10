@@ -143,10 +143,22 @@ interface AgentConn {
   /** Machine ownership: userId resolved from the handshake token (persisted to machines; offline machines keep it). */
   owner?: string;
   /**
+   * Manual rail position (drag sorting; persisted to `machines.sort_order`). undefined = never
+   * reordered → registration order, appended at the end.
+   */
+  sortOrder?: number;
+  /**
    * GUI-capable IDEs this agent detected. Undefined = old agent (fall back to
    * `!hasLive`). Not persisted — reconnect restores it.
    */
   liveIdes?: IdeKind[];
+  /**
+   * Routing capability declared at register: the slots this process can actually
+   * serve (started disk adapters ∪ created CDP slots). `undefined` = old agent →
+   * the pre-split set. Commands and `session:get` are gated on this, so a slot the
+   * agent cannot answer is never asked about.
+   */
+  slots?: IdeKind[];
   /**
    * This machine is **content-source only** (Linux: the agent does not connect CDP, does not take over input).
    * `undefined` = old agent. The "content source" group only honors this — don't use "app not on the list"
@@ -320,6 +332,7 @@ export class AgentDirectory extends EventEmitter {
         cliVersion: row.cliVersion,
         platform: row.platform,
         owner: row.owner,
+        sortOrder: row.sortOrder,
       };
       this.restoreContentIdes(conn);
       this.agents.set(row.agentId, conn);
@@ -352,26 +365,31 @@ export class AgentDirectory extends EventEmitter {
    * better invisible than leaked to someone unrelated.
    */
   listMachines(userId?: string): MachineInfo[] {
-    return [...this.agents.values()]
-      .filter(conn => canSee(conn.owner, userId))
-      .map((conn) => {
-        const ides = ideStatusOf(conn.latestState);
-        const contentIdes = [...conn.contentIdes];
-        return {
-          agentId: conn.agentId,
-          hostname: conn.hostname,
-          ...(conn.displayName ? { displayName: conn.displayName } : {}),
-          connected: !!conn.socket?.connected,
-          lastSeenAt: conn.lastSeenAt,
-          ides,
-          ...(contentIdes.length > 0 ? { contentIdes, contentOnly: isContentOnlyConn(conn) } : {}),
-          ...(conn.cliVersion ? { cliVersion: conn.cliVersion } : {}),
-          ...(conn.platform ? { platform: conn.platform } : {}),
-          ...cliSourcesField(conn),
-          ...(conn.owner ? { owner: conn.owner } : {}),
-          ...(conn.duplicateAgent ? { duplicateAgent: conn.duplicateAgent } : {}),
-        };
-      });
+    const conns = [...this.agents.values()].filter(conn => canSee(conn.owner, userId));
+    // Manual rail order (drag sorting): rows with an explicit position first (ascending; ties keep
+    // registration order — Array#sort is stable), never-reordered rows keep registration order at the end.
+    const ordered = conns
+      .filter(conn => conn.sortOrder != null)
+      .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+    const unordered = conns.filter(conn => conn.sortOrder == null);
+    return [...ordered, ...unordered].map((conn) => {
+      const ides = ideStatusOf(conn.latestState);
+      const contentIdes = [...conn.contentIdes];
+      return {
+        agentId: conn.agentId,
+        hostname: conn.hostname,
+        ...(conn.displayName ? { displayName: conn.displayName } : {}),
+        connected: !!conn.socket?.connected,
+        lastSeenAt: conn.lastSeenAt,
+        ides,
+        ...(contentIdes.length > 0 ? { contentIdes, contentOnly: isContentOnlyConn(conn) } : {}),
+        ...(conn.cliVersion ? { cliVersion: conn.cliVersion } : {}),
+        ...(conn.platform ? { platform: conn.platform } : {}),
+        ...cliSourcesField(conn),
+        ...(conn.owner ? { owner: conn.owner } : {}),
+        ...(conn.duplicateAgent ? { duplicateAgent: conn.duplicateAgent } : {}),
+      };
+    });
   }
 
   hasAgent(userId?: string): boolean {
@@ -605,6 +623,10 @@ export class AgentDirectory extends EventEmitter {
     // A registration with different ownership was already rejected at the gate; re-sign also does not cross people (see the ownership gate above).
     conn.owner = owner;
     conn.liveIdes = Array.isArray(info.liveIdes) ? info.liveIdes : undefined;
+    // Routing capability. Keep only kinds this server understands: a newer agent's
+    // unknown value must not become a routable slot (and must not be mistaken for
+    // `cursor` either — the intersection is explicit).
+    conn.slots = Array.isArray(info.slots) ? info.slots.filter(isIdeKind) : undefined;
     conn.contentSource = typeof info.contentSource === 'boolean' ? info.contentSource : undefined;
     // OS the machine self-reports. Overlay only when it reported one: old agents omit this field; don't clear
     // the value we have (platform is a machine property, independent of CLI version; unrecognized strings count as unreported).
@@ -711,7 +733,10 @@ export class AgentDirectory extends EventEmitter {
     if (!this.isActiveSocket(socket))
       return;
     const conn = this.agents.get(this.socketToAgent.get(socket.id)!)!;
-    const { ide, patch } = readIdePatch(payload);
+    const read = readIdePatch(conn, payload);
+    if (!read)
+      return;
+    const { ide, patch } = read;
     const { messages: _drop, ...rest } = patch;
     this.trackPatchSeq(conn, ide, payload);
     const idesBefore = ideStatusSignature(conn.latestState);
@@ -769,29 +794,52 @@ export class AgentDirectory extends EventEmitter {
     if (!this.isActiveSocket(socket))
       return;
     const agentId = this.socketToAgent.get(socket.id)!;
-    const sessions = payload?.sessions;
-    if (!Array.isArray(sessions))
+    const conn = this.agents.get(agentId);
+    const incoming = payload?.sessions;
+    if (!Array.isArray(incoming))
       return;
+    // Rows whose ide this server cannot name are dropped, never folded into cursor:
+    // the ledger row and `contentIdes` would otherwise claim another product's
+    // sessions belong to the cursor slot (this is exactly how a mixed-version window
+    // corrupts the index). Sanitized **once** per row: the ledger, the census set and
+    // the poke loop all reuse it (three passes used to re-parse and re-warn per row).
+    const rows: Array<{ session: SessionMeta; ide: IdeKind }> = [];
+    for (const session of incoming) {
+      const ide = readInboundIde(conn, session?.ref?.ide, 'sessions:index');
+      if (ide !== null)
+        rows.push({ session, ide });
+    }
+    const sessions = rows.map(row => row.session);
+    const reportedIdes = Array.isArray(payload.reportedIdes)
+      ? payload.reportedIdes.filter(isIdeKind)
+      : undefined;
     const delta = payload.mode === 'delta';
-    let removed = Array.isArray(payload.removed) ? payload.removed : [];
+    let removed = Array.isArray(payload.removed)
+      ? payload.removed.filter(row => isIdeKind(row?.ide))
+      : [];
     // Delta defense: old-agent reporters can mis-report **another IDE**'s sessions as deletions
     // (observed 2026-09-21: a codebuddy report of +572 also sent -1007 and wiped the cursor mirror).
     // The producer declares in reportedIdes which IDEs this round covers — deletions outside that
     // declaration are ignored, so old machines need not upgrade; a server bump keeps the mirror.
     // Payloads without a declaration keep original behavior (neither widen nor shrink).
-    if (delta && removed.length > 0 && Array.isArray(payload.reportedIdes)) {
-      const declared = new Set<IdeKind>(payload.reportedIdes.filter(isIdeKind));
+    if (delta && removed.length > 0 && reportedIdes) {
+      const declared = new Set<IdeKind>(reportedIdes);
       if (declared.size > 0)
         removed = removed.filter(row => declared.has(row.ide));
     }
-    // writeIndex([],) deletes every row for this agent — never persist a
-    // transient empty index. Mirror failure must not drop the live event or
-    // crash the process — browsers still need the index.
-    if (sessions.length > 0 || (delta && removed.length > 0)) {
+    // writeIndex may legitimately be handed an **empty** list: an authoritative round
+    // from a slot that truly has no rows (a plugin-only machine has no `CodeBuddyIDE/`)
+    // is exactly the payload that prunes the rows a pre-split agent mislabelled. The
+    // reporter only sends such a round after checking its root is readable, which is
+    // what keeps the "transient empty index" protection this guard was written for.
+    // Mirror failure must not drop the live event or crash the process — browsers
+    // still need the index.
+    const authoritative = !delta && (reportedIdes?.length ?? 0) > 0;
+    if (sessions.length > 0 || (delta && removed.length > 0) || authoritative) {
       try {
         if (delta)
           this.sessionStore?.mergeIndex(agentId, sessions, removed);
-        else this.sessionStore?.writeIndex(agentId, sessions, payload.reportedIdes);
+        else this.sessionStore?.writeIndex(agentId, sessions, reportedIdes);
       }
       catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -801,19 +849,17 @@ export class AgentDirectory extends EventEmitter {
     this.emit('sessions:index', agentId, {
       sessions,
       ...(delta && removed.length > 0 ? { mode: 'delta' as const, removed } : {}),
-      ...(payload.reportedIdes && payload.reportedIdes.length > 0
-        ? { reportedIdes: payload.reportedIdes }
+      ...(reportedIdes && reportedIdes.length > 0
+        ? { reportedIdes }
         : {}),
     });
 
     // Census reported = this machine is a content source for those IDEs; a first change affects the machine list (content-only machines fold into the group).
-    const conn = this.agents.get(agentId);
     if (conn) {
       const before = [...conn.contentIdes].sort().join(',');
-      for (const session of sessions) {
-        conn.contentIdes.add(parseIde(session?.ref?.ide));
-      }
-      for (const ide of payload.reportedIdes ?? []) conn.contentIdes.add(parseIde(ide));
+      for (const row of rows)
+        conn.contentIdes.add(row.ide);
+      for (const ide of reportedIdes ?? []) conn.contentIdes.add(ide);
       if ([...conn.contentIdes].sort().join(',') !== before)
         this.emit('machines:changed');
       // Ledger changed → a content-only machine's read-only session list must refresh too (the page list is driven by state).
@@ -822,18 +868,17 @@ export class AgentDirectory extends EventEmitter {
     }
 
     // Someone is waiting on these sessions (content lives elsewhere): just reported, so poke it to project the body. Once, no broadcast.
-    for (const session of sessions) {
+    for (const { session, ide } of rows) {
       const sessionId = session?.ref?.sessionId;
       if (typeof sessionId !== 'string' || sessionId.length === 0)
         continue;
-      const ide: IdeKind = parseIde(session.ref?.ide);
       // Session reappeared in the census → revoke the "this session does not exist" cache (auto-recovery path after a message is persisted).
       this.missingSessionsAt.delete(`${agentId}\0${ide}\0${sessionId}`);
       if (!this.hasWaitingWatcher(ide, sessionId, agentId))
         continue;
       if (this.sessionStore?.readSession(agentId, sessionId, ide)?.length)
         continue;
-      socket.emit('session:get', { sessionId, ide });
+      this.emitSessionGet(this.agents.get(agentId), { sessionId, ide });
     }
   }
 
@@ -845,7 +890,9 @@ export class AgentDirectory extends EventEmitter {
     const messages = payload?.messages;
     if (typeof sessionId !== 'string' || !Array.isArray(messages))
       return;
-    const ide = parseIde(payload.ide);
+    const ide = readInboundIde(this.agents.get(agentId), payload.ide, 'session:full');
+    if (ide === null)
+      return;
     const seq = readSeq(payload.seq) ?? 0;
     // Empty bodies come in two kinds; don't drop them with a single rule (2026-09-20: an owner's empty session was killed and the page skeleton waited forever):
     //  - content is registered under **another machine**: this machine's empty packet is untrusted — in the cross-machine case the IDE machine,
@@ -901,7 +948,9 @@ export class AgentDirectory extends EventEmitter {
     const messages = payload?.messages;
     if (typeof sessionId !== 'string' || !Array.isArray(messages))
       return;
-    const ide = parseIde(payload.ide);
+    const ide = readInboundIde(this.agents.get(agentId), payload.ide, 'session:append');
+    if (ide === null)
+      return;
     const seq = readSeq(payload.seq);
     // Forward what the mirror stored: its flatIndex may have been settled against rows already held.
     let stored = messages;
@@ -938,11 +987,13 @@ export class AgentDirectory extends EventEmitter {
     const seq = readSeq(payload?.seq);
     if (typeof sessionId !== 'string' || !Array.isArray(messages) || seq === undefined)
       return;
-    const ide = parseIde(payload.ide);
+    const ide = readInboundIde(this.agents.get(agentId), payload.ide, 'session:patch');
+    if (ide === null)
+      return;
     if (this.sessionStore?.readSessionSeq(agentId, sessionId, ide) === null) {
       timingLog('hub:session-patch-drop', { agentId, ide, sessionId, reason: 'no-baseline' });
       // No sinceSeq → the agent takes a forced full (Task 8). Sending sinceSeq would return a patch and loop with "the DB has no rows".
-      this.agents.get(agentId)?.socket?.emit('session:get', { sessionId, ide });
+      this.emitSessionGet(this.agents.get(agentId), { sessionId, ide });
       return;
     }
     let stored = messages;
@@ -980,7 +1031,9 @@ export class AgentDirectory extends EventEmitter {
     const seq = readSeq(payload?.seq);
     if (typeof sessionId !== 'string' || seq === undefined)
       return;
-    const ide = parseIde(payload.ide);
+    const ide = readInboundIde(this.agents.get(agentId), payload.ide, 'session:sync');
+    if (ide === null)
+      return;
     this.emit('session:sync', agentId, { sessionId, ide, seq });
     timingLog('hub:session-sync', { agentId, ide, sessionId, seq });
   }
@@ -997,7 +1050,9 @@ export class AgentDirectory extends EventEmitter {
     const sessionId = payload?.sessionId;
     if (typeof sessionId !== 'string' || sessionId.length === 0)
       return;
-    const ide = parseIde(payload?.ide);
+    const ide = readInboundIde(this.agents.get(agentId), payload?.ide, 'session:missing');
+    if (ide === null)
+      return;
     this.missingSessionsAt.set(`${agentId}\0${ide}\0${sessionId}`, this.now());
     timingLog('hub:session-missing', { agentId, ide, sessionId });
     this.relayMissingToWatchers(ide, sessionId, agentId);
@@ -1034,6 +1089,26 @@ export class AgentDirectory extends EventEmitter {
   }
 
   /**
+   * The only place `session:get` leaves this server.
+   *
+   * Gated on the **receiving** connection's declared `slots`, not on the requester:
+   * `session:get` has no schema check on the agent side (`uplink` only validates
+   * `command:*` / `cli:sync`), so an un-routed slot would be folded into `cursor` by
+   * the agent's `parseIde` — it would project Cursor's body, or answer
+   * `session:missing { ide: 'cursor' }` and the missing record would land in the
+   * cursor slot. Five call sites go through here; do not add a sixth `emit` by hand.
+   */
+  private emitSessionGet(
+    conn: AgentConn | undefined,
+    payload: { sessionId?: string; tabTitle?: string; ide: IdeKind; sinceSeq?: number },
+  ): boolean {
+    if (!conn || !canRouteTo(conn, payload.ide))
+      return false;
+    conn.socket?.emit('session:get', payload);
+    return true;
+  }
+
+  /**
    * Content may not live on the selected machine (IDE on a Mac, session data on a remote dev machine):
    * 1) This machine's DB already has the body → answer directly (fastest);
    * 2) The ledger says another machine has it on disk → if that machine has pushed a body, answer directly; if it's online, poke it to project;
@@ -1048,7 +1123,11 @@ export class AgentDirectory extends EventEmitter {
   ): void {
     const sessionId = payload?.sessionId;
     const tabTitle = payload?.tabTitle;
-    const ide = parseIde(payload?.ide);
+    // A request, not a report: absent still means cursor (the browser may omit it),
+    // but an unknown value is dropped instead of being retargeted at Cursor.
+    const ide = readInboundIde(undefined, payload?.ide, 'session:get');
+    if (ide === null)
+      return;
     const sinceSeq = readSeq(payload?.sinceSeq);
     const before
       = typeof payload?.before === 'number' && Number.isFinite(payload.before)
@@ -1087,7 +1166,12 @@ export class AgentDirectory extends EventEmitter {
       const owner = owners.find(id => this.agents.get(id)?.socket?.connected);
       if (owner) {
         timingLog('hub:session-get', { agentId, sessionId, ide, source: 'owner', owner });
-        this.agents.get(owner)?.socket?.emit('session:get', { sessionId, ide });
+        if (!this.emitSessionGet(this.agents.get(owner), { sessionId, ide })) {
+          // The owner cannot serve this slot any more (plugin removed, older CLI):
+          // answer terminally instead of leaving the page on a skeleton forever.
+          timingLog('hub:session-get', { agentId, sessionId, ide, source: 'owner-gate-refused', owner });
+          replyTo.emit('session:unavailable', { sessionId, ide });
+        }
         return;
       }
 
@@ -1106,14 +1190,17 @@ export class AgentDirectory extends EventEmitter {
         return;
       timingLog('hub:session-get', { agentId, sessionId, ide, source: 'wait-owner' });
       const conn = this.agents.get(agentId);
-      conn?.socket?.emit('session:get', { sessionId, ide });
+      if (!this.emitSessionGet(conn, { sessionId, ide }))
+        replyTo.emit('session:unavailable', { sessionId, ide });
       return;
     }
 
     if (typeof tabTitle === 'string' && tabTitle.length > 0) {
       timingLog('hub:session-get', { agentId, tabTitle, ide, source: 'agent' });
       const conn = this.agents.get(agentId);
-      conn?.socket?.emit('session:get', { tabTitle, ide });
+      // No sessionId to answer with: a refusal can only be logged.
+      if (!this.emitSessionGet(conn, { tabTitle, ide }))
+        timingLog('hub:session-get', { agentId, tabTitle, ide, source: 'agent-gate-refused' });
     }
   }
 
@@ -1165,10 +1252,10 @@ export class AgentDirectory extends EventEmitter {
       source: 'store+refresh',
       owner: ownerAgentId,
     });
-    conn.socket.emit(
-      'session:get',
-      sinceSeq === undefined ? { sessionId, ide } : { sessionId, ide, sinceSeq },
-    );
+    // Sixth and last `session:get` exit — through the same gate as the rest. A refusal is
+    // **silent** on purpose: the body was already answered from the store, so telling the
+    // page "unavailable" here would hide content that did arrive.
+    this.emitSessionGet(conn, sinceSeq === undefined ? { sessionId, ide } : { sessionId, ide, sinceSeq });
   }
 
   /**
@@ -1307,8 +1394,11 @@ export class AgentDirectory extends EventEmitter {
     if (!this.isActiveSocket(socket))
       return;
     const conn = this.agents.get(this.socketToAgent.get(socket.id)!)!;
+    const ide = readInboundIde(conn, payload.ide, 'connection:status');
+    if (ide === null)
+      return;
     const idesBefore = ideStatusSignature(conn.latestState);
-    conn.latestState = applyIdePatch(conn.latestState, payload.ide ?? 'cursor', {
+    conn.latestState = applyIdePatch(conn.latestState, ide, {
       connected: payload.connected,
     });
     conn.lastSeenAt = this.now();
@@ -1428,6 +1518,39 @@ export class AgentDirectory extends EventEmitter {
     return true;
   }
 
+  /**
+   * Console drag sorting: apply the given rail order (position = array index). Refuses the whole
+   * call if any id is unknown (no partial writes). The caller (relay) checks that the list is
+   * exactly the viewer's machines — here it must only verify each id exists, because in
+   * multi-owner deployments this directory holds several people's machines.
+   */
+  reorderMachines(agentIds: string[]): boolean {
+    // Duplicate ids would write one row twice — refuse whole (relay also checks, this is the directory's own gate).
+    if (new Set(agentIds).size !== agentIds.length)
+      return false;
+    for (const agentId of agentIds) {
+      if (!this.agents.has(agentId))
+        return false;
+    }
+    const entries: Array<{ agentId: string; sortOrder: number }> = [];
+    agentIds.forEach((agentId, index) => {
+      this.agents.get(agentId)!.sortOrder = index;
+      entries.push({ agentId, sortOrder: index });
+    });
+    try {
+      this.store.setMachineOrder(entries);
+    }
+    catch (err) {
+      // Same stance as setDisplayName: memory is already updated, the page sees it immediately;
+      // a persist failure only reverts the order after a restart.
+      console.error(
+        `[agent-hub] Failed to persist machine order: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    this.emit('machines:changed');
+    return true;
+  }
+
   sendCommand(agentId: string, event: string, payload: CommandPayload, replyTo: AgentSocket): void {
     timingLog('hub:command', {
       agentId,
@@ -1458,6 +1581,26 @@ export class AgentDirectory extends EventEmitter {
       } satisfies CommandResult);
       return;
     }
+    // IDE command: the target slot must be one this agent declared, and the forwarded
+    // payload must name it **explicitly**. An absent `ide` means cursor on the wire, and
+    // an agent folds an unknown value into cursor — so an ide-less command that was
+    // meant for another slot would be typed into Cursor. Filling it here keeps the
+    // agent's `parseIde` default from ever deciding the target.
+    let forwarded = payload;
+    if (cliSource === null) {
+      const ide: IdeKind = isIdeKind(payload.ide) ? payload.ide : 'cursor';
+      if (!canRouteTo(conn, ide)) {
+        timingLog('hub:ide-agent-incompatible', { agentId, event, ide, commandId: payload.commandId });
+        replyTo.emit('command:result', {
+          commandId: payload.commandId,
+          ok: false,
+          errorCode: 'ide-agent-incompatible',
+          error: `Agent does not report the ${ide} slot`,
+        } satisfies CommandResult);
+        return;
+      }
+      forwarded = { ...payload, ide };
+    }
     if (payload.commandId) {
       const key = pendingKey(agentId, payload.commandId);
       if (this.pending.has(key)) {
@@ -1472,7 +1615,7 @@ export class AgentDirectory extends EventEmitter {
       this.pending.set(key, { replyTo, agentId, commandId: payload.commandId, expiresAt });
       this.armPending(key);
     }
-    conn.socket.emit(event, payload);
+    conn.socket.emit(event, forwarded);
   }
 
   /**
@@ -1950,10 +2093,10 @@ export class AgentHub extends EventEmitter {
       socket.on('connection:status', (payload: { ide?: IdeKind; connected: boolean }) => {
         if (!this.directory.isActiveSocket(socket))
           return;
-        // On the wire this is a bare assertion: a garbage-string ide is ignored and falls back to cursor
-        // (same parseIde contract as state:patch — unknown kinds are not written into latestState / snapshot_json)
+        // The raw value goes in: `applyConnection` drops an unknown ide and only falls
+        // back to cursor for a connection that never declared its slots (see readInboundIde).
         this.directory.applyConnection(socket, {
-          ide: isIdeKind(payload?.ide) ? payload.ide : undefined,
+          ide: payload?.ide,
           connected: payload.connected === true,
         });
       });
@@ -2083,6 +2226,11 @@ export class AgentHub extends EventEmitter {
     return this.directory.setDisplayName(agentId, displayName);
   }
 
+  /** Console drag sorting: apply the given rail order. false = an id in the list is unknown. */
+  reorderMachines(agentIds: string[]): boolean {
+    return this.directory.reorderMachines(agentIds);
+  }
+
   handleSessionGet(
     agentId: string,
     payload: SessionGetPayload,
@@ -2201,6 +2349,18 @@ function isContentOnlyConn(conn: AgentConn): boolean {
  * looks at. Without it, that row keeps the previous host suffix until the
  * connection bit or the approval count happens to move.
  */
+/**
+ * Slots an agent that predates the capability declaration can route to: the
+ * pre-split set. Never derived from `liveIdes` — that field means "installed"
+ * (and a content-only machine need not populate it), while this means "answerable".
+ */
+const LEGACY_ROUTABLE_SLOTS: readonly IdeKind[] = ['cursor', 'codebuddy'];
+
+/** Can this connection answer for `ide`? Gate for commands and every `session:get` emit. */
+function canRouteTo(conn: AgentConn | undefined, ide: IdeKind): boolean {
+  return (conn?.slots ?? LEGACY_ROUTABLE_SLOTS).includes(ide);
+}
+
 function ideStatusSignature(state: AgentIdesState): string {
   const status = ideStatusOf(state);
   return IDE_KINDS.map((ide) => {
@@ -2209,15 +2369,68 @@ function ideStatusSignature(state: AgentIdesState): string {
   }).join('|');
 }
 
-function readIdePatch(payload: unknown): { ide: IdeKind; patch: Partial<CursorState> } {
+/**
+ * Inbound `ide` parsing for agent → server events. Stricter than `parseIde`, which
+ * stays as-is on purpose: its "absent → cursor" is the old-agent compatibility
+ * contract used elsewhere (the browser URL parser has its own strict version).
+ *
+ * Two rules:
+ *  - **present but unknown** (a newer agent's kind this server does not know) → drop.
+ *    Folding it into cursor would write another product's state and ledger into the
+ *    cursor slot, silently.
+ *  - **absent** → cursor **only for a connection that declared no `slots`**. An agent
+ *    that reported its slots always knows which slot it is reporting for, so a
+ *    missing `ide` there is a bug: drop it rather than guess.
+ */
+export function readInboundIde(
+  conn: Pick<AgentConn, 'slots'> | undefined,
+  raw: unknown,
+  what: string,
+): IdeKind | null {
+  if (raw === undefined || raw === null || raw === '') {
+    if ((conn?.slots?.length ?? 0) > 1) {
+      warnOnce(`${what}\0(absent)`, `[agent-hub] Dropping ${what} without an ide from a multi-slot agent`);
+      return null;
+    }
+    return 'cursor';
+  }
+  if (!isIdeKind(raw)) {
+    warnOnce(`${what}\0${String(raw)}`, `[agent-hub] Dropping ${what} with unknown ide "${String(raw)}" (agent newer than server?)`);
+    return null;
+  }
+  return raw;
+}
+
+/**
+ * Log an inbound-drop **once** per (event, value).
+ *
+ * A census round repeats every ~2s for as long as the mismatch lasts, so an
+ * unconditional warn is a log amplifier — the 2026-09-20 incident was exactly this
+ * shape (30 pokes/s + logging pinned the main thread). Bounded on purpose: a
+ * pathological stream of distinct values must not grow the set without limit.
+ */
+const warnedInbound = new Set<string>();
+function warnOnce(key: string, message: string): void {
+  if (warnedInbound.has(key))
+    return;
+  if (warnedInbound.size > 200)
+    warnedInbound.clear();
+  warnedInbound.add(key);
+  console.warn(message);
+}
+
+function readIdePatch(conn: AgentConn, payload: unknown): { ide: IdeKind; patch: Partial<CursorState> } | null {
   if (payload && typeof payload === 'object') {
     const rec = payload as Record<string, unknown>;
     if ('ide' in rec && rec.patch && typeof rec.patch === 'object') {
-      return { ide: parseIde(rec.ide), patch: rec.patch as Partial<CursorState> };
+      const ide = readInboundIde(conn, rec.ide, 'state:patch');
+      return ide === null ? null : { ide, patch: rec.patch as Partial<CursorState> };
     }
-    return { ide: 'cursor', patch: rec as Partial<CursorState> };
+    // Legacy shape: a bare `CursorState` with no `ide` at all (pre-per-ide wire).
+    const ide = readInboundIde(conn, undefined, 'state:patch');
+    return ide === null ? null : { ide, patch: rec as Partial<CursorState> };
   }
-  return { ide: 'cursor', patch: {} };
+  return null;
 }
 
 /** Baseline shipped with `state:full` (see `PatchSeqBaseline`). Anything malformed = no baseline (old behavior). */

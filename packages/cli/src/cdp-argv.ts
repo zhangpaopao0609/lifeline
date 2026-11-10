@@ -2,6 +2,25 @@ const MARKER = 'Lifeline CDP';
 const LEGACY_MARKER = 'AgentRemote CDP';
 const KEY_RE = /"remote-debugging-port"\s*:/;
 
+/**
+ * How the port is serialized.
+ *
+ * `string` exists because **VSCode validates argv.json against its own schema**, where
+ * `remote-debugging-port` is a string; a JSON number is dropped silently (measured
+ * 2026-11-09 on VS Code 1.144: number → no `--remote-debugging-port`, no port file
+ * refresh; `"0"` → the switch is applied and `DevToolsActivePort` is rewritten).
+ * A dropped value is invisible — the app just starts without a port and the agent falls
+ * back to quit-and-reopen, which for VSCode means killing the editor the user is in.
+ *
+ * Cursor / the CodeBuddy IDE keep the number form: their own argv handling was not
+ * measured to accept a string, and changing it would be a different experiment.
+ */
+export type CdpPortValueForm = 'number' | 'string';
+
+function formatPortValue(port: number, form: CdpPortValueForm): string {
+  return form === 'string' ? `"${port}"` : String(port);
+}
+
 function isManagedMarker(text: string): boolean {
   return text.includes(MARKER) || text.includes(LEGACY_MARKER);
 }
@@ -24,11 +43,15 @@ function trimTrailingComments(text: string): string {
 }
 
 /** Insert remote-debugging-port without stripping existing JSONC comments. */
-export function ensureRemoteDebuggingPortInText(text: string, port = 9222): { text: string; changed: boolean } {
+export function ensureRemoteDebuggingPortInText(
+  text: string,
+  port = 9222,
+  form: CdpPortValueForm = 'number',
+): { text: string; changed: boolean } {
   if (hasRemoteDebuggingPort(text)) {
     return { text, changed: false };
   }
-  const insert = `\t// ${MARKER}\n\t"remote-debugging-port": ${port}\n`;
+  const insert = `\t// ${MARKER}\n\t"remote-debugging-port": ${formatPortValue(port, form)}\n`;
   const closeIdx = text.lastIndexOf('}');
   if (closeIdx === -1) {
     return { text: `{\n${insert}}\n`, changed: true };
@@ -40,7 +63,8 @@ export function ensureRemoteDebuggingPortInText(text: string, port = 9222): { te
   return { text: `${prefix}\n${insert}}\n`, changed: true };
 }
 
-const PORT_VALUE_RE = /("remote-debugging-port"\s*:\s*)(\d+)/;
+/** Both forms: the released CLI wrote a number, VSCode needs a string — a rewrite must match either. */
+const PORT_VALUE_RE = /("remote-debugging-port"\s*:\s*)("?)(\d+)\2/;
 
 /**
  * Rewrite a Lifeline-managed remote-debugging-port, or insert one.
@@ -49,9 +73,10 @@ const PORT_VALUE_RE = /("remote-debugging-port"\s*:\s*)(\d+)/;
 export function setManagedRemoteDebuggingPort(
   text: string,
   port: number,
+  form: CdpPortValueForm = 'number',
 ): { text: string; changed: boolean; unmanaged?: boolean } {
   if (!hasRemoteDebuggingPort(text)) {
-    return ensureRemoteDebuggingPortInText(text, port);
+    return ensureRemoteDebuggingPortInText(text, port, form);
   }
   if (!isManagedMarker(text)) {
     return { text, changed: false, unmanaged: true };
@@ -87,15 +112,19 @@ export function setManagedRemoteDebuggingPort(
     return { text, changed: false, unmanaged: true };
   }
   const isLegacy = lines[markerIdx]!.includes(LEGACY_MARKER);
-  const portSame = Number(match[2]) === port;
-  if (portSame && !isLegacy) {
+  const portSame = Number(match[3]) === port;
+  // Form mismatch counts as a change: an existing `"remote-debugging-port": 0` in
+  // ~/.vscode/argv.json (written by every release before this fix) is exactly the
+  // broken state, and the next `lifeline start` must repair it in place.
+  const formSame = (match[2] === '"') === (form === 'string');
+  if (portSame && formSame && !isLegacy) {
     return { text, changed: false };
   }
   if (isLegacy) {
     lines[markerIdx] = lines[markerIdx]!.replace(LEGACY_MARKER, MARKER);
   }
-  if (!portSame) {
-    lines[keyIdx] = keyLine.replace(PORT_VALUE_RE, `$1${port}`);
+  if (!portSame || !formSame) {
+    lines[keyIdx] = keyLine.replace(PORT_VALUE_RE, `$1${formatPortValue(port, form)}`);
   }
   return { text: lines.join('\n'), changed: true };
 }

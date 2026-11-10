@@ -2,7 +2,7 @@ import type { ChatTab, CursorState } from '../packages/web/src/net/protocol.ts';
 import type { PendingNewChat } from '../packages/web/src/store/ui.ts';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { newChatLanded } from '../packages/web/src/lib/new-chat.ts';
+import { draftPaneBody, newChatLanded } from '../packages/web/src/lib/new-chat.ts';
 
 /**
  * When is an optimistic "new session" row replaced by the real one?
@@ -143,5 +143,28 @@ describe('optimistic new chat', () => {
     });
     assert.equal(newChatLanded(pending({ section: 'repo-a' }), inSection), true);
     assert.equal(newChatLanded(pending({ section: 'repo-b' }), inSection), false);
+  });
+});
+
+describe('draft pane body', () => {
+  it('paints nothing before a message was sent from the draft', () => {
+    assert.equal(draftPaneBody('cursor:draft-1', undefined), undefined);
+    assert.equal(draftPaneBody('cursor:draft-1', []), undefined);
+    assert.equal(draftPaneBody('', [{ id: 'pending-send:c1' }]), undefined, '没有 key 就没有可挂的正文');
+  });
+
+  it('paints the optimistic bubble as soon as it is echoed', () => {
+    const bubble = [{ id: 'pending-send:c1' }];
+    assert.equal(draftPaneBody('cursor:draft-1', bubble), bubble);
+  });
+
+  /**
+   * The twin can land and pop the bubble while the IDE state still reports a draft (session-store-web.test.ts covers
+   * that order). Deciding on "has a pending bubble" instead of "body is not empty" would blank the pane at that
+   * instant and flash the just-landed message away.
+   */
+  it('keeps painting after reconcile swapped the bubble for the landed twin', () => {
+    const landed = [{ id: 'h1' }];
+    assert.equal(draftPaneBody('cursor:draft-1', landed), landed);
   });
 });

@@ -8,6 +8,7 @@ import type {
 } from '../packages/agent/src/sources/types.js';
 import type { ChatElement } from '../packages/server/src/types.js';
 import assert from 'node:assert/strict';
+import { tmpdir } from 'node:os';
 import { describe, it } from 'node:test';
 import {
   SessionIndexReporter,
@@ -39,7 +40,9 @@ class FakeSource implements ContentSource {
   }
 
   probe(): SourceProbe {
-    return { ok: true, rootPath: '/fake' };
+    // A real directory: the reporter now refuses to prune a slot whose root is not
+    // reachable, so a fake path would hold every round.
+    return { ok: true, rootPath: tmpdir() };
   }
 
   changeSignal(): number {
@@ -84,14 +87,17 @@ function makeReporter(source: ContentSource): { sent: SessionsIndexDelta[]; repo
 }
 
 describe('SessionIndexReporter', () => {
-  it('报一次全量差量，指纹不变时连清单都不扫', () => {
+  it('首轮权威全量（不带 mode），指纹不变时连清单都不扫', () => {
     const source = new FakeSource();
     source.heads = [meta('s1', 'A', 10), meta('s2', 'B', 20)];
     const { sent, reporter } = makeReporter(source);
 
     reporter.tick();
     assert.equal(sent.length, 1);
-    assert.equal(sent[0].mode, 'delta');
+    // First round of a process is authoritative: the server rewrites this slot's
+    // index, which is what deletes rows a pre-split agent mislabelled (see
+    // tests/session-index-authoritative.test.ts).
+    assert.equal(sent[0].mode, undefined);
     assert.deepEqual(sent[0].sessions.map(s => s.ref.sessionId), ['s1', 's2']);
     assert.deepEqual(sent[0].removed, []);
     assert.equal(source.headCalls, 1);

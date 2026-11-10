@@ -11,6 +11,7 @@ import {
   parseDevToolsActivePort,
   parseDevToolsActivePortUuid,
   resolveEndpoint,
+  vscodeActivePortCandidates,
 } from '../packages/agent/src/cdp/endpoint.js';
 import { probeCdpEndpoint } from '../packages/agent/src/cdp/probe.js';
 
@@ -177,30 +178,18 @@ describe('codeBuddyActivePortCandidates', () => {
     assert.equal(win.length, 6);
   });
 
-  // Pure default: no VSCode candidate unless the driver passes the plugin gate.
-  it('omits the VSCode candidate by default (gate is passed by the driver)', () => {
+  // Slot split: the codebuddy slot owns the standalone IDE only. VSCode's port
+  // file belongs to the `vscode` slot, so it must never appear here — otherwise
+  // the two slots race for one endpoint, which is the collision the split removes.
+  it('never contains the VSCode candidate (the vscode slot owns it)', () => {
     assert.equal(codeBuddyActivePortCandidates('/Users/me', 'darwin', {}).length, 4);
     const env = { APPDATA: 'C:\\u\\AppData\\Roaming' };
     assert.equal(codeBuddyActivePortCandidates('C:\\u', 'win32', env).length, 6);
+    for (const p of codeBuddyActivePortCandidates('/Users/me', 'darwin', {}))
+      assert.equal(p.includes('/Code/DevToolsActivePort'), false, p);
+    for (const p of codeBuddyActivePortCandidates('C:\\u', 'win32', env))
+      assert.equal(p.replace(/\\/g, '/').includes('/Code/DevToolsActivePort'), false, p);
   });
-
-  // VSCode (CodeBuddy plugin host): its DevToolsActivePort sits right after the
-  // current platform's CodeBuddy entries — a dual-install machine prefers the
-  // standalone IDE, and other platforms stay last.
-  it('inserts the VSCode candidate after the current platform CodeBuddy entries when gated in', () => {
-    const darwin = codeBuddyActivePortCandidates('/Users/me', 'darwin', {}, { vscodePlugin: true });
-    assert.equal(darwin[2], join('/Users/me', 'Library', 'Application Support', 'Code', 'DevToolsActivePort'));
-    assert.equal(darwin.length, 5);
-
-    const linux = codeBuddyActivePortCandidates('/home/me', 'linux', {}, { vscodePlugin: true });
-    assert.equal(linux[2], join('/home/me', '.config', 'Code', 'DevToolsActivePort'));
-
-    const env = { APPDATA: 'C:\\u\\AppData\\Roaming' };
-    const win = codeBuddyActivePortCandidates('C:\\u', 'win32', env, { vscodePlugin: true });
-    assert.equal(win[2], 'C:\\u\\AppData\\Roaming\\Code\\DevToolsActivePort');
-    assert.equal(win.length, 7);
-  });
-
   // "Current platform first" is the **only** safety: `resolveEndpoint` takes the first readable file whose port parses
   // (including not-cdp / unknown), with no kinship check. So a cross-platform candidate, once read, is adopted —
   // this case pins that behavior so nobody assumes "kinship will save us" and shuffles the order.
@@ -661,5 +650,29 @@ describe('resolveEndpoint: stale first candidate', () => {
     mtimes[LIVE_PATH] = 300; // the file we actually use moved → re-walk
     await resolveEndpoint(opts);
     assert.ok(seen.length > probesAfterFirst + 1, '采纳的那张变了就要重新解析');
+  });
+});
+
+describe('vscodeActivePortCandidates', () => {
+  it('lists only the VSCode workbench user-data-dir', () => {
+    assert.deepEqual(
+      vscodeActivePortCandidates('/Users/me', 'darwin', {}),
+      [join('/Users/me', 'Library', 'Application Support', 'Code', 'DevToolsActivePort')],
+    );
+    assert.deepEqual(
+      vscodeActivePortCandidates('/home/me', 'linux', {}),
+      [join('/home/me', '.config', 'Code', 'DevToolsActivePort')],
+    );
+    const env = { APPDATA: 'C:\\u\\AppData\\Roaming' };
+    const win = vscodeActivePortCandidates('C:\\u', 'win32', env);
+    assert.equal(win[0], 'C:\\u\\AppData\\Roaming\\Code\\DevToolsActivePort');
+    assert.equal(win.every(p => p.replace(/\\/g, '/').includes('/Code/DevToolsActivePort')), true);
+  });
+
+  // Insiders is a different user-data-dir: it stays invisible instead of sharing
+  // this slot (two profiles inside one install *do* share the file — see §7).
+  it('does not list the Insiders user-data-dir', () => {
+    for (const p of vscodeActivePortCandidates('/Users/me', 'darwin', {}))
+      assert.equal(p.includes('Code - Insiders'), false, p);
   });
 });

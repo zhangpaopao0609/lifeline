@@ -8,7 +8,7 @@ import type { SessionWatermark } from './content-watermark.js';
 import type { ContentSource } from './sources/content-source.js';
 import type { IdeKind, MessageHeader, SessionMeta } from './sources/types.js';
 import type { ChatElement } from './types.js';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -73,6 +73,35 @@ export function defaultCodeBuddyRoot(
 export const DEFAULT_CURSOR_VSCDB = defaultCursorVscdb();
 export const DEFAULT_CODEBUDDY_ROOT = defaultCodeBuddyRoot();
 
+/**
+ * Does the CodeBuddy history contain `<root>/<uid>/<host dir>/` for this slot?
+ *
+ * This is the **content side** of the slot gate and it must not read
+ * `~/.vscode/extensions`: a machine can hold the plugin's history without the
+ * plugin being installed *here* (a restored data dir, a plugin that was removed,
+ * a content-only box). Deciding adapters by the local install would leave
+ * `session:get` with no runtime — and with no runtime the agent neither projects
+ * nor answers `session:missing`, so the page sits on a skeleton forever.
+ */
+export function codeBuddyHostShardExists(
+  ide: 'codebuddy' | 'vscode',
+  root = DEFAULT_CODEBUDDY_ROOT,
+): boolean {
+  const hostDir = ide === 'vscode' ? 'VSCode' : 'CodeBuddyIDE';
+  if (!existsSync(root))
+    return false;
+  try {
+    for (const uid of readdirSync(root, { withFileTypes: true })) {
+      if (uid.isDirectory() && existsSync(join(root, uid.name, hostDir)))
+        return true;
+    }
+  }
+  catch {
+    return false;
+  }
+  return false;
+}
+
 /** Open Cursor's state.vscdb. On failure: log and return null — never crash. */
 export function tryOpenCursorAdapter(
   dbPath = DEFAULT_CURSOR_VSCDB,
@@ -91,7 +120,7 @@ export function tryOpenCursorAdapter(
 /** Open CodeBuddy JSON history. Missing root: warn and return null — never throw. */
 export function tryOpenCodeBuddyAdapter(
   root = DEFAULT_CODEBUDDY_ROOT,
-  opts?: { includeProcess?: boolean },
+  opts?: { includeProcess?: boolean; ide?: 'codebuddy' | 'vscode' },
 ): CodeBuddyAdapter | null {
   try {
     if (!existsSync(root)) {
@@ -147,6 +176,13 @@ export interface ContentLiveTickOpts {
 
 const DEFAULT_INTERVAL_MS = 300;
 
+/**
+ * How many ticks an indexed-but-unreadable message body is retried before it is left alone. The
+ * plugin's index write leads its message write by milliseconds, so one or two retries cover the race;
+ * an unbounded retry would keep re-reading rows that never produce an element of their own.
+ */
+const UNRESOLVED_RETRY_LIMIT = 3;
+
 /** Disk-write throttle: a tick is 300ms; do not write every round */
 const WATERMARK_SAVE_DEBOUNCE_MS = 3000;
 /**
@@ -169,6 +205,14 @@ export class ContentLiveRuntime {
   private readonly lastSizes = new Map<string, Map<string, number>>();
   /** ids whose text we pushed from liveTail: the disk is the truth, so re-read them until it wins. */
   private readonly tainted = new Map<string, Set<string>>();
+  /** Ids fetched but not produced last tick (body missing/torn) → attempts so far, bounded. */
+  private readonly unresolved = new Map<string, Map<string, number>>();
+  /**
+   * Ids whose body never showed up after the retry budget. They stay in the index (the server needs to
+   * know they exist) but are never requested again until a full projection — otherwise the whole-index
+   * fallback would keep re-reading them and restart the retry cycle.
+   */
+  private readonly abandoned = new Map<string, Set<string>>();
   /** Max seq already sent per session; reset to 0 on full. */
   private readonly seqBySession = new Map<string, number>();
   /** Sessions that do not exist locally (cross-machine) — log once, do not spam every tick. */
@@ -386,7 +430,11 @@ export class ContentLiveRuntime {
     // quiet: healing re-reads the tainted ids, and the shortcuts below never do.
     const taintedCount = this.tainted.get(active)?.size ?? 0;
 
-    if (!changed && taintedCount === 0) {
+    // A body we are still retrying may land without another disk change: keep ticking until the retry
+    // budget is spent, otherwise a lost row would wait for the user to type again.
+    const retryPending = (this.unresolved.get(active)?.size ?? 0) > 0;
+
+    if (!changed && taintedCount === 0 && !retryPending) {
       this.emitLiveTailOnly(active, liveTail);
       return;
     }
@@ -394,7 +442,7 @@ export class ContentLiveRuntime {
     const index = this.adapter.readIndex(active);
     const sizes = this.adapter.bubbleSizes?.(active);
     const sig = diskSignature(index, sizes, this.adapter.sessionBodySignal?.(active));
-    if (sig === this.lastDiskSig.get(active) && taintedCount === 0) {
+    if (sig === this.lastDiskSig.get(active) && taintedCount === 0 && !retryPending) {
       this.emitLiveTailOnly(active, liveTail);
       return;
     }
@@ -440,6 +488,11 @@ export class ContentLiveRuntime {
       index.find(h => h.messageId === bubbleId)?.complete ?? true;
     let messages: ChatElement[];
     let tainted: string[];
+    let toFetch: string[] = [];
+    /** Ids already counted as unreadable this tick (trackUnaccounted must not count them twice). */
+    let countedMissing = new Set<string>();
+    /** True when this tick only re-fetches rows we flagged — a repair tick must not rewrite delivered cards. */
+    let repairOnly = false;
     if (wantFull) {
       ({ messages, tainted } = applyLiveTail(
         this.adapter.projectSession(sessionId),
@@ -451,11 +504,65 @@ export class ContentLiveRuntime {
     else {
       const prevIndex = this.lastIndex.get(sessionId) ?? [];
       const prevMessages = this.lastEmitted.get(sessionId) ?? [];
-      const toFetch = idsToFetch(index, prevIndex, sizes, this.lastSizes.get(sessionId), this.tainted.get(sessionId));
+      toFetch = idsToFetch(
+        index,
+        prevIndex,
+        sizes,
+        this.lastSizes.get(sessionId),
+        this.tainted.get(sessionId),
+        this.unresolved.get(sessionId),
+      );
+      // Abandoned ids stay fetchable (the whole-index fallback must stay complete), they are simply no
+      // longer seeded as retries — see `abandoned`.
+      // A repair tick re-reads only rows that never produced an element (retry of an unreadable body, or
+      // a header that legitimately emits nothing). Re-projecting such a subset can move a sibling's
+      // flatIndex, which would look like "changed" JSON; those ticks must not rewrite delivered elements.
+      const emittedIds = new Set(prevMessages.map(m => elementBubbleId(m.id)));
+      repairOnly = toFetch.length > 0 && toFetch.every(id => !emittedIds.has(id));
       if (toFetch.length === 0) {
         ({ messages, tainted } = applyLiveTail(prevMessages, liveTail, sessionId, isComplete));
+        this.unresolved.delete(sessionId);
       }
       else {
+        // Decide readability BEFORE projecting. The plugin writes `index.json` and `messages/<id>.json`
+        // as two writes, so a keyed read can come back empty for a row that is about to exist. Such a
+        // tick is "no progress": emit nothing and advance nothing, so the next tick retries the same ids.
+        // Pushing the partial projection instead would rewrite an already delivered tool card as
+        // "loading", and remembering it would freeze that state (measured 2026-11-09 on the vscode slot:
+        // the human turn vanished; the same shape here).
+        const readable = this.adapter.readableIds
+          ? new Set(this.adapter.readableIds(sessionId, toFetch))
+          : new Set(toFetch);
+        const goneNow = this.abandoned.get(sessionId);
+        // A row we already gave up on must not block the tick forever.
+        const missing = toFetch.filter(id => !readable.has(id) && !goneNow?.has(id));
+        countedMissing = new Set(missing);
+        if (missing.length > 0) {
+          const prevAttempts = this.unresolved.get(sessionId) ?? new Map<string, number>();
+          const attempts = new Map(prevAttempts); // keep rows still being retried from earlier ticks
+          for (const id of missing) attempts.set(id, (prevAttempts.get(id) ?? 0) + 1);
+          // An id that never becomes readable must not stall the session forever: after the budget, give
+          // up on it and push what we have (the server upserts by id, so a degraded card is recoverable).
+          const given = missing.filter(id => (attempts.get(id) ?? 0) > UNRESOLVED_RETRY_LIMIT);
+          if (given.length === 0) {
+            this.unresolved.set(sessionId, attempts);
+            timingLog('content:incomplete', {
+              ide: this.adapter.ide,
+              sessionId,
+              asked: toFetch.length,
+              missing: missing.length,
+              attempt: Math.max(0, ...attempts.values()),
+            });
+            return;
+          }
+          const gone = this.abandoned.get(sessionId) ?? new Set<string>();
+          for (const id of given) {
+            attempts.delete(id);
+            gone.add(id);
+          }
+          this.abandoned.set(sessionId, gone);
+          this.unresolved.set(sessionId, attempts);
+        }
         const patch = this.adapter.projectSession(sessionId, toFetch);
         ({ messages, tainted } = applyLiveTail(mergeEmitted(prevMessages, patch), liveTail, sessionId, isComplete));
       }
@@ -471,6 +578,29 @@ export class ContentLiveRuntime {
       this.tainted.set(sessionId, new Set(modified));
     else
       this.tainted.delete(sessionId);
+    // A full projection re-reads everything, so a row we gave up on deserves a fresh chance; ids that
+    // left the index are dropped so the set cannot grow forever.
+    if (wantFull) {
+      this.abandoned.delete(sessionId);
+      this.unresolved.delete(sessionId);
+    }
+    else {
+      const gone = this.abandoned.get(sessionId);
+      if (gone) {
+        for (const id of [...gone]) {
+          if (!indexIds.has(id))
+            gone.delete(id);
+        }
+        if (gone.size === 0)
+          this.abandoned.delete(sessionId);
+      }
+    }
+    // A header with no element was NOT delivered, whatever the index says. That is the shape of the
+    // lost-row bug: a full projection taken while the body is still being written remembers the header
+    // and emits nothing, after which it counts as "not new" forever. Retry those ids a bounded number
+    // of times and then give up, so rows that legitimately emit nothing (tool headers under
+    // includeProcess, compaction notices) cannot be re-read forever.
+    this.trackUnaccounted(sessionId, index, messages, countedMissing);
 
     // Wire format: the projection numbered flatIndex inside the requested subset;
     // the merged array is the truth — renumber so append/patch carry global order
@@ -495,12 +625,7 @@ export class ContentLiveRuntime {
     const toAppend
       = force === 'patch-all'
         ? messages
-        : diffAppend(
-            index,
-            messages,
-            this.lastIndex.get(sessionId) ?? [],
-            this.lastEmitted.get(sessionId) ?? [],
-          );
+        : diffAppend(index, messages, this.lastEmitted.get(sessionId) ?? [], !repairOnly);
     if (toAppend.length > 0) {
       // patch-all is already on the "behind" path; seq is the current value, do not +1 again
       const seq
@@ -575,6 +700,47 @@ export class ContentLiveRuntime {
     this.lastEmitted.set(sessionId, next);
   }
 
+  /**
+   * Count headers that produced no element. They are retried (bounded) on the following ticks, so a row
+   * whose body landed after the projection that would have carried it still gets another chance; after
+   * the budget they are abandoned, which keeps rows that never emit an element from being re-read forever.
+   */
+  private trackUnaccounted(
+    sessionId: string,
+    index: MessageHeader[],
+    messages: ChatElement[],
+    skip: Set<string>,
+  ): void {
+    const emitted = new Set(messages.map(m => elementBubbleId(m.id)));
+    const abandoned = this.abandoned.get(sessionId);
+    const prev = this.unresolved.get(sessionId) ?? new Map<string, number>();
+    const next = new Map<string, number>();
+    // Ids already counted as unreadable this tick keep their count; they were not re-projected.
+    for (const id of skip) {
+      const n = prev.get(id);
+      if (n != null && !emitted.has(id) && !abandoned?.has(id))
+        next.set(id, n);
+    }
+    for (const h of index) {
+      const id = h.messageId;
+      if (emitted.has(id) || skip.has(id) || abandoned?.has(id))
+        continue;
+      const n = (prev.get(id) ?? 0) + 1;
+      if (n <= UNRESOLVED_RETRY_LIMIT) {
+        next.set(id, n);
+        continue;
+      }
+      const gone = this.abandoned.get(sessionId) ?? new Set<string>();
+      gone.add(id);
+      this.abandoned.set(sessionId, gone);
+      timingLog('content:abandon', { ide: this.adapter.ide, sessionId, id: id.slice(0, 8) });
+    }
+    if (next.size > 0)
+      this.unresolved.set(sessionId, next);
+    else
+      this.unresolved.delete(sessionId);
+  }
+
   private remember(
     sessionId: string,
     index: MessageHeader[],
@@ -646,9 +812,19 @@ function idsToFetch(
   sizes?: Map<string, number>,
   prevSizes?: Map<string, number>,
   taintedIds?: Set<string>,
+  unresolved?: Map<string, number>,
 ): string[] {
   const prevById = new Map(prevIndex.map(h => [h.messageId, h]));
   const want = new Set<string>(taintedIds ?? []);
+  // The plugin writes index.json before messages/<id>.json, so a tick can index an id whose body is not
+  // readable yet. Retry only ids that actually came back empty on an earlier tick — "indexed but never
+  // emitted" is NOT a retry reason: rows that legitimately produce no element of their own (tool
+  // headers, compaction notices) would otherwise be refetched on every changed tick, forever.
+  const inIndex = new Set(index.map(h => h.messageId));
+  for (const id of unresolved?.keys() ?? []) {
+    if (inIndex.has(id))
+      want.add(id);
+  }
   for (const h of index) {
     const prev = prevById.get(h.messageId);
     if (!prev)
@@ -733,10 +909,13 @@ function elementBubbleId(id: string): string {
 function diffAppend(
   index: MessageHeader[],
   messages: ChatElement[],
-  prevIndex: MessageHeader[],
   prevMessages: ChatElement[],
+  allowReplace = true,
 ): ChatElement[] {
-  const prevIds = new Set(prevIndex.map(h => h.messageId));
+  // Delivered = an element was emitted for this id, not "it is in the index". A tick that could not
+  // read every body it asked for never reaches here (emitProjected returns early), so a partial
+  // projection can no longer rewrite a delivered element.
+  const prevIds = new Set(prevMessages.map(m => elementBubbleId(m.id)));
   const want = new Set(
     index.filter(h => !prevIds.has(h.messageId)).map(h => h.messageId),
   );
@@ -751,6 +930,8 @@ function diffAppend(
     const prev = prevById.get(m.id);
     if (!prev)
       return true;
-    return JSON.stringify(m) !== JSON.stringify(prev);
+    // A repair tick re-reads rows that never produced an element; re-projecting them can also change a
+    // sibling's flatIndex. Only new rows may go out, or every retry would churn an already delivered card.
+    return allowReplace && JSON.stringify(m) !== JSON.stringify(prev);
   });
 }

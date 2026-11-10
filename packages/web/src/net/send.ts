@@ -1,6 +1,6 @@
 import type { CliPermissionResponse, CliSource, CliTarget, CommandEvent, CommandPayload, CommandResult, MessageAttachment } from './protocol';
 import { dispatchCli, useCliStore } from '../store/cli';
-import { isSyntheticComposerId, liveSessionKeyOf, sendTargetOf, useIdesStore, viewedTabOf } from '../store/ides';
+import { draftSessionKeyOf, liveSessionKeyOf, sendTargetOf, useIdesStore } from '../store/ides';
 import { useSessionsStore } from '../store/sessions';
 import { useUiStore } from '../store/ui';
 import { newCommandId, sendCommand, sendCommandAwaitResult, socket } from './socket';
@@ -30,12 +30,7 @@ export function sendUserMessage(text: string, attachments: MessageAttachment[] =
   const liveKey = liveSessionKeyOf(selectedIde, state);
   // A draft's liveKey is empty (no body attached, no request), but the optimistic bubble still hangs on its own real id:
   // after the message is sent and the session is on disk, liveKey switches to this session and the bubble joins — first message still has instant feedback.
-  const optimisticKey
-    = liveKey
-      || (() => {
-        const id = viewedTabOf(state)?.composerId;
-        return id && !isSyntheticComposerId(id) ? `${selectedIde}:${id}` : '';
-      })();
+  const optimisticKey = liveKey || draftSessionKeyOf(selectedIde, state);
   if (optimisticKey)
     useSessionsStore.getState().echoPendingSend(trimmed, commandId, optimisticKey, attachments);
   sendCommand('command:send_message', {

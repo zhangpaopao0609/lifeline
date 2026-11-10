@@ -38,6 +38,12 @@ export type StorageLike = Pick<Storage, 'getItem' | 'setItem'>;
  * Named differently from protocol's parseIde on purpose.
  */
 export function parseIdeParam(raw: unknown): IdeKind | null {
+  // `codebuddy-vscode` never shipped on master (it only existed on the MR !4
+  // branch), so this alias is for dev machines that ran that branch. It must live
+  // here, not in `parseIde`: the lenient parser would fold it into cursor and send
+  // the page to the wrong slot.
+  if (raw === 'codebuddy-vscode')
+    return 'vscode';
   return isIdeKind(raw) ? raw : null;
 }
 

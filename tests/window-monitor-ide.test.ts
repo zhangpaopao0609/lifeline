@@ -243,4 +243,77 @@ describe('WindowMonitor IDE extract guard', () => {
       monitor.stop();
     }
   });
+
+  // The plugin inside VS Code is the same webview as the standalone IDE, so its non-home windows must be
+  // polled through the plugin path too. Going down the Cursor path (wsUrl + Cursor extractor) leaves those
+  // windows with zero tabs, and the console hides empty groups — the user saw one window while two were open
+  // (measured 2026-11-09, vscode slot).
+  it('stamps other VS Code window tabs from that window\'s coding-copilot webview', async () => {
+    const windows: CursorWindow[] = [
+      { id: 'wb-a', title: 'lifeline-woa', url: 'vscode-file://a/workbench.html', wsUrl: 'ws://wb-a' },
+      { id: 'wb-b', title: 'mmbiz', url: 'vscode-file://b/workbench.html', wsUrl: 'ws://wb-b' },
+    ];
+    const sm = new StateManager(10);
+    const seen: string[] = [];
+    const monitor = new WindowMonitor(
+      mockBridge(windows),
+      sm,
+      { start() {}, stop() {} },
+      dummyConfig(),
+      selectors,
+      {
+        kind: 'vscode',
+        extractFromClient: async () => {
+          throw new Error('must not use Cursor extract on a vscode slot');
+        },
+        listTargets: async () => [
+          { id: 'wb-a', url: 'vscode-file://a/workbench.html', webSocketDebuggerUrl: 'ws://wb-a' },
+          { id: 'wb-b', url: 'vscode-file://b/workbench.html', webSocketDebuggerUrl: 'ws://wb-b' },
+          {
+            id: 'wv-b',
+            url: 'vscode-webview://hash-b/coding-copilot',
+            webSocketDebuggerUrl: 'ws://wv-b',
+            parentId: 'wb-b',
+          },
+        ],
+        extractCodeBuddyLive: async (wsUrl) => {
+          seen.push(wsUrl);
+          return {
+            connected: true,
+            extractorStatus: 'ok',
+            lastExtractionAt: null,
+            consecutiveExtractionFailures: 0,
+            lastExtractionError: null,
+            agentStatus: 'idle',
+            agentActivityText: null,
+            agentActivityLive: false,
+            agentActivitySource: 'none',
+            messages: [],
+            liveActions: {},
+            pendingApprovals: [],
+            inputAvailable: true,
+            chatTabs: [{
+              composerId: 'sess-b',
+              title: 'Plugin B',
+              isActive: true,
+              status: 'active',
+              selectorPath: 'sp',
+              windowId: 'wb-b',
+            }],
+            activeComposerId: 'sess-b',
+            mode: { current: 'craft', available: [] },
+            model: { current: 'Auto', currentId: '' },
+            windows: [],
+            activeWindowId: '',
+            composerQueue: { items: [] },
+            questionnaire: null,
+            contentSource: 'ok',
+          };
+        },
+      },
+    );
+    await monitor.runCycle();
+    assert.deepEqual(seen, ['ws://wv-b']);
+    assert.equal(sm.getCurrentState().windows[1].chatTabs?.[0].title, 'Plugin B');
+  });
 });

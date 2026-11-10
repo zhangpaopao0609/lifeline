@@ -1,4 +1,5 @@
-import { codeBuddyActivePortCandidates, cursorActivePortCandidates } from '../../../agent/src/cdp/endpoint.js';
+import type { IdeKind } from '../../../agent/src/sources/types.js';
+import { codeBuddyActivePortCandidates, cursorActivePortCandidates, vscodeActivePortCandidates } from '../../../agent/src/cdp/endpoint.js';
 import { describePortOccupant, probeCdpEndpoint } from '../../../agent/src/cdp/probe.js';
 import { canControlIde } from '../../../agent/src/live-ides.js';
 import { agentLockPath, readAgentLock } from '../../../agent/src/single-instance.js';
@@ -23,10 +24,19 @@ export async function cmdStatus(): Promise<void> {
   log(`server   ${config.serverUrl}`);
 
   const control = canControlIde();
+  // The agent's defaults (packages/agent/src/config.ts); the CLI has no persisted fields
+  // for these two hosts, so read the same env names the agent reads.
   const codebuddyCdpUrl = process.env.CODEBUDDY_CDP_URL ?? 'http://127.0.0.1:9223';
+  const vscodeCdpUrl = process.env.VSCODE_CDP_URL ?? 'http://127.0.0.1:9225';
 
-  async function logCdpStatus(ide: 'cursor' | 'codebuddy', cdpUrl: string): Promise<void> {
-    const label = ide === 'cursor' ? 'cursor   ' : 'codebuddy ';
+  async function logCdpStatus(ide: IdeKind, cdpUrl: string): Promise<void> {
+    // Slot = host, so every host gets its own line: the VSCode slot used to be invisible
+    // here while the CodeBuddy line (which no longer claims VSCode's port file) could
+    // never go green for a plugin-only user.
+    const label = ide === 'cursor' ? 'cursor   ' : ide === 'codebuddy' ? 'codebuddy ' : 'vscode   ';
+    const candidates = ide === 'cursor'
+      ? cursorActivePortCandidates()
+      : ide === 'codebuddy' ? codeBuddyActivePortCandidates() : vscodeActivePortCandidates();
     // Skip the probe only when "this machine does not control the IDE" (Linux = content source).
     // Do **not** skip based on "is it in the app inventory": that would label machines with a non-standard
     // install path as "no GUI", while the agent still probes — CLI and the web page would contradict each other (review Q8).
@@ -38,7 +48,7 @@ export async function cmdStatus(): Promise<void> {
       ide,
       configuredUrl: cdpUrl,
       probe: probeCdpEndpoint,
-      candidates: ide === 'cursor' ? cursorActivePortCandidates() : codeBuddyActivePortCandidates(),
+      candidates,
       lookupOccupant: describePortOccupant,
     });
     log(`${label}${formatCdpStatusLine(probed, source)}`);
@@ -46,6 +56,7 @@ export async function cmdStatus(): Promise<void> {
 
   await logCdpStatus('cursor', config.cdpUrl);
   await logCdpStatus('codebuddy', codebuddyCdpUrl);
+  await logCdpStatus('vscode', vscodeCdpUrl);
 
   const daemon = daemonProbe();
   logDaemonStatus(daemon);

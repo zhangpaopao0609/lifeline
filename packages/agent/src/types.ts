@@ -51,6 +51,7 @@ export {
   applyIdePatch,
   emptyCursorState,
   emptyIdesState,
+  isIdeKind,
   parseIde,
   wrapIncomingFull,
 } from '../../protocol/src/index.js';
@@ -84,6 +85,8 @@ export interface SendMessageOptions {
 export interface AgentConfig {
   cdpUrl: string;
   codebuddyCdpUrl: string;
+  /** The VSCode host slot (ports belong to the process, not to a plugin). */
+  vscodeCdpUrl: string;
   pollIntervalMs: number;
   debounceMs: number;
   selectorsPath: string;

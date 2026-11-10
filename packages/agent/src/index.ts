@@ -8,11 +8,11 @@ import { randomUUID } from 'node:crypto';
 import { homedir, hostname } from 'node:os';
 import { BUILD_VERSION } from '../../cli/src/build-version.js';
 import { includeProcessEnabled, loadCliConfig } from '../../cli/src/config.js';
-import { IDE_LABELS, SYNC_REASON_PATCH_GAP } from '../../protocol/src/index.js';
+import { IDE_KINDS, IDE_LABELS, SYNC_REASON_PATCH_GAP } from '../../protocol/src/index.js';
 import { staticCliAcp } from './cli-capability.js';
 import { attachIdeCommandHandlers } from './command-router.js';
 import { loadConfig, loadSelectors } from './config.js';
-import { applyContentSource, ContentLiveRuntime } from './content-runtime.js';
+import { applyContentSource, codeBuddyHostShardExists, ContentLiveRuntime } from './content-runtime.js';
 import {
   loadWatermarks,
   mergeIde,
@@ -24,7 +24,7 @@ import { cliCatalogPath } from './drivers/acp/catalog-disk.js';
 import { attachCliUplinkSync, attachLiveCliListeners, createLiveCliEntry, warmCursorModels } from './drivers/acp/live-entry.js';
 import { acpSpawnAllowed } from './drivers/acp/readiness.js';
 import { cliSessionLedgerPath } from './drivers/acp/session-ledger.js';
-import { registeredDrivers } from './drivers/index.js';
+import { contentDrivers, registeredDrivers } from './drivers/index.js';
 import { createIdeSlot } from './ide-slot.js';
 import { createLifecycle } from './lifecycle.js';
 import { canControlIde, detectLiveIdes } from './live-ides.js';
@@ -38,7 +38,7 @@ import {
   releaseAgentLock,
 } from './single-instance.js';
 import { readSuperseded } from './superseded-outcome.js';
-import { parseIde } from './types.js';
+import { isIdeKind, parseIde } from './types.js';
 import { Uplink } from './uplink.js';
 
 /**
@@ -124,9 +124,34 @@ async function main(): Promise<void> {
     `[agent] canControlIde=${control}  liveIdes: ${liveIdes.length ? liveIdes.join(',') : '(none)'}`,
   );
   const instanceId = randomUUID();
+  /**
+   * Routing capability for the server (`agent:register.slots`).
+   *
+   * Not `registeredDrivers()`: that is "compiled into this binary", so it would
+   * claim a `vscode` slot on a machine with no plugin and no history — the server
+   * would then accept commands/`session:get` for it, and the agent would have no
+   * runtime to answer with. Two real sources:
+   *  - the slot was created by this process (plugin installed and we can control);
+   *  - the slot has a **content shard** on disk (history from a profile/remote that
+   *    this process does not control, or a restored data dir) — read-only, but
+   *    `session:get` must be answerable.
+   *
+   * Cheap + sqlite-free on purpose: this runs before the handshake.
+   */
+  const routableSlots = (): IdeKind[] => {
+    const out = new Set<IdeKind>(drivers.map(({ kind }) => kind));
+    if (codeBuddyHostShardExists('vscode'))
+      out.add('vscode');
+    if (codeBuddyHostShardExists('codebuddy'))
+      out.add('codebuddy');
+    return IDE_KINDS.filter(kind => out.has(kind));
+  };
+  const declaredSlots = routableSlots();
+  console.log(`[agent] routable slots: ${declaredSlots.join(',') || '(none)'}`);
   const uplink = new Uplink(config.remoteUrl, config.agentToken, agentId, liveIdes, !control, {
     instanceId,
     cliAcp: staticCliAcp(),
+    slots: declaredSlots,
   });
   // Handshake must finish before better-sqlite3's sync open/rebuild, or the
   // websocket connect timer expires and the machine stays offline.
@@ -228,7 +253,11 @@ async function main(): Promise<void> {
   // the runtime itself; remaining constructor args are isomorphic)
   const diskAdapters: Partial<Record<IdeKind, ContentSource>> = {};
   const runtimes: Partial<Record<IdeKind, ContentLiveRuntime>> = {};
-  for (const { kind, driver } of drivers) {
+  // Content side: `hasContent` keeps a slot with a disk shard readable even when its
+  // host is not controllable here (see `contentDrivers`). Control side (`drivers`)
+  // still decides the CDP slots below.
+  const contentSources = contentDrivers();
+  for (const { kind, driver } of contentSources) {
     const adapter = driver.openDiskAdapter({ includeProcess });
     diskAdapters[kind] = adapter ?? undefined;
     runtimes[kind] = adapter
@@ -255,7 +284,7 @@ async function main(): Promise<void> {
   }
 
   // Census: report session id/title/time only; the server uses this to know which machine holds the content.
-  const indexSources = drivers
+  const indexSources = contentSources
     .map(({ kind }) => diskAdapters[kind])
     .filter((source): source is ContentSource => source !== undefined);
   const indexReporter = new SessionIndexReporter({
@@ -287,14 +316,17 @@ async function main(): Promise<void> {
     });
   }
 
-  for (const { kind } of drivers) {
-    applyContentSource(diskAdapters[kind] ?? null, source =>
-      slots[kind]!.stateManager.setContentSource(source));
+  for (const { kind } of contentSources) {
+    const slot = slots[kind];
+    // A content-only slot (shard on disk, host not created here) has no state to mark.
+    if (!slot)
+      continue;
+    applyContentSource(diskAdapters[kind] ?? null, source => slot.stateManager.setContentSource(source));
   }
 
   stopIde = async () => {
     indexReporter.stop();
-    for (const { kind } of drivers) {
+    for (const { kind } of contentSources) {
       runtimes[kind]?.stop();
       diskAdapters[kind]?.close?.();
     }
@@ -361,13 +393,33 @@ async function main(): Promise<void> {
   uplink.on(
     'session:get',
     (payload: { sessionId?: string; tabTitle?: string; ide?: IdeKind; sinceSeq?: number }) => {
+      // Present-but-unknown (a server newer than this build): never fold into cursor —
+      // answering would project Cursor's body for another slot's session, and the
+      // `session:missing` reply would be recorded under cursor. The server gates
+      // routing on `slots`; this is defense in depth.
+      if (payload?.ide !== undefined && !isIdeKind(payload.ide)) {
+        console.warn(`[agent] session:get for unknown ide "${String(payload.ide)}" ignored`);
+        return;
+      }
       const ide = parseIde(payload?.ide);
       const source = diskAdapters[ide];
       const target = runtimes[ide];
       const sessionId
         = payload?.sessionId || resolveSessionId(source?.listSessions() ?? [], payload ?? {});
-      if (!sessionId)
+      if (!sessionId) {
+        // A tabTitle-only request that matches nothing has no id to answer with; the page
+        // waits on a skeleton, so make the drop visible in the log.
+        if (typeof payload?.tabTitle === 'string' && payload.tabTitle.length > 0)
+          console.warn(`[agent] session:get tabTitle="${payload.tabTitle}" ide=${ide}: no session on disk`);
         return;
+      }
+      // No runtime for this slot (its disk adapter never opened): answer explicitly.
+      // Silence here is the worst outcome — the web has no timeout and sits on a
+      // skeleton forever, which is exactly what "slots over-reported" would cause.
+      if (!target) {
+        uplink.send('session:missing', { sessionId, ide });
+        return;
+      }
       // Follow this session so later disk-change deltas are pushed.
       // In the cross-machine case (server names the content machine) this step
       // makes the web "live", not a snapshot. On the same machine, DOM later
@@ -383,7 +435,11 @@ async function main(): Promise<void> {
     },
   );
 
-  for (const { kind } of drivers) {
+  // Content runtimes belong to `contentSources`, which can exceed the control set: a
+  // slot with a disk shard but no host (plugin removed / restored data) gets an adapter,
+  // a census source and `slots` membership — without `start()` it would answer one
+  // `session:get` and then never push append/patch, freezing the page's body.
+  for (const { kind } of contentSources) {
     runtimes[kind]?.start();
   }
   indexReporter.start();

@@ -6,7 +6,7 @@ import type { CliPermissionResponse, CliSource, CliTarget, CommandErrorCode } fr
  * the list elsewhere. Lives in wire.ts (with the types) rather than ide.ts, to avoid an ide.ts ↔ wire.ts
  * circular import.
  */
-export const IDE_KINDS = ['cursor', 'codebuddy'] as const;
+export const IDE_KINDS = ['cursor', 'codebuddy', 'vscode'] as const;
 export type IdeKind = (typeof IDE_KINDS)[number];
 
 /**

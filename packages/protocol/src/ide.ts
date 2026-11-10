@@ -48,6 +48,7 @@ export function isIdeKind(raw: unknown): raw is IdeKind {
 export const IDE_LABELS: Record<IdeKind, string> = {
   cursor: 'Cursor',
   codebuddy: 'CodeBuddy',
+  vscode: 'VS Code',
 };
 
 export function emptyIdesState(): AgentIdesState {

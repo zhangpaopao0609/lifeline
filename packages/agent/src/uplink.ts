@@ -41,6 +41,14 @@ export interface UplinkOptions {
    * value, and this uplink then registers once without it.
    */
   cliAcp?: CliAcpCapability;
+  /**
+   * Routing capability for `agent:register`: the slots this process can actually
+   * serve (started disk adapters ∪ created CDP slots), **not** `registeredDrivers()`
+   * — that list is compiled in, so it would claim a `vscode` slot on a machine with
+   * no plugin. The server gates commands and `session:get` on this; an old agent
+   * that reports nothing is treated as `cursor + codebuddy`.
+   */
+  slots?: IdeKind[];
 }
 
 const ts = () => new Date().toISOString();
@@ -59,6 +67,8 @@ export class Uplink extends EventEmitter {
   private agentToken: string;
   private remoteUrl: string;
   private liveIdes: IdeKind[] | undefined;
+  /** Routing capability (see `UplinkOptions.slots`); older servers ignore it. */
+  private readonly slots: IdeKind[] | undefined;
   /** Whether this machine is content-source only (Linux). Older servers ignore it. */
   private contentSource: boolean | undefined;
   /**
@@ -88,6 +98,7 @@ export class Uplink extends EventEmitter {
     this.agentId = agentId;
     this.agentToken = agentToken;
     this.liveIdes = liveIdes;
+    this.slots = options?.slots;
     this.contentSource = contentSource;
     this.remoteUrl = remoteUrl.replace(/\/+$/, '');
     this.socketFactory = options?.socketFactory ?? io;
@@ -215,6 +226,11 @@ export class Uplink extends EventEmitter {
       // old-code newcomer must not displace a process that can name itself (register-outcome.ts).
       instanceId: this.instanceId,
       ...(this.liveIdes !== undefined ? { liveIdes: this.liveIdes } : {}),
+      // Routing capability. In practice always present (every machine has cursor +
+      // codebuddy), which is why the **server must ship first**: an old `.strict()`
+      // register schema rejects the whole packet on the unknown key. The spread only
+      // guards the "constructed without slots" case (tests).
+      ...(this.slots !== undefined ? { slots: this.slots } : {}),
       ...(platform !== undefined ? { platform } : {}),
       // This machine is content-source only (Linux). The server uses this to
       // file it under "content sources".

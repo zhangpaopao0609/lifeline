@@ -43,7 +43,14 @@ describe('view query', () => {
   });
 
   it('drops unknown fields and unknown ides', () => {
-    assert.deepEqual(parseViewQuery('?m=mac-1&ide=vscode&zzz=1'), { agentId: 'mac-1' });
+    assert.deepEqual(parseViewQuery('?m=mac-1&ide=nope&zzz=1'), { agentId: 'mac-1' });
+    assert.deepEqual(parseViewQuery('?m=mac-1&ide=vscode'), { agentId: 'mac-1', ide: 'vscode' });
+  });
+
+  it('maps the never-shipped codebuddy-vscode deep link onto the vscode slot', () => {
+    // Only dev machines that ran the MR !4 branch can hold this value; the strict
+    // parser is the one place that may translate it (parseIde would fold to cursor).
+    assert.deepEqual(parseViewQuery('?m=mac-1&ide=codebuddy-vscode'), { agentId: 'mac-1', ide: 'vscode' });
   });
 
   it('replaces the IDE query when the pane is Agent CLI', () => {

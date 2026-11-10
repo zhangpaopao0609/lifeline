@@ -203,6 +203,10 @@ export function createIdeSlot(options: CreateIdeSlotOptions): IdeSlot {
 
   const windowMonitor = new WindowMonitor(cdp, stateManager, extractor, slotConfig, selectors, {
     kind,
+    // Follow the **resolved** endpoint, not the configured one in slotConfig: a vscode slot's port comes
+    // from `Code/DevToolsActivePort` (e.g. 52286) while the config default is 9225, and a frozen copy
+    // silently points the per-window poll at a dead port. Same source as `attachCodingCopilot`.
+    listTargets: () => fetchTargets(currentCdpUrl),
     ...driver.windowMonitor,
   });
 

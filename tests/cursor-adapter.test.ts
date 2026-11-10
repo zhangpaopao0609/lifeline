@@ -48,7 +48,7 @@ function seed(): void {
           isRenderable: true,
           isSimulatedMsg: true,
           simulatedMsgReason: 3,
-          simulatedMessageMetadataTitle: 'Rerun the full check',
+          simulatedMessageMetadataTitle: '重跑全链路看风控JSON',
         },
       },
       {
@@ -158,7 +158,7 @@ describe('CursorAdapter', () => {
     const idx = a.readIndex('cid1');
     assert.deepEqual(idx.map(h => h.messageId), ['h1', 'n1', 'n2', 'a1', 'e1']);
     assert.equal(idx[1].notificationTitle, 'Background task');
-    assert.equal(idx[2].notificationTitle, 'Rerun the full check');
+    assert.equal(idx[2].notificationTitle, '重跑全链路看风控JSON');
     a.close();
   });
 
@@ -186,7 +186,7 @@ describe('CursorAdapter', () => {
     assert.ok(!ids.includes('n3'));
     const n2 = a.projectSession('cid1').find(m => m.id === 'n2');
     assert.equal(n2?.type, 'notification');
-    assert.equal(n2 && 'title' in n2 ? n2.title : '', 'Rerun the full check');
+    assert.equal(n2 && 'title' in n2 ? n2.title : '', '重跑全链路看风控JSON');
     a.close();
   });
 

@@ -127,6 +127,21 @@ function landedComposerIdOf(result: CommandResult): string {
 }
 
 /** Server state has landed on the target session → optimistic "switching" has reconciled. */
+/**
+ * Reconcile the optimistic switch / new-chat rows for **every** slot the state carries.
+ *
+ * Hard-coding `cursor` + `codebuddy` (pre-split) meant a `vscode` slot's optimistic row
+ * and its "switching" state survived until the 8–10 s deadline even when the IDE had
+ * landed in 500 ms — the exact symptom these reconciles exist for.
+ */
+function reconcilePendingState(): void {
+  const { ides } = useIdesStore.getState();
+  for (const ide of Object.keys(ides) as IdeKind[]) {
+    reconcilePendingSwitch(ide, ides[ide]);
+    reconcilePendingNewChat(ide, ides[ide]);
+  }
+}
+
 function reconcilePendingSwitch(ide: IdeKind, state: CursorState | undefined): void {
   const ui = useUiStore.getState();
   const pending = ui.pendingSwitch;
@@ -248,20 +263,12 @@ export function bindSocket(): void {
   socket.on('state:full', (wire: StateFullWire) => {
     useIdesStore.getState().applyStateFull(wire);
     ensureLiveBody();
-    const { ides } = useIdesStore.getState();
-    reconcilePendingSwitch('cursor', ides.cursor);
-    reconcilePendingSwitch('codebuddy', ides.codebuddy);
-    reconcilePendingNewChat('cursor', ides.cursor);
-    reconcilePendingNewChat('codebuddy', ides.codebuddy);
+    reconcilePendingState();
   });
   socket.on('state:patch', (wire: StatePatchWire) => {
     useIdesStore.getState().applyStatePatch(wire);
     ensureLiveBody();
-    const { ides } = useIdesStore.getState();
-    reconcilePendingSwitch('cursor', ides.cursor);
-    reconcilePendingSwitch('codebuddy', ides.codebuddy);
-    reconcilePendingNewChat('cursor', ides.cursor);
-    reconcilePendingNewChat('codebuddy', ides.codebuddy);
+    reconcilePendingState();
   });
 
   socket.on('session:full', (payload: SessionBodyPayload) => sessions().applySessionFull(payload, currentLiveKey()));

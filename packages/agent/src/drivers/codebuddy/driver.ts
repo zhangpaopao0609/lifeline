@@ -6,9 +6,8 @@ import { codeBuddyArgvCandidates } from '../../../../cli/src/cdp-argv-file.js';
 import { CODEBUDDY_TITLE_SUFFIXES } from '../../cdp/bridge.js';
 import { codeBuddyActivePortCandidates } from '../../cdp/endpoint.js';
 import { cdpPortFromUrl, nextReconnectDelay } from '../../cdp/relaunch-engine.js';
-import { VSCODE_APP_NAME, vscodeCodeBuddyPluginInstalled } from '../../codebuddy-vscode.js';
-import { tryOpenCodeBuddyAdapter } from '../../content-runtime.js';
-import { codeBuddyExeCandidates, vscodeExeCandidates } from '../../win-paths.js';
+import { codeBuddyHostShardExists, tryOpenCodeBuddyAdapter } from '../../content-runtime.js';
+import { codeBuddyExeCandidates } from '../../win-paths.js';
 import { CodeBuddyExecutor } from './executor.js';
 import { CodeBuddyExtractor, pickCodingCopilotTarget } from './extractor.js';
 import {
@@ -133,13 +132,13 @@ export const codebuddyDriver: IdeDriver = {
   kind: 'codebuddy',
 
   cdpUrlOf: config => config.codebuddyCdpUrl,
-  // VSCode (plugin host) port candidates are plugin-gated here — the pure
-  // candidate function defaults to "no VSCode" (see `withVscode` in endpoint.ts).
+  // Slot split: this slot owns the standalone CodeBuddy IDE only. The VSCode
+  // plugin host has its own `vscode` slot with its own candidates — the pre-split
+  // plugin-gated VSCode entry is deliberately gone from this list.
   portCandidates: () => codeBuddyActivePortCandidates(
     homedir(),
     process.platform,
     process.env,
-    { vscodePlugin: vscodeCodeBuddyPluginInstalled() },
   ),
   // ⚠️ **Nothing reads this to write a file** (only `tests/drivers.test.ts`
   // shape-checks it). The real write path is `cli/src/cdp-argv-file.ts`
@@ -149,26 +148,20 @@ export const codebuddyDriver: IdeDriver = {
     homedir(),
     process.platform,
     process.env,
-    { includeVscode: vscodeCodeBuddyPluginInstalled() },
+    { includeVscode: false },
   ),
 
   hasLiveApp(exists, home, platform, env) {
-    // Inject `exists`/`home` into the gate as well: without them it reads the real
-    // `homedir()`, so a "pure" predicate answered true on a dev machine (plugin
-    // installed) and false on CI — the same trap `argvCandidates` hit before.
-    const plugin = vscodeCodeBuddyPluginInstalled({ exists, home });
+    // Slot split: the VSCode plugin host answers through its own slot's
+    // `hasLiveApp`; this predicate is the standalone IDE again (no plugin gate,
+    // so nothing here reads the real `homedir()` either).
     if (platform === 'darwin') {
       return CODEBUDDY_APP_CANDIDATES.some(
         name => exists(`/Applications/${name}.app`) || exists(join(home, 'Applications', `${name}.app`)),
-      ) || (
-        // VSCode hosting the CodeBuddy plugin counts as a live CodeBuddy install.
-        plugin
-        && (exists(`/Applications/${VSCODE_APP_NAME}.app`) || exists(join(home, 'Applications', `${VSCODE_APP_NAME}.app`)))
       );
     }
     if (platform === 'win32') {
-      return codeBuddyExeCandidates(env, home).some(exists)
-        || (plugin && vscodeExeCandidates(env, home).some(exists));
+      return codeBuddyExeCandidates(env, home).some(exists);
     }
     return false;
   },
@@ -178,14 +171,10 @@ export const codebuddyDriver: IdeDriver = {
     const appNames: string[] = resolved
       ? [resolved, ...CODEBUDDY_APP_CANDIDATES.filter(name => name !== resolved)]
       : [...CODEBUDDY_APP_CANDIDATES];
-    // VSCode (plugin host) goes last for AXRaise: the osascript block list
-    // returns on the first window-title match, so the standalone IDE keeps
-    // priority on dual-install machines.
-    if (vscodeCodeBuddyPluginInstalled())
-      appNames.push(VSCODE_APP_NAME);
     // relauncher 与 quietWake 必须共享同一份 deps——唤醒判据偏离自愈判据就会
-    // 出现"醒了却不动手 / 动了却没醒"的分叉。
-    const deps = defaultCodeBuddyCdpRelaunchDeps();
+    // 出现"醒了却不动手 / 动了却没醒"的分叉。VSCode 固定不参与：分槽后本槽的
+    // 自愈绝不碰 VSCode（那归 `vscode` 槽，两槽互杀宿主正是分槽要消灭的）。
+    const deps = defaultCodeBuddyCdpRelaunchDeps({ vscodePlugin: false });
     return {
       titleSuffixes: [...CODEBUDDY_TITLE_SUFFIXES],
       appNames,
@@ -199,6 +188,7 @@ export const codebuddyDriver: IdeDriver = {
   },
 
   openDiskAdapter: opts => tryOpenCodeBuddyAdapter(undefined, opts),
+  hasContent: () => codeBuddyHostShardExists('codebuddy'),
   capabilities: { getPlanFull: false },
 
   windowMonitor: { otherWindowsRequireWsUrl: false },
@@ -240,5 +230,24 @@ export const codebuddyDriver: IdeDriver = {
       await new Promise(r => setTimeout(r, 50));
     }
     return buddy.isReady();
+  },
+};
+
+/**
+ * Live attach/detach/wait for the coding-copilot webview, shared by both hosts
+ * (the standalone IDE and the `vscode` slot): the webview DOM is the same
+ * extension, so the dual-connection state machine (gen / retry / direct webview
+ * client) is identical. Each slot still owns its own live state (WeakMap keyed by
+ * the slot handle), so the two never share a client.
+ */
+export const codeBuddyLiveHandlers = {
+  attachLive(slot: LiveSlotHandle): void {
+    codebuddyDriver.attachLive(slot);
+  },
+  detachLive(slot: LiveSlotHandle): void {
+    codebuddyDriver.detachLive(slot);
+  },
+  waitUntilReady(slot: LiveSlotHandle): Promise<boolean> {
+    return codebuddyDriver.waitUntilReady(slot);
   },
 };

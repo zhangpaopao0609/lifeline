@@ -74,17 +74,24 @@ describe('identityOf', () => {
     assert.equal(identityOf(CHROME_UA, 'cursor'), 'foreign');
     assert.equal(identityOf(VSCODE_UA, 'cursor'), 'foreign');
   });
-  // The CodeBuddy plugin runs INSIDE VSCode: its UA must not be "foreign" on the
-  // codebuddy slot (unknown, never a match — the plugin gate lives elsewhere).
-  it('treats VS Code UA as unknown (not foreign) on the codebuddy slot, but vanilla Chrome stays foreign', () => {
-    assert.equal(identityOf(VSCODE_UA, 'codebuddy'), 'unknown');
+  // Slot split: the VSCode plugin host has its own slot, so a VSCode UA is the
+  // `vscode` slot's OWN token and foreign to `codebuddy` (which is the IDE again).
+  it('treats VS Code UA as foreign on the codebuddy slot and as a match on the vscode slot', () => {
+    assert.equal(identityOf(VSCODE_UA, 'codebuddy'), 'foreign');
+    assert.equal(identityOf(VSCODE_UA, 'vscode'), 'match');
     assert.equal(identityOf(CHROME_UA, 'codebuddy'), 'foreign');
+    assert.equal(identityOf(CHROME_UA, 'vscode'), 'foreign');
+    // The standalone IDE is foreign to the VSCode host slot, and vice versa.
+    assert.equal(identityOf(BUDDY_UA, 'vscode'), 'foreign');
+    assert.equal(identityOf(CURSOR_UA, 'vscode'), 'foreign');
   });
-  // Guard against the fixture drifting back to a UA no VSCode sends: the family
-  // token must win over `Chrome/` (Electron always carries both).
-  it('keeps a VSCode-shaped UA unknown even though it also carries Chrome/', () => {
+  // Guard against the fixture drifting back to a UA no VSCode sends: the host's
+  // own token must win over `Chrome/` (Electron always carries both).
+  it('matches the vscode slot on a VSCode-shaped UA even though it also carries Chrome/', () => {
     assert.match(VSCODE_UA, / Chrome\//);
-    assert.equal(identityOf(VSCODE_UA, 'codebuddy'), 'unknown');
+    assert.equal(identityOf(VSCODE_UA, 'vscode'), 'match');
+    // A Chrome UA without the ` Code/<n>` token stays foreign on that slot.
+    assert.equal(identityOf('Mozilla/5.0 Chrome/148.0.0.0 Safari/537.36', 'vscode'), 'foreign');
   });
 });
 
@@ -157,15 +164,24 @@ describe('probeCdpEndpoint', () => {
     assert.equal(r.kind, 'not-cdp');
     assert.equal(r.notCdpCause, 'foreign');
   });
-  // The codebuddy slot accepts a VS Code workbench (the CodeBuddy plugin host).
-  it('accepts a VS Code workbench on the codebuddy slot (rule 2: plugin host)', async () => {
+  // Slot split: a VS Code workbench belongs to the `vscode` slot. The codebuddy
+  // slot rejects it (it is the standalone IDE again), and the split slot accepts
+  // it while still reporting `host: 'vscode'`.
+  it('routes a VS Code workbench by slot: codebuddy rejects, vscode accepts (rule 2)', async () => {
     const fetch = fetchMap({
       [`${url}/json`]: () => jsonResp(200, [{ ...workbench, url: VSCODE_WB }]),
       [`${url}/json/version`]: () => jsonResp(200, { 'Browser': 'Chrome/148', 'User-Agent': VSCODE_UA }),
     });
-    const r = await probeCdpEndpoint(url, 'codebuddy', { fetch });
+    const rejected = await probeCdpEndpoint(url, 'codebuddy', { fetch });
+    assert.equal(rejected.kind, 'not-cdp');
+    assert.equal(rejected.notCdpCause, 'foreign');
+
+    const fetch2 = fetchMap({
+      [`${url}/json`]: () => jsonResp(200, [{ ...workbench, url: VSCODE_WB }]),
+      [`${url}/json/version`]: () => jsonResp(200, { 'Browser': 'Chrome/148', 'User-Agent': VSCODE_UA }),
+    });
+    const r = await probeCdpEndpoint(url, 'vscode', { fetch: fetch2 });
     assert.equal(r.kind, 'ok');
-    // The console labels the slot from this: "CodeBuddy · VS Code 插件".
     assert.equal(r.host, 'vscode');
   });
   // Rule 1 (uuid match) returns before any UA / install-path logic — `host` must still be filled there,
@@ -179,7 +195,7 @@ describe('probeCdpEndpoint', () => {
         'webSocketDebuggerUrl': `ws://127.0.0.1:9222/devtools/browser/${UUID_A}`,
       }),
     });
-    const r = await probeCdpEndpoint(url, 'codebuddy', { fetch, expect: { browserUuid: UUID_A } });
+    const r = await probeCdpEndpoint(url, 'vscode', { fetch, expect: { browserUuid: UUID_A } });
     assert.equal(r.kind, 'ok');
     assert.equal(r.host, 'vscode');
   });

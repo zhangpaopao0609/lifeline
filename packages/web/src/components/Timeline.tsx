@@ -3,8 +3,9 @@ import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { useLiveSessionKey } from '../hooks/useLiveSessionKey';
 import { usePendingNewChat } from '../hooks/usePendingNewChat';
 import { ideSubject, isPluginHost } from '../lib/ide-label';
+import { draftPaneBody } from '../lib/new-chat';
 import { socket } from '../net/socket';
-import { isDraftTab, useIdesStore, viewedTabOf } from '../store/ides';
+import { draftSessionKeyOf, isDraftTab, useIdesStore, viewedTabOf } from '../store/ides';
 import { useMachinesStore } from '../store/machines';
 import { useSessionsStore } from '../store/sessions';
 import { useUiStore } from '../store/ui';
@@ -184,6 +185,21 @@ export function Timeline() {
   const pendingSends = useSessionsStore(s => s.pendingSends);
   const scrollerRef = useRef<HTMLElement | null>(null);
 
+  /**
+   * Draft pane with a first message already sent.
+   *
+   * A draft has no body to fetch (`liveKey` is ''), so the pane keeps the draft hint — which used to hide the
+   * optimistic bubble the moment it was echoed: Cursor's first message only appeared 1–2s later, when the IDE
+   * finally persisted the session and `liveKey` caught up. The send hangs the bubble on the draft's own id
+   * (`draftSessionKeyOf`), so that body is renderable right away and is also the body the session will use
+   * (no migration, reconcile pops across keys). `draftPaneBody` decides whether there is anything to paint.
+   *
+   * '' while a create is in flight: the pane must stay the blank "新会话" hint, not the previous session's body.
+   */
+  const draftKey = liveKey !== '' || pendingNewHere !== null ? '' : draftSessionKeyOf(selectedIde, state, pendingHere);
+  const draftBodyRaw = useSessionsStore(s => (draftKey ? s.bodies[draftKey] : undefined));
+  const draftBody = draftPaneBody(draftKey, draftBodyRaw);
+
   // Delivered pending sends: refresh their elapsed-time display every 3s (same as the old implementation)
   const hasDelivered = Object.values(pendingSends).some(p => p.state === 'delivered');
   const [, forceTick] = useReducer((x: number) => x + 1, 0);
@@ -209,6 +225,10 @@ export function Timeline() {
     () => (TIMELINE_PROBE_ON ? segmentize(body ?? []).map(s => s.key) : EMPTY_KEYS),
     [body],
   );
+  const draftSegKeys = useMemo(
+    () => (TIMELINE_PROBE_ON ? segmentize(draftBody ?? []).map(s => s.key) : EMPTY_KEYS),
+    [draftBody],
+  );
 
   if (state && state.connected === false && !machineContentOnly) {
     // Subject, not title: the copy tells the user which app to open / which app we will restart.
@@ -232,6 +252,15 @@ export function Timeline() {
       );
     }
     if (isDraftTab(viewedTab)) {
+      if (draftBody) {
+        return (
+          <div className="flex min-h-0 flex-1 flex-col">
+            {TIMELINE_PROBE_ON && <TimelineProbe keys={draftSegKeys} />}
+            {/* key = remount per draft, same contract as AppShell's `key={liveKey}` on a real session */}
+            <TimelineVirtuoso key={draftKey} sessionKey={draftKey} bindScroller={el => (scrollerRef.current = el)} />
+          </div>
+        );
+      }
       return (
         <div className="tl-hint">
           {viewedTab?.draftText

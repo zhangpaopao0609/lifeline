@@ -12,7 +12,9 @@ describe('ide wire', () => {
     assert.equal(parseIde('codebuddy'), 'codebuddy');
     assert.equal(parseIde('cursor'), 'cursor');
     assert.equal(parseIde(undefined), 'cursor');
-    assert.equal(parseIde('vscode'), 'cursor');
+    assert.equal(parseIde('vscode'), 'vscode');
+    // A value this build does not know still folds to cursor (old-agent compat).
+    assert.equal(parseIde('codebuddy-vscode'), 'cursor');
   });
 
   it('wraps a legacy CursorState as the cursor slot', () => {

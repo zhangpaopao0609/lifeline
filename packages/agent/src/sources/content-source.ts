@@ -11,6 +11,15 @@ export interface ContentSource {
   /** When `ids` is set, project only those index bubbles (keyed reads). */
   projectSession: (sessionId: string, ids?: string[]) => ChatElement[];
   /**
+   * Which of `ids` have a readable body right now. The index can name a bubble whose body file is
+   * still being written (CodeBuddy writes `index.json` and `messages/<id>.json` separately), and a
+   * keyed read for such an id returns nothing at all. The runtime retries exactly those ids a bounded
+   * number of times instead of guessing from "did an element with this id come out" (tool rows emit
+   * their card under the toolCallId, so that guess is wrong for them).
+   * Absent = every requested id is readable (adapters that read from a DB).
+   */
+  readableIds?: (sessionId: string, ids: string[]) => string[];
+  /**
    * Whether this session actually exists on this machine's disk. In the
    * cross-machine case (IDE here, data on a remote dev box), a machine that
    * is asked but does not have the session locally must stay silent: empty

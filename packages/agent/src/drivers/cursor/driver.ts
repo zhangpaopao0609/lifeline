@@ -1,8 +1,9 @@
 import type { ExecutorFactoryContext, ExtractorFactoryContext, IdeDriver } from '../types.js';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { cursorArgvPath } from '../../../../cli/src/cdp-argv-file.js';
 import { cursorActivePortCandidates } from '../../cdp/endpoint.js';
-import { tryOpenCursorAdapter } from '../../content-runtime.js';
+import { DEFAULT_CURSOR_VSCDB, tryOpenCursorAdapter } from '../../content-runtime.js';
 import { cursorExeCandidates } from '../../win-paths.js';
 import { CommandExecutor } from './executor.js';
 import { DOMExtractor } from './extractor.js';
@@ -45,6 +46,7 @@ export const cursorDriver: IdeDriver = {
   windowMonitor: { otherWindowsRequireWsUrl: true },
 
   openDiskAdapter: opts => tryOpenCursorAdapter(undefined, opts),
+  hasContent: () => existsSync(DEFAULT_CURSOR_VSCDB),
   capabilities: { getPlanFull: true },
 
   createExtractor(ctx: ExtractorFactoryContext) {

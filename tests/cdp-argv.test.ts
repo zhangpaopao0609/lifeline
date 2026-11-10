@@ -103,6 +103,16 @@ describe('ensureRemoteDebuggingPortInText', () => {
     assert.equal(twice.text, once);
   });
 
+  it('can write the string form VSCode requires', () => {
+    const { text, changed } = ensureRemoteDebuggingPortInText(SAMPLE, 0, 'string');
+    assert.equal(changed, true);
+    assert.match(text, /"remote-debugging-port": "0"/);
+    assert.doesNotMatch(text, /"remote-debugging-port": 0\b/);
+    // Idempotent: the same call on its own output changes nothing.
+    const again = ensureRemoteDebuggingPortInText(text, 0, 'string');
+    assert.equal(again.changed, false);
+  });
+
   it('inserts 9223 when that port is requested', () => {
     const { text, changed } = ensureRemoteDebuggingPortInText(SAMPLE, 9223);
     assert.equal(changed, true);
@@ -154,6 +164,15 @@ describe('setManagedRemoteDebuggingPort', () => {
     assert.doesNotMatch(text, /"remote-debugging-port": 9222/);
     assert.match(text, /Lifeline CDP/);
     assert.doesNotMatch(text, /AgentRemote CDP/);
+  });
+
+  it('rewrites the numeric form into the string form when asked (VSCode)', () => {
+    const { text, changed, unmanaged } = setManagedRemoteDebuggingPort(MARKED_0, 0, 'string');
+    assert.equal(changed, true, '同值但形态不对也算改动');
+    assert.equal(unmanaged, undefined);
+    assert.match(text, /"remote-debugging-port": "0"/);
+    // Same form again: no further change.
+    assert.equal(setManagedRemoteDebuggingPort(text, 0, 'string').changed, false);
   });
 
   it('is a no-op when the marked port is already 0', () => {
@@ -338,8 +357,29 @@ describe('ensureCodeBuddyCdpArgv (P3: writes both hosts)', () => {
     assert.deepEqual([...outcome.paths].sort(), [cn, vscode].sort());
     assert.deepEqual([...outcome.written].sort(), [cn, vscode].sort());
     assert.equal(outcome.state, 'created');
+    // The IDE keeps the numeric form; VSCode's argv.json schema types this key as a
+    // string and silently drops a number (measured 2026-11-09 on VS Code 1.144).
     assert.match(readFileSync(cn, 'utf-8'), /"remote-debugging-port": 0/);
-    assert.match(readFileSync(vscode, 'utf-8'), /"remote-debugging-port": 0/);
+    assert.match(readFileSync(vscode, 'utf-8'), /"remote-debugging-port": "0"/);
+  });
+
+  // Every release before this fix wrote the numeric form into ~/.vscode/argv.json,
+  // where VSCode ignores it — the machine starts without a port and the agent falls
+  // back to quit-and-reopen. `lifeline start` must repair that in place.
+  it('repairs a numeric remote-debugging-port already written into ~/.vscode/argv.json', () => {
+    home = mkdtempSync(join(tmpdir(), 'cb-argv-'));
+    const vscode = join(home, '.vscode', 'argv.json');
+    mkdirSync(dirname(vscode), { recursive: true });
+    writeFileSync(vscode, MARKED_0);
+
+    const outcome = ensureCodeBuddyCdpArgv(0, { includeVscode: true, home });
+    assert.deepEqual(outcome.written, [vscode]);
+    assert.equal(outcome.state, 'added');
+    assert.match(readFileSync(vscode, 'utf-8'), /"remote-debugging-port": "0"/);
+
+    const again = ensureCodeBuddyCdpArgv(0, { includeVscode: true, home });
+    assert.deepEqual(again.written, [], '修好之后必须幂等');
+    assert.equal(again.state, 'already');
   });
 
   it('is idempotent: a second run writes nothing', () => {

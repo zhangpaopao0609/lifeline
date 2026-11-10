@@ -159,6 +159,54 @@ describe('lifeline.sqlite bootstrap', () => {
     }
   });
 
+  it('adds sort_order to a machines table that predates it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'll-sort-'));
+    try {
+      const Database = (await import('better-sqlite3')).default;
+      const legacy = join(dir, 'legacy.sqlite');
+      const db = new Database(legacy);
+      // Live shape before this change: display_name + platform exist, sort_order does not.
+      db.exec(`
+        CREATE TABLE machines (
+          agent_id TEXT PRIMARY KEY,
+          owner_user_id TEXT,
+          hostname TEXT NOT NULL,
+          display_name TEXT,
+          platform TEXT,
+          cli_version TEXT,
+          last_seen_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          snapshot_json TEXT
+        );
+      `);
+      db.prepare('INSERT INTO machines VALUES (?,?,?,?,?,?,?,?,?)').run(
+        'agent-a',
+        'alice',
+        'Mac-mini.local',
+        null,
+        'darwin',
+        null,
+        1,
+        1,
+        null,
+      );
+      db.close();
+
+      const store = new IdentityStore(legacy);
+      // Old rows read back without an order (the page falls back to registration order)
+      assert.equal(store.loadMachines()[0]?.sortOrder, undefined, '老行没有手动排序');
+      store.setMachineOrder([{ agentId: 'agent-a', sortOrder: 3 }]);
+      assert.equal(store.loadMachines()[0]?.sortOrder, 3, '手动排序写进去、读回来');
+      // A state-patch upsert must never clobber the user-chosen order (same contract as display_name)
+      store.upsertMachine({ agentId: 'agent-a', hostname: 'Mac-mini.local', lastSeenAt: 2, snapshot: null });
+      assert.equal(store.loadMachines()[0]?.sortOrder, 3, '状态补丁不碰 sort_order');
+      store.close();
+    }
+    finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('applySchema 给 sessions 建 (ide, session_id) 索引：findSessionOwners 不允许全表扫描', () => {
     // 2026-09-20 incident: without this index findSessionOwners degraded to SCAN sessions (140k rows × 35ms),
     // 30 times/sec in a storm pinned one core at 100%. The query plan must keep using the index; failing to restore it is a regression.

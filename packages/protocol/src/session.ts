@@ -118,6 +118,13 @@ export interface AgentRegisterPayload {
    */
   liveIdes?: IdeKind[];
   /**
+   * Routing capability: slots this process can actually serve (started disk adapters ∪
+   * created CDP slots). Free-form strings so a future slot does not need another wire
+   * change; the server intersects with its own kinds. Absent = old agent (the pre-split
+   * `cursor + codebuddy` set). **Not** the same as `liveIdes` (that one is "installed").
+   */
+  slots?: string[];
+  /**
    * This machine is **content-source only**: the agent does not connect CDP, does not take over input,
    * only reads session data.
    *

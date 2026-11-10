@@ -3,6 +3,18 @@ import type { PendingNewChat } from '../store/ui';
 import { isDraftTab } from '../store/ides';
 
 /**
+ * Body a draft pane paints instead of its hint: whatever was already sent from this draft — the optimistic bubble,
+ * and later its landed twin. `undefined` = nothing sent from it yet, keep the hint.
+ *
+ * Deliberately "any non-empty body", not "holds a pending bubble": the disk twin can land and pop the bubble while
+ * the IDE state still reports a draft (the pending-send reconcile tests cover exactly that order), so asking for the
+ * pending state would flash the landed message away again.
+ */
+export function draftPaneBody<T>(draftKey: string, body: T[] | undefined): T[] | undefined {
+  return draftKey && body && body.length > 0 ? body : undefined;
+}
+
+/**
  * Has the IDE caught up with an optimistic "new session" click?
  *
  * The optimistic row (and the empty pane) exist only until the live state shows the create actually happened. Landing

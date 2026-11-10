@@ -109,6 +109,31 @@ describe('createIdeSlot', () => {
     assert.deepEqual(buddyPatches, [{ contentSource: 'unavailable' }]);
   });
 
+  // The vscode slot's CDP port comes from `Code/DevToolsActivePort` (e.g. 52286) while the config default
+  // is 9225. The per-window poll must follow the slot's own URL: a frozen `config.cdpUrl` made
+  // pollCodeBuddyWindow fetch targets from a dead port, so non-home windows kept zero tabs and the console
+  // hid them (measured 2026-11-09: two VS Code windows open, one row shown).
+  it('polls per-window targets on the slot\'s own CDP url, not config.cdpUrl', async () => {
+    const config = dummyConfig();
+    const seen: string[] = [];
+    const slot = createIdeSlot({
+      kind: 'vscode',
+      cdpUrl: 'http://127.0.0.1:9225',
+      selectors: dummySelectors(),
+      config,
+      runtime: null,
+      onPatch: () => {},
+      fetchCdpTargets: async (cdpUrl: string) => {
+        seen.push(cdpUrl);
+        return [];
+      },
+    });
+    const monitor = slot.windowMonitor as unknown as { listTargetsImpl: () => Promise<unknown> };
+    await monitor.listTargetsImpl();
+    assert.deepEqual(seen, ['http://127.0.0.1:9225']);
+    await slot.stop();
+  });
+
   it('tags the CodeBuddy slot so WindowMonitor will not run Cursor DOM extract', () => {
     const config = dummyConfig();
     const slot = createIdeSlot({

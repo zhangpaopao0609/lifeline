@@ -29,8 +29,18 @@ import {
   projectCodeBuddy,
 } from './codebuddy-project.js';
 
-/** Extension host dirs under `<root>/<uid>/`: the standalone IDE and the VSCode plugin (measured on 2026-11-03). */
-const HOST_DIRS = ['CodeBuddyIDE', 'VSCode'] as const;
+/**
+ * Extension host dirs under `<root>/<uid>/` (measured on 2026-11-03): the
+ * standalone IDE writes `CodeBuddyIDE/`, the VSCode plugin writes `VSCode/`.
+ *
+ * Slot split: each slot's adapter scans **only its own host's directory** and
+ * reports its own `ref.ide` — `codebuddy` → `CodeBuddyIDE/`, `vscode` →
+ * `VSCode/`. Sharding (not merging) keeps the census reporter's per-ide
+ * `indexSignal` line clean and lets `session:get { ide }` route with no
+ * cross-slot lookup.
+ */
+const CODEBUDDY_HOST_DIR = 'CodeBuddyIDE';
+const VSCODE_HOST_DIR = 'VSCode';
 
 interface ConversationHead {
   id: string;
@@ -60,16 +70,28 @@ interface LocatedSession {
 const SCHEMA_FP = 'index.messages+requests;file.message+extra';
 
 export class CodeBuddyAdapter implements ContentSource {
-  readonly ide = 'codebuddy' as const;
+  readonly ide: 'codebuddy' | 'vscode';
   readonly rootPath: string;
   private readonly includeProcess: boolean;
+  /** Which extension-host directory this adapter scans (see the host-dir note). */
+  private readonly hostDir: string;
   private watchedSessionId: string | null = null;
   private locById = new Map<string, LocatedSession>();
   private bucketsSig = Number.NaN;
 
-  constructor(rootPath: string, opts?: { includeProcess?: boolean }) {
+  constructor(rootPath: string, opts?: {
+    includeProcess?: boolean;
+    /**
+     * `ide` and host dir move together: `'codebuddy'` scans `CodeBuddyIDE/`,
+     * `'vscode'` scans `VSCode/`. Defaults to the standalone IDE's shard —
+     * callers that don't pass it only ever meant the IDE.
+     */
+    ide?: 'codebuddy' | 'vscode';
+  }) {
     this.rootPath = rootPath;
     this.includeProcess = opts?.includeProcess !== false;
+    this.ide = opts?.ide ?? 'codebuddy';
+    this.hostDir = this.ide === 'vscode' ? VSCODE_HOST_DIR : CODEBUDDY_HOST_DIR;
   }
 
   close(): void {
@@ -152,7 +174,7 @@ export class CodeBuddyAdapter implements ContentSource {
     this.refreshLocsIfNeeded();
     const rows = [...this.locById.values()].map(loc => ({
       ref: {
-        ide: 'codebuddy',
+        ide: this.ide,
         workspaceId: loc.workspaceId,
         sessionId: loc.sessionId,
       } satisfies SessionRef,
@@ -177,7 +199,7 @@ export class CodeBuddyAdapter implements ContentSource {
       const createdAt = parseTs(loc.conv.createdAt);
       const flags = peekSessionFlags(loc.dir);
       const ref: SessionRef = {
-        ide: 'codebuddy',
+        ide: this.ide,
         workspaceId: loc.workspaceId,
         sessionId: loc.sessionId,
       };
@@ -203,7 +225,10 @@ export class CodeBuddyAdapter implements ContentSource {
     if (!loc)
       return [];
     const idx = readJson<SessionIndex>(join(loc.dir, 'index.json'));
-    const entries = idx?.messages ?? [];
+    // Symmetric with projectSession: a row the projection never emits (tool rows when the process
+    // log is off) must not sit in the index either — the runtime treats "indexed but not emitted"
+    // as still to be fetched, and a row that can never be emitted would be re-read on every tick.
+    const entries = (idx?.messages ?? []).filter(e => this.includeProcess || e.role !== 'tool');
     return entries.map(e => ({
       messageId: e.id,
       role: indexRole(e.role),
@@ -279,6 +304,18 @@ export class CodeBuddyAdapter implements ContentSource {
     });
   }
 
+  /**
+   * Existence check only (cheap): the plugin writes `messages/<id>.json` right after `index.json`, so the
+   * gap the runtime has to retry is "indexed, file not there yet". A torn JSON body is rare enough to be
+   * covered by the same retry (the projection just yields nothing this tick).
+   */
+  readableIds(sessionId: string, ids: string[]): string[] {
+    const loc = this.findSession(sessionId);
+    if (!loc)
+      return [];
+    return ids.filter(id => existsSync(join(loc.dir, 'messages', `${id}.json`)));
+  }
+
   private findSession(sessionId: string): LocatedSession | undefined {
     this.refreshLocsIfNeeded();
     return this.locById.get(sessionId);
@@ -310,7 +347,7 @@ export class CodeBuddyAdapter implements ContentSource {
     if (!existsSync(this.rootPath))
       return out;
     for (const uid of listDirs(this.rootPath)) {
-      for (const host of HOST_DIRS) {
+      for (const host of [this.hostDir]) {
         const ideRoot = join(this.rootPath, uid, host);
         if (!existsSync(ideRoot))
           continue;
@@ -329,7 +366,7 @@ export class CodeBuddyAdapter implements ContentSource {
     if (!existsSync(this.rootPath))
       return out;
     for (const uid of listDirs(this.rootPath)) {
-      for (const host of HOST_DIRS) {
+      for (const host of [this.hostDir]) {
         const ideRoot = join(this.rootPath, uid, host);
         if (!existsSync(ideRoot))
           continue;

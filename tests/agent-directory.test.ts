@@ -1012,6 +1012,52 @@ describe('AgentDirectory', () => {
     const state = d.getStateOrEmpty('agent-mac');
     assert.equal(state.ides.codebuddy, undefined, '有活态的机器不注入只读 tabs');
   });
+
+  it('reorders the machine list and the order survives a restart', () => {
+    d.register(fakeSocket('sa'), { agentId: 'agent-a', hostname: 'A' });
+    d.register(fakeSocket('sb'), { agentId: 'agent-b', hostname: 'B' });
+    d.register(fakeSocket('sc'), { agentId: 'agent-c', hostname: 'C' });
+    assert.deepEqual(d.listMachines().map(m => m.agentId), ['agent-a', 'agent-b', 'agent-c'], '默认 = 注册顺序');
+
+    assert.equal(d.reorderMachines(['agent-c', 'agent-a', 'agent-b']), true);
+    assert.deepEqual(d.listMachines().map(m => m.agentId), ['agent-c', 'agent-a', 'agent-b']);
+
+    // Server restart: the order comes back from the machines table
+    const reloaded = new AgentDirectory(store, { persistDebounceMs: 0, now: () => 60, sessionStore });
+    assert.deepEqual(reloaded.listMachines().map(m => m.agentId), ['agent-c', 'agent-a', 'agent-b']);
+  });
+
+  it('appends a machine enrolled after a reorder at the end', () => {
+    d.register(fakeSocket('sa'), { agentId: 'agent-a', hostname: 'A' });
+    d.register(fakeSocket('sb'), { agentId: 'agent-b', hostname: 'B' });
+    assert.equal(d.reorderMachines(['agent-b', 'agent-a']), true);
+
+    d.register(fakeSocket('sc'), { agentId: 'agent-c', hostname: 'C' });
+    assert.deepEqual(d.listMachines().map(m => m.agentId), ['agent-b', 'agent-a', 'agent-c'], '新机器不打扰已排好的顺序');
+  });
+
+  it('refuses an order that names an unknown machine and changes nothing', () => {
+    d.register(fakeSocket('sa'), { agentId: 'agent-a', hostname: 'A' });
+    d.register(fakeSocket('sb'), { agentId: 'agent-b', hostname: 'B' });
+
+    assert.equal(d.reorderMachines(['agent-b', 'agent-zzz']), false);
+    assert.deepEqual(d.listMachines().map(m => m.agentId), ['agent-a', 'agent-b']);
+  });
+
+  it('refuses an order that names the same machine twice', () => {
+    d.register(fakeSocket('sa'), { agentId: 'agent-a', hostname: 'A' });
+    d.register(fakeSocket('sb'), { agentId: 'agent-b', hostname: 'B' });
+
+    assert.equal(d.reorderMachines(['agent-a', 'agent-a']), false, '重复 id 会导致一行被写两次，目录层自己就该拒绝');
+    assert.deepEqual(d.listMachines().map(m => m.agentId), ['agent-a', 'agent-b']);
+  });
+
+  it('keeps never-reordered machines in registration order even when others have an order', () => {
+    d.register(fakeSocket('sa'), { agentId: 'agent-a', hostname: 'A' });
+    d.register(fakeSocket('sb'), { agentId: 'agent-b', hostname: 'B' });
+    assert.equal(d.reorderMachines(['agent-b']), true);
+    assert.deepEqual(d.listMachines().map(m => m.agentId), ['agent-b', 'agent-a'], '手动排过的在前，没排过的按注册顺序殿后');
+  });
 });
 
 describe('normalizeMachineName', () => {

@@ -15,6 +15,7 @@ export type ProbeFetch = typeof fetch;
 const OUR_UA_TOKEN: Record<IdeKind, RegExp> = {
   cursor: /Cursor/i,
   codebuddy: /CodeBuddy/i,
+  vscode: / Code\/\d/,
 };
 
 /**
@@ -27,22 +28,25 @@ const OUR_UA_TOKEN: Record<IdeKind, RegExp> = {
 const FOREIGN_UA_TOKEN_BASE = /HeadlessChrome\/|Chrome\/|Firefox\/|Edg\/|VSCodium\/|Windsurf\/|Trae\//;
 
 /**
- * Plain VSCode's UA token. Foreign to `cursor`; on the `codebuddy` slot it is a
- * **family member** (the CodeBuddy plugin runs inside VSCode) and must be
- * classified `unknown`, never a match and never foreign.
- *
- * Checked **before** the foreign list, not merely removed from it: VSCode's UA
- * carries both ` Code/<version>` and `Chrome/`, so leaving `Chrome/` to decide
- * would report every plugin host as someone else's product (`not-cdp/foreign` →
- * the console says "端口上是 Chrome/x.y，不是 CodeBuddy"). Measured UA shape:
+ * Plain VSCode's UA token, now **the `vscode` slot's own token** (the port belongs
+ * to the VSCode process). Measured shape:
  * `Mozilla/5.0 … Code/1.96.0 Chrome/128.0.6613.186 Electron/32.2.6 Safari/537.36`.
+ *
+ * Still checked **before** the foreign list: VSCode's UA carries both ` Code/<n>`
+ * and `Chrome/`, so leaving `Chrome/` to decide would report the host as someone
+ * else's product.
  */
 const VSCODE_UA_TOKEN = / Code\/\d/;
 
+/** The standalone CodeBuddy IDE's token — foreign to `vscode` and to `cursor`. */
+const CODEBUDDY_UA_TOKEN = /CodeBuddy/i;
+
 function foreignUaToken(ide: IdeKind): RegExp {
-  return ide === 'cursor'
-    ? new RegExp(`${FOREIGN_UA_TOKEN_BASE.source}|${VSCODE_UA_TOKEN.source}`)
-    : FOREIGN_UA_TOKEN_BASE;
+  if (ide === 'cursor')
+    return new RegExp(`${FOREIGN_UA_TOKEN_BASE.source}|${VSCODE_UA_TOKEN.source}`);
+  if (ide === 'vscode')
+    return new RegExp(`${FOREIGN_UA_TOKEN_BASE.source}|${CODEBUDDY_UA_TOKEN.source}`);
+  return FOREIGN_UA_TOKEN_BASE;
 }
 
 /**
@@ -55,8 +59,6 @@ export function identityOf(ua: string | undefined, ide: IdeKind): 'match' | 'for
     return 'unknown';
   if (OUR_UA_TOKEN[ide].test(ua))
     return 'match';
-  if (ide === 'codebuddy' && VSCODE_UA_TOKEN.test(ua))
-    return 'unknown';
   if (foreignUaToken(ide).test(ua))
     return 'foreign';
   return 'unknown';
@@ -72,14 +74,17 @@ export function identityOf(ua: string | undefined, ide: IdeKind): 'match' | 'for
  * Spaces in the URL are percent-encoded (measured `/Applications/CodeBuddy%20CN.app/`);
  * decode before comparing.
  *
- * `Visual Studio Code` is foreign to `cursor` but **not** to `codebuddy` (the
- * CodeBuddy plugin runs inside VSCode) — see `foreignAppPathRe`.
+ * Each host rejects the other's install path since the slot split: the `codebuddy`
+ * slot's candidates no longer include the VSCode port file, so a VSCode workbench
+ * on its configured fallback port is a misconfiguration (foreign) — and the
+ * `vscode` slot's own workbench lives in `Visual Studio Code.app`, which therefore
+ * must **not** be in its foreign list.
  */
-const FOREIGN_APP_PATH_BASE = /\/(VSCodium|Windsurf|Trae|Google Chrome|Chromium)\.app\//;
 const CURSOR_FOREIGN_APP_PATH = /\/(Visual Studio Code|VSCodium|Windsurf|Trae|Google Chrome|Chromium)\.app\//;
+const VSCODE_FOREIGN_APP_PATH = /\/(CodeBuddy CN|CodeBuddy|VSCodium|Windsurf|Trae|Google Chrome|Chromium)\.app\//;
 
 function foreignAppPathRe(ide: IdeKind): RegExp {
-  return ide === 'cursor' ? CURSOR_FOREIGN_APP_PATH : FOREIGN_APP_PATH_BASE;
+  return ide === 'vscode' ? VSCODE_FOREIGN_APP_PATH : CURSOR_FOREIGN_APP_PATH;
 }
 
 /**

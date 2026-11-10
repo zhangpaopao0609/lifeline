@@ -1,3 +1,4 @@
+import type { CdpPortValueForm } from './cdp-argv.js';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -198,6 +199,12 @@ export interface EnsureCodeBuddyCdpArgvOutcome {
  * quit-and-reopen self-heal. `setManagedRemoteDebuggingPort` inserts a marked
  * key without re-serializing JSON and leaves an unmarked user-owned
  * `remote-debugging-port` alone, so touching VSCode's own file is safe.
+ *
+ * The **value form differs per host**: VSCode's argv.json schema types this key as a
+ * string (a number is dropped silently — measured 2026-11-09 on VS Code 1.144), while
+ * Cursor / the CodeBuddy IDE keep the numeric form this CLI has always written. A
+ * rewrite also repairs the form, so machines that already hold the broken numeric
+ * value in `~/.vscode/argv.json` are fixed by the next `lifeline start`.
  */
 export function ensureCodeBuddyCdpArgv(
   port = 0,
@@ -210,15 +217,18 @@ export function ensureCodeBuddyCdpArgv(
   let state: EnsureCodeBuddyCdpArgvResult = 'already';
   const written: string[] = [];
   for (const path of paths) {
+    // VSCode validates argv.json against its own schema: the port must be a **string**
+    // there, or the key is dropped silently and the editor starts without a port.
+    const form: CdpPortValueForm = isVscodeArgvPath(path) ? 'string' : 'number';
     if (!existsSync(path)) {
-      const { text } = setManagedRemoteDebuggingPort('{\n}\n', port);
+      const { text } = setManagedRemoteDebuggingPort('{\n}\n', port, form);
       writeFileSync(path, text, 'utf-8');
       written.push(path);
       state = 'created';
       continue;
     }
     const raw = readFileSync(path, 'utf-8');
-    const { text, changed } = setManagedRemoteDebuggingPort(raw, port);
+    const { text, changed } = setManagedRemoteDebuggingPort(raw, port, form);
     if (!changed)
       continue;
     writeFileSync(path, text, 'utf-8');

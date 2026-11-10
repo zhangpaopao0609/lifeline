@@ -34,6 +34,7 @@ export function applySchema(db: Database.Database): void {
   migrateSessionsIdeColumn(db);
   migrateMachinesDisplayName(db);
   migrateMachinesPlatform(db);
+  migrateMachinesSortOrder(db);
   db.exec(`
     CREATE TABLE IF NOT EXISTS users (
       user_id TEXT PRIMARY KEY,
@@ -52,7 +53,8 @@ export function applySchema(db: Database.Database): void {
       cli_version TEXT,
       last_seen_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
-      snapshot_json TEXT
+      snapshot_json TEXT,
+      sort_order INTEGER
     );
     CREATE INDEX IF NOT EXISTS machines_owner ON machines (owner_user_id);
 
@@ -140,6 +142,18 @@ function migrateMachinesPlatform(db: Database.Database): void {
   if (columnNames(db, 'machines').has('platform'))
     return;
   db.exec(`ALTER TABLE machines ADD COLUMN platform TEXT`);
+}
+
+/**
+ * `machines.sort_order` (manual rail drag sorting) is a later-added column. ALTER once on old DBs;
+ * default NULL = never reordered → registration order, appended at the end.
+ */
+function migrateMachinesSortOrder(db: Database.Database): void {
+  if (!tableNames(db).has('machines'))
+    return;
+  if (columnNames(db, 'machines').has('sort_order'))
+    return;
+  db.exec(`ALTER TABLE machines ADD COLUMN sort_order INTEGER`);
 }
 
 /** Pre-ide sessions.sqlite: rebuild with ide='cursor'. */

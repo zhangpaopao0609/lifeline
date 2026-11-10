@@ -3,8 +3,8 @@ import { describe, it } from 'node:test';
 import { DRIVERS } from '../packages/agent/src/drivers/index.js';
 import { IDE_KINDS } from '../packages/protocol/src/index.js';
 
-function configWith(cdpUrl: string, codebuddyCdpUrl: string) {
-  return { cdpUrl, codebuddyCdpUrl } as Parameters<
+function configWith(cdpUrl: string, codebuddyCdpUrl: string, vscodeCdpUrl: string) {
+  return { cdpUrl, codebuddyCdpUrl, vscodeCdpUrl } as Parameters<
     (typeof DRIVERS)[keyof typeof DRIVERS]['cdpUrlOf']
   >[0];
 }
@@ -18,14 +18,15 @@ describe('drivers registry', () => {
   });
 
   it('maps each kind to its configured CDP URL field', () => {
-    const config = configWith('http://127.0.0.1:9222', 'http://127.0.0.1:9223');
+    const config = configWith('http://127.0.0.1:9222', 'http://127.0.0.1:9223', 'http://127.0.0.1:9225');
     assert.equal(DRIVERS.cursor?.cdpUrlOf(config), 'http://127.0.0.1:9222');
     assert.equal(DRIVERS.codebuddy?.cdpUrlOf(config), 'http://127.0.0.1:9223');
+    assert.equal(DRIVERS.vscode?.cdpUrlOf(config), 'http://127.0.0.1:9225');
   });
 
   it('portCandidates and argvPaths are non-empty arrays of the right shapes', () => {
-    assert.ok(DRIVERS.cursor && DRIVERS.codebuddy);
-    for (const driver of [DRIVERS.cursor, DRIVERS.codebuddy]) {
+    assert.ok(DRIVERS.cursor && DRIVERS.codebuddy && DRIVERS.vscode);
+    for (const driver of [DRIVERS.cursor, DRIVERS.codebuddy, DRIVERS.vscode]) {
       const ports = driver.portCandidates();
       assert.ok(ports.length > 0, driver.kind);
       for (const p of ports) assert.ok(p.endsWith('DevToolsActivePort'), p);
@@ -67,5 +68,41 @@ describe('drivers registry', () => {
       assert.equal(typeof driver!.createExtractor, 'function');
       assert.equal(typeof driver!.createExecutor, 'function');
     }
+  });
+});
+
+describe('slot split: codebuddy vs vscode', () => {
+  it('the codebuddy slot no longer claims VSCode as its live app', () => {
+    // Injected exists: VSCode + the plugin are "installed", no CodeBuddy IDE.
+    const home = '/u/fake-home';
+    const exists = (p: string) =>
+      p === `/Applications/Visual Studio Code.app` || p === `${home}/.vscode/extensions`;
+    assert.equal(
+      DRIVERS.codebuddy!.hasLiveApp(exists, home, 'darwin', {}),
+      false,
+      'codebuddy 槽不应再把 VSCode 宿主算作自己的 live app',
+    );
+  });
+
+  it('the vscode slot is gated on the plugin and owns its own argv', () => {
+    assert.equal(typeof DRIVERS.vscode!.isEnabled, 'function');
+    const argv = DRIVERS.vscode!.argvPaths().map(p => p.replace(/\\/g, '/'));
+    assert.deepEqual(argv.map(p => p.split('/').slice(-2).join('/')), ['.vscode/argv.json']);
+  });
+
+  // A disabled driver must not reach slot creation: `state:full` is built from this
+  // list, and "status has the key" is what makes a rail row render. An empty state
+  // per driver would bring the phantom row back.
+  it('enabledDrivers drops a slot whose isEnabled is false', async () => {
+    const { enabledDrivers } = await import('../packages/agent/src/drivers/index.js');
+    const mk = (kind: 'a' | 'b', enabled?: boolean) => ({ kind, driver: { isEnabled: enabled === undefined ? undefined : () => enabled } }) as never;
+    const out = enabledDrivers([mk('a', false), mk('b'), mk('a', true)] as never[]) as Array<{ kind: string }>;
+    assert.deepEqual(out.map(row => row.kind), ['b', 'a']);
+  });
+
+  it('every slot in IDE_KINDS has a surface registered', async () => {
+    const { SURFACE_OF, SURFACES } = await import('../packages/agent/src/drivers/index.js');
+    for (const kind of IDE_KINDS)
+      assert.ok(SURFACE_OF[kind] in SURFACES, kind);
   });
 });

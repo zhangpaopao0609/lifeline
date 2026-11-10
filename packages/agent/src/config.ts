@@ -10,6 +10,10 @@ export function loadConfig(): AgentConfig {
   return {
     cdpUrl: process.env.CDP_URL ?? 'http://127.0.0.1:9222',
     codebuddyCdpUrl: process.env.CODEBUDDY_CDP_URL ?? 'http://127.0.0.1:9223',
+    // Host-level port for the VSCode slot (the process owns the port, not the plugin):
+    // 9222 cursor / 9223 codebuddy / 9225 vscode — 9224 is taken by a WeChat client on
+    // real machines, so it is skipped rather than reused.
+    vscodeCdpUrl: process.env.VSCODE_CDP_URL ?? 'http://127.0.0.1:9225',
     pollIntervalMs: parseInt(process.env.POLL_INTERVAL_MS ?? '300', 10),
     debounceMs: parseInt(process.env.DEBOUNCE_MS ?? '150', 10),
     // Repo-relative: dev entry points (`pnpm run agent`, probes, tests) run with cwd = repo root.

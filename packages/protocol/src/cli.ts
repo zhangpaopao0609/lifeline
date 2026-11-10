@@ -57,6 +57,8 @@ export const COMMAND_ERROR_CODES = [
   'provider-error',
   'shutting-down',
   'cli-agent-incompatible',
+  /** The agent declared `slots` and the target slot is not among them (see `agent-hub.sendCommand`). */
+  'ide-agent-incompatible',
   'wrong-target',
 ] as const;
 export type CommandErrorCode = (typeof COMMAND_ERROR_CODES)[number];

@@ -90,8 +90,27 @@ export type HasLiveApp = (
  */
 export interface IdeDriver {
   kind: IdeKind;
-  /** This IDE's CDP URL field on AgentConfig (cursor: cdpUrl / codebuddy: codebuddyCdpUrl). */
+  /** This IDE's CDP URL field on AgentConfig (cursor: cdpUrl / codebuddy: codebuddyCdpUrl / vscode: vscodeCdpUrl). */
   cdpUrlOf: (config: AgentConfig) => string;
+  /**
+   * Should this slot exist **at all** on this machine? Absent = always.
+   *
+   * This is a genuine existence gate (unlike `hasLiveApp`, which is the quiet
+   * strategy and never a gate): a slot that answers false is not created — no CDP
+   * polling, no disk adapter, nothing on the wire — so a machine without the
+   * product gains no dead console entry. Used by the `vscode` slot (plugin
+   * installed?). Evaluated once at agent startup; keep it cheap.
+   */
+  isEnabled?: () => boolean;
+  /**
+   * Does this slot have sessions **on disk here**, regardless of whether the host
+   * is installed/controllable? Content and control are two gates:
+   * `isEnabled` decides the CDP slot, this decides the disk adapter. A machine can
+   * hold the history without the plugin being installed locally (restored data dir,
+   * plugin removed, a content-only box) — and answering `session:get` read-only is
+   * still correct there. Absent = same as `isEnabled`.
+   */
+  hasContent?: () => boolean;
   /** DevToolsActivePort file candidates (auto-discover the port). */
   portCandidates: () => string[];
   /**

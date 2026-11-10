@@ -44,7 +44,6 @@ export function codeBuddyActivePortCandidates(
   home = homedir(),
   platform = process.platform,
   env: NodeJS.ProcessEnv = process.env,
-  opts: { vscodePlugin?: boolean } = {},
 ): string[] {
   const darwin = [
     join(home, 'Library', 'Application Support', 'CodeBuddy CN', 'DevToolsActivePort'),
@@ -66,49 +65,35 @@ export function codeBuddyActivePortCandidates(
   // In practice `<home>\Library\...` / `<home>\.config\...` do not exist on
   // Windows and `readFile` skips them, so putting the current platform first
   // is enough.
-  if (platform === 'win32') {
-    return withVscode(
-      [...codeBuddyActivePortFileCandidates(env, home), ...linux, ...darwin],
-      platform,
-      home,
-      env,
-      opts,
-    );
-  }
-  const base = platform === 'darwin' ? [...darwin, ...linux] : [...linux, ...darwin];
-  return withVscode(base, platform, home, env, opts);
+  if (platform === 'win32')
+    return [...codeBuddyActivePortFileCandidates(env, home), ...linux, ...darwin];
+  return platform === 'darwin' ? [...darwin, ...linux] : [...linux, ...darwin];
 }
 
 /**
- * Append the VSCode host's DevToolsActivePort (CodeBuddy plugin flavor) to the
- * CodeBuddy candidate list, right after the current platform's CodeBuddy
- * entries. `vscodePlugin` defaults to **false** to keep this pure/deterministic
- * — the production caller (the codebuddy driver) passes the plugin gate
- * explicitly; plain VSCode never runs with a debug port unless a user went out
- * of their way, and adopting it would show a foreign workbench as "CodeBuddy"
- * (empty live state).
+ * Port candidates for the **VSCode host slot** (`vscode`). Deliberately only the
+ * VSCode workbench's own DevToolsActivePort: the port belongs to the VSCode
+ * process, which is exactly what a host slot owns.
+ *
+ * The old merged behavior (VSCode inserted into the CodeBuddy list, plugin-gated)
+ * is gone: with both hosts live on one machine, two slots racing for one endpoint
+ * is the collision this split exists to remove. Insiders (`Code - Insiders`) is a
+ * different user-data-dir and intentionally not listed — it stays invisible
+ * rather than silently sharing this slot.
  */
-function withVscode(
-  candidates: string[],
-  platform: NodeJS.Platform,
-  home: string,
-  env: NodeJS.ProcessEnv,
-  opts: { vscodePlugin?: boolean },
+export function vscodeActivePortCandidates(
+  home = homedir(),
+  platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
 ): string[] {
-  if (opts.vscodePlugin !== true)
-    return candidates;
-  const vscode = platform === 'win32'
-    ? vscodeActivePortFileCandidates(env, home)
-    : [join(
-        home,
-        platform === 'darwin' ? 'Library/Application Support' : '.config',
-        'Code',
-        'DevToolsActivePort',
-      )];
-  // Current-platform CodeBuddy first, VSCode next (a dual-install machine
-  // prefers the standalone IDE), other platforms last. The first 2 candidates
-  // are always the current platform's CodeBuddy entries in every branch above.
-  return [...candidates.slice(0, 2), ...vscode, ...candidates.slice(2)];
+  if (platform === 'win32')
+    return vscodeActivePortFileCandidates(env, home);
+  return [join(
+    home,
+    platform === 'darwin' ? 'Library/Application Support' : '.config',
+    'Code',
+    'DevToolsActivePort',
+  )];
 }
 
 export function parseDevToolsActivePort(text: string): number | undefined {

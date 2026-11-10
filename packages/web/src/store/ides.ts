@@ -110,6 +110,31 @@ export function liveSessionKeyOf(
 }
 
 /**
+ * Body key a draft's first message is echoed on — the optimistic bubble's home while `liveSessionKeyOf` stays ''.
+ *
+ * A draft has no body to fetch, so the pane shows the draft hint; the bubble still needs somewhere to live **before
+ * the IDE persists the session**, otherwise the first message of a Cursor draft stays invisible for the 1–2s until
+ * the session lands on disk (CodeBuddy never reports drafts, which is why only Cursor showed the delay).
+ *
+ * The key is the draft's own composer id — exactly the key that session uses once persisted, so the bubble carries
+ * over into the real body with no migration (reconcile already pops across keys, see store/sessions).
+ *
+ * **No `activeComposerId` fallback** when the draft row id is still a placeholder (`tab-N`, Agents window without
+ * `data-sidebar-item-key`): for such a draft `activeComposerId` still points at the **previous** session (that is
+ * why `liveSessionKeyOf` short-circuits drafts at all, 2026-09-18 feedback), so borrowing it would paint the bubble
+ * into — and then render — another session's body. Those drafts keep the pre-fix 1–2s wait instead: nothing exists
+ * to join the bubble to until the session lands. A draft whose row id *is* known (project-window ＋) is covered.
+ */
+export function draftSessionKeyOf(
+  ide: IdeKind,
+  state: CursorState | undefined,
+  pending?: PendingSwitch | null,
+): string {
+  const tabId = viewedTabOf(state, pending)?.composerId ?? '';
+  return isSyntheticComposerId(tabId) ? '' : `${ide}:${tabId}`;
+}
+
+/**
  * The single source of the "currently viewed session body key": the optimistic pending target first
  * (when it carries a real composer id), otherwise the active tab. '' = no body (draft / synthetic / none).
  * The AppShell remount key and the Timeline wrapper both derive from this — keep them identical.

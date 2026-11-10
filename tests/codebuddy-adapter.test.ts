@@ -35,19 +35,31 @@ describe('CodeBuddyAdapter', () => {
     assert.equal(none.lastUpdatedAt, 0);
   });
 
-  // The VSCode plugin writes its sessions under <root>/<uid>/VSCode/ (the IDE
-  // uses <root>/<uid>/CodeBuddyIDE/) — the adapter scans both host dirs.
-  it('lists and projects sessions written by the VSCode plugin host', () => {
-    const a = new CodeBuddyAdapter(FIXTURE_ROOT);
-    const list = a.listSessions();
-    const plugin = list.find(s => s.ref.sessionId === 'conv6');
-    assert.ok(plugin, 'VSCode host 目录下的会话应出现在列表里');
+  // Slot split: each slot's adapter scans ONLY its own host directory and reports
+  // its own `ref.ide`. The plugin's sessions live under <root>/<uid>/VSCode/ —
+  // visible to `ide: 'vscode'`, invisible to the default (standalone-IDE) adapter,
+  // and vice versa for CodeBuddyIDE/.
+  it('shards by host dir: the vscode adapter sees VSCode/ only, the codebuddy adapter CodeBuddyIDE/ only', () => {
+    const split = new CodeBuddyAdapter(FIXTURE_ROOT, { ide: 'vscode' });
+    assert.equal(split.ide, 'vscode');
+    const splitList = split.listSessions();
+    const plugin = splitList.find(s => s.ref.sessionId === 'conv6');
+    assert.ok(plugin, 'VSCode host 目录下的会话应出现在分槽 adapter 里');
     assert.equal(plugin.title, 'VSCode Plugin Session');
+    assert.equal(plugin.ref.ide, 'vscode', 'ref.ide 带分槽标识（session:get 路由依据）');
+    assert.ok(!splitList.some(s => s.ref.sessionId === 'conv1'), 'CodeBuddyIDE 会话不在 VSCode 分片里');
 
-    const msgs = a.projectSession('conv6');
+    const msgs = split.projectSession('conv6');
     assert.deepEqual(msgs.map(m => m.type), ['human', 'assistant']);
     assert.equal((msgs[0] as { text: string }).text, 'from vscode plugin');
     assert.equal((msgs[1] as { text: string }).text, 'plugin reply');
+
+    // The default (codebuddy-slot) adapter is the mirror image.
+    const ide = new CodeBuddyAdapter(FIXTURE_ROOT);
+    assert.equal(ide.ide, 'codebuddy');
+    const ideList = ide.listSessions();
+    assert.ok(ideList.some(s => s.ref.sessionId === 'conv1'));
+    assert.ok(!ideList.some(s => s.ref.sessionId === 'conv6'), 'VSCode 会话不在 codebuddy 分片里');
   });
 
   it('projects conv1 as human / thought / assistant / one tool and skips ghost', () => {

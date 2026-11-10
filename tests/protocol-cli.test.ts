@@ -243,6 +243,7 @@ describe('CLI command events', () => {
       'provider-error',
       'shutting-down',
       'cli-agent-incompatible',
+      'ide-agent-incompatible',
       'wrong-target',
     ]);
     assert.equal((COMMAND_ERROR_CODES as readonly string[]).includes('busy'), false);
