@@ -1,6 +1,5 @@
 import { ArrowRight, Broadcast, CaretDown, DeviceMobile, Heartbeat, SealCheck, Sun } from '@phosphor-icons/react';
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
 import { CommandBlock } from '../components/CommandBlock';
 import { FloatLayer } from '../components/FloatLayer';
 import { installOsHint, OsSwitch } from '../components/OsSwitch';
@@ -158,9 +157,9 @@ export function LandingPage() {
           >
             <div className="p-2"><ThemeSwitch /></div>
           </FloatLayer>
-          <Link to={CONSOLE_PATH} className="btn btn-primary min-h-11 lg:min-h-8">
+          <a href={CONSOLE_PATH} className="btn btn-primary min-h-11 lg:min-h-8">
             开始使用
-          </Link>
+          </a>
         </div>
       </nav>
 
@@ -174,10 +173,10 @@ export function LandingPage() {
             <p className="landing-note">人走，线不断；回来，现场还在。</p>
 
             <div className="mt-7 flex flex-wrap items-center gap-3">
-              <Link to={CONSOLE_PATH} className="btn btn-primary landing-cta">
+              <a href={CONSOLE_PATH} className="btn btn-primary landing-cta">
                 开始使用
                 <ArrowRight size={16} weight="bold" />
-              </Link>
+              </a>
               <button type="button" className="btn btn-ghost landing-cta" onClick={() => scrollToId('what')}>
                 看它怎么跑
               </button>
@@ -300,9 +299,9 @@ export function LandingPage() {
             </div>
             <div className="flex items-center gap-3">
               <span className="text-[length:var(--text-chrome)] text-[var(--text-weak)]">线不断，人就自由。</span>
-              <Link to={CONSOLE_PATH} className="btn btn-ghost min-h-11 lg:min-h-8">
+              <a href={CONSOLE_PATH} className="btn btn-ghost min-h-11 lg:min-h-8">
                 开始使用
-              </Link>
+              </a>
             </div>
           </div>
           <p className="mt-4 text-[length:var(--text-chrome)] text-[var(--text-weak)]">

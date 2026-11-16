@@ -182,6 +182,15 @@ export interface PasswordProviderOptions {
 
 const PUBLIC_EXACT_PATHS = new Set(['/register', '/login', '/api/register', '/api/login']);
 
+/** The marketing page and the files it needs. The console and the API stay behind the cookie. */
+function isLandingAsset(path: string): boolean {
+  if (path.includes('..'))
+    return false;
+  if (path === '/' || path === '/favicon.svg')
+    return true;
+  return path.startsWith('/assets/');
+}
+
 function jsonMedia(header: string | undefined): boolean {
   const media = header?.split(';')[0]?.trim().toLowerCase() ?? '';
   return media === 'application/json';
@@ -282,7 +291,8 @@ export function createPasswordProvider(opts: PasswordProviderOptions): AuthProvi
     forbiddenHtml: GENERIC_FORBIDDEN_HTML,
 
     isPublicPath(path: string): boolean {
-      return PUBLIC_EXACT_PATHS.has(path.split('?')[0] ?? path);
+      const bare = path.split('?')[0] ?? path;
+      return PUBLIC_EXACT_PATHS.has(bare) || isLandingAsset(bare);
     },
 
     /**

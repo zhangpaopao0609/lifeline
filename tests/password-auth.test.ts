@@ -411,8 +411,14 @@ describe('password accounts', { concurrency: 1 }, () => {
     assert.match(page.headers.get('content-security-policy') ?? '', /script-src 'nonce-/);
 
     const root = await fetch(`http://127.0.0.1:${port}/`, { redirect: 'manual' });
-    assert.equal(root.status, 302);
-    assert.equal(root.headers.get('location'), '/login?next=%2F');
+    assert.notEqual(root.status, 302);
+    assert.equal(root.headers.get('location'), null);
+    const asset = await fetch(`http://127.0.0.1:${port}/assets/app.js`, { redirect: 'manual' });
+    assert.notEqual(asset.status, 302);
+    assert.notEqual(asset.status, 403);
+    const consolePage = await fetch(`http://127.0.0.1:${port}/console`, { redirect: 'manual' });
+    assert.equal(consolePage.status, 302);
+    assert.equal(consolePage.headers.get('location'), '/login?next=%2Fconsole');
     const target = '/cli-setup?redirect_uri=http%3A%2F%2F127.0.0.1%3A9%2Fcallback';
     const bounced = await fetch(`http://127.0.0.1:${port}${target}`, { redirect: 'manual' });
     const location = bounced.headers.get('location') ?? '';
