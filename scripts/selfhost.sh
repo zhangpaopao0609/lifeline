@@ -4,14 +4,15 @@
 #   mkdir lifeline && cd lifeline
 #   curl -fsSL <url of selfhost.sh> | sh
 #
-# Four steps (all idempotent, safe to re-run):
-#   1. Detect docker (compose v2 subcommand or standalone)
-#   2. Generate .env (leave it alone if it already exists — your password/gateway config is not overwritten)
-#   3. Generate docker-compose.yml (leave it alone if it already exists)
-#   4. docker compose up -d + wait for /healthz
+# Steps (all idempotent, safe to re-run):
+#   1. Generate .env (leave it alone if it already exists)
+#   2. Generate docker-compose.yml (leave it alone if it already exists)
+#   3. Require PUBLIC_ORIGIN=https://... and refuse AUTH_PASSWORD, before docker starts
+#   4. Detect docker (compose v2 subcommand or standalone)
+#   5. docker compose up -d + wait for /healthz
 #
-# Once up: open http://<this-machine-IP>:8080 in a browser → first-boot claim code is in the container logs:
-#   docker logs lifeline
+# The published port is 127.0.0.1 only. Put a reverse proxy on 443, then register at /register.
+# The first run writes .env and stops until PUBLIC_ORIGIN is an https origin.
 set -e
 
 IMAGE="${LIFELINE_IMAGE:-ghcr.io/zhangpaopao0609/lifeline:latest}"
@@ -57,15 +58,17 @@ detect_compose() {
 # ---- .env (idempotent: do not overwrite if it already exists) ----
 if [ ! -f .env ]; then
   cat > .env <<'ENVEOF'
-# Lifeline server config. All blank = password mode (after first opening the browser,
-# the one-time claim code is in the container logs: docker logs lifeline).
+# Lifeline server config. Password accounts: register a username at /register.
+# The process listens on all container interfaces, so PUBLIC_ORIGIN must be https
+# or the server refuses to start. AUTH_PASSWORD is rejected; delete it if present.
+# AUTH_REGISTRATION=0 closes sign-up after the accounts you want exist.
 #
 # Common knobs (full table: https://github.com/zhangpaopao0609/lifeline docs/selfhost.md):
-#   LIFELINE_PORT     # compose-side port — changing it requires deleting docker-compose.yml and re-running this script (or editing ports by hand)
-#   AUTH_PASSWORD=    # preset password (skip claim; for automated deploys; the value is visible in the process environment)
+#   LIFELINE_PORT     # host port, published on 127.0.0.1 only — changing it requires deleting docker-compose.yml and re-running this script
+#   AUTH_REGISTRATION=0
 #   AUTH_HEADER=      # gateway-injected user header (CF Access / Authelia / nginx auth_request)
-#   AUTH_TRUSTED_PROXY=1   # required when AUTH_HEADER is set and not loopback (the gateway must strip same-named client headers)
-#   PUBLIC_ORIGIN=    # public URL behind a reverse proxy (https://lifeline.example.com)
+#   AUTH_TRUSTED_PROXY=1   # required for AUTH_HEADER off loopback, and for X-Real-IP rate limits behind nginx
+#   PUBLIC_ORIGIN=https://lifeline.example.com
 #   TZ=Asia/Shanghai
 ENVEOF
   echo "已生成 .env（默认 password 模式）"
@@ -82,7 +85,7 @@ services:
     container_name: lifeline
     restart: unless-stopped
     ports:
-      - "${PORT}:18765"
+      - "127.0.0.1:${PORT}:18765"
     volumes:
       - ./data:/data
     env_file:
@@ -98,6 +101,58 @@ YMLEOF
 else
   echo "docker-compose.yml 已存在，保持不动"
 fi
+
+# ---- PUBLIC_ORIGIN / AUTH_PASSWORD (before docker: a missing https origin never becomes healthy) ----
+# Read a single KEY=value. Do not source the file. Comments are ignored.
+env_value() {
+  key=$1
+  file=$2
+  val=$(grep -E "^${key}=" "$file" 2>/dev/null | tail -n 1 | cut -d= -f2- || true)
+  val=$(printf '%s' "$val" | tr -d '\r')
+  case "$val" in
+    \"*\") val=${val#\"}; val=${val%\"} ;;
+    \'*\') val=${val#\'}; val=${val%\'} ;;
+  esac
+  printf '%s' "$val" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+
+# https origin, no userinfo, no query, no hash, path empty or "/". Scheme is case-insensitive.
+https_origin_ok() {
+  origin_lc=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  case "$origin_lc" in
+    https://*) ;;
+    *) return 1 ;;
+  esac
+  rest=${origin_lc#https://}
+  case "$rest" in
+    ''|*'@'*|*'?'*|*'#'*|*'\'*|*[[:space:]]*) return 1 ;;
+  esac
+  host=${rest%%/*}
+  path=${rest#"$host"}
+  [ -n "$host" ] || return 1
+  [ -z "$path" ] || [ "$path" = "/" ]
+}
+
+if [ -f .env ]; then
+  auth_password=$(env_value AUTH_PASSWORD .env)
+  public_origin=$(env_value PUBLIC_ORIGIN .env)
+else
+  auth_password=
+  public_origin=
+fi
+
+if [ -n "$auth_password" ]; then
+  echo "错误：AUTH_PASSWORD 已不再使用。从 .env 里删掉它。账号在 /register 注册，要关闭注册就设置 AUTH_REGISTRATION=0。" >&2
+  exit 1
+fi
+
+if ! https_origin_ok "$public_origin"; then
+  echo "错误：请在 .env 里设置 PUBLIC_ORIGIN=https://<你的域名>（https，不能带账号、查询或路径）。" >&2
+  echo "容器监听 0.0.0.0，没有这个值时进程会拒绝启动，/healthz 不会就绪。" >&2
+  echo "写好之后重新运行本脚本。" >&2
+  exit 1
+fi
+public_origin=${public_origin%/}
 
 # ---- start + health probe ----
 if ! detect_compose; then
@@ -118,17 +173,16 @@ while [ $i -lt 60 ]; do
   if probe; then
     echo " ok"
     echo ""
-    echo "Lifeline 已启动：http://$(hostname 2>/dev/null || echo localhost):${HOST_PORT}"
+    echo "Lifeline 已在本机 127.0.0.1:${HOST_PORT} 就绪。"
+    echo "用 nginx 或 Caddy 把 443 反代到这个端口，并设置 AUTH_TRUSTED_PROXY=1 与 X-Real-IP。"
     echo ""
-    echo "首次使用（password 模式）："
-    echo "  1. 打开上面的地址"
-    echo "  2. 取一次性引导码：$ENGINE logs lifeline"
-    echo "     （找 'Open http://… and enter this one-time code:' 那一行的 64 位码）"
-    echo "  3. 在页面里输入码 + 设置密码，之后用密码登录"
+    echo "首次使用："
+    echo "  1. 打开 ${public_origin}/register ，注册用户名和密码"
+    echo "  2. 账号够了之后，把 AUTH_REGISTRATION=0 写进 .env 再重启，关掉注册"
     echo ""
     echo "接入你的电脑："
-    echo "  curl -fsSL http://<本机IP>:${HOST_PORT}/public/install.sh | sh"
-    echo "  lifeline setup --server-url http://<本机IP>:${HOST_PORT}"
+    echo "  curl -fsSL ${public_origin}/public/install.sh | sh"
+    echo "  lifeline setup --server-url ${public_origin}"
     exit 0
   fi
   printf '.'

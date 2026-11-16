@@ -31,7 +31,14 @@ export const machineTokens = sqliteTable('machine_tokens', {
   lastUsedAt: integer('last_used_at'),
 });
 
-/** Single-row table for the password provider (id is always 1); read/write via raw sqlite in auth/local-auth-store.ts. */
+/** One row per registered account. user_id is the canonical username and the session userId. */
+export const authAccounts = sqliteTable('auth_accounts', {
+  userId: text('user_id').primaryKey(),
+  passwordHash: text('password_hash').notNull(),
+  createdAt: integer('created_at').notNull(),
+});
+
+/** Single-row table for the session signing key (id is always 1). password_hash is unused. */
 export const authLocal = sqliteTable('auth_local', {
   id: integer('id').primaryKey(),
   passwordHash: text('password_hash').notNull(),

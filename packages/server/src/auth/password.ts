@@ -4,21 +4,22 @@ import type { AvatarUrlFor } from './avatar.js';
 import type { AuthProvider, VerifiedIdentity } from './provider.js';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { GENERIC_FORBIDDEN_HTML } from '../pages/forbidden-page.js';
+import { AccountStore, AUTH_ERRORS, canonicalUsername, passwordError, passwordProblem } from './accounts.js';
 import { NO_AVATAR } from './avatar.js';
+import { isLoopbackBindHost } from './bind-host.js';
+import { rateLimitKey } from './client-address.js';
 import { LocalAuthStore } from './local-auth-store.js';
-import { checkOriginAgainstExpected, headerString } from './origin.js';
-import { CLAIM_HTML, LOGIN_HTML } from './password-pages.js';
+import { checkOriginAgainstExpected, expectedOrigin, headerString } from './origin.js';
+import { loginPage, registerPage, securityHeaders } from './password-pages.js';
 
 const COOKIE_NAME = 'lifeline_session';
 const SESSION_TTL_MS = 14 * 24 * 60 * 60 * 1000;
-/** Claim-code entropy (spec frozen): 32B hex = 256 bit; a short code + rate limit still cannot withstand remote guessing. */
-const CLAIM_TTL_MS = 15 * 60 * 1000;
-const MIN_PASSWORD_LEN = 8;
-/** Same tier for /api/claim and /api/login: code guessing and password stuffing share 5 failures/minute/IP. */
-const RATE_MAX_FAILURES = 5;
-const RATE_WINDOW_MS = 60 * 1000;
-
-// --------------------------------------------------------------------- cookie
+const FAILURE_MAX = 5;
+const FAILURE_WINDOW_MS = 60 * 1000;
+const REGISTER_ATTEMPT_MAX = 30;
+const REGISTER_SUCCESS_MAX = 3;
+const REGISTER_WINDOW_MS = 60 * 60 * 1000;
+const BODY_LIMIT = 2048;
 
 export function signSessionPayload(secret: string, userId: string, expiresAtMs: number): string {
   return createHmac('sha256', secret).update(`v1|${userId}|${expiresAtMs}`).digest('hex');
@@ -61,32 +62,7 @@ function cookieFromHeaders(headers: IncomingHttpHeaders, name: string): string |
   return null;
 }
 
-// -------------------------------------------------------------- small in-memory pieces
-
-/** One-shot redeemable code (same pattern as CliSetupCodes in server/cli-setup.ts). */
-class ClaimCodes {
-  private readonly codes = new Map<string, number>();
-
-  constructor(private readonly ttlMs: number, private readonly now: () => number) {}
-
-  issue(): string {
-    const code = randomBytes(32).toString('hex');
-    this.codes.set(code, this.now());
-    return code;
-  }
-
-  /** Redeem destroys the code (whether expired or not); expired returns false. */
-  exchange(code: string): boolean {
-    const createdAt = this.codes.get(code);
-    if (createdAt === undefined)
-      return false;
-    this.codes.delete(code);
-    return this.now() - createdAt <= this.ttlMs;
-  }
-}
-
-/** Per-IP sliding-window failure limiter (Fastify req.ip, XFF untrusted by default, anti-spoof). TTL eviction. */
-class AttemptLimiter {
+class WindowCounter {
   private readonly map = new Map<string, { count: number; windowStart: number }>();
 
   constructor(
@@ -95,74 +71,197 @@ class AttemptLimiter {
     private readonly now: () => number,
   ) {}
 
-  allow(ip: string): boolean {
-    this.sweep();
-    const entry = this.map.get(ip);
+  /** Drop windows that have already elapsed so a rotating address cannot grow the map forever. */
+  private prune(now: number): void {
+    for (const [key, entry] of this.map) {
+      if (now - entry.windowStart >= this.windowMs)
+        this.map.delete(key);
+    }
+  }
+
+  private current(key: string, now: number): { count: number; windowStart: number } | undefined {
+    const entry = this.map.get(key);
+    if (!entry || now - entry.windowStart >= this.windowMs)
+      return undefined;
+    return entry;
+  }
+
+  allow(key: string): boolean {
+    const now = this.now();
+    this.prune(now);
+    const entry = this.current(key, now);
     if (!entry)
-      return true;
-    if (this.now() - entry.windowStart >= this.windowMs)
       return true;
     return entry.count < this.max;
   }
 
-  recordFailure(ip: string): void {
+  /** Count one event. Callers that still have an `await` ahead must hit before that await. */
+  hit(key: string): void {
     const now = this.now();
-    let entry = this.map.get(ip);
-    if (!entry || now - entry.windowStart >= this.windowMs) {
+    this.prune(now);
+    let entry = this.current(key, now);
+    if (!entry) {
       entry = { count: 0, windowStart: now };
-      this.map.set(ip, entry);
+      this.map.set(key, entry);
     }
     entry.count += 1;
-    this.sweep();
   }
 
-  private sweep(): void {
+  /** Give back a reservation when the outcome must not count (a successful login, a taken name). */
+  release(key: string): void {
     const now = this.now();
-    for (const [ip, entry] of this.map) {
-      if (now - entry.windowStart >= this.windowMs)
-        this.map.delete(ip);
-    }
+    this.prune(now);
+    const entry = this.current(key, now);
+    if (!entry)
+      return;
+    entry.count -= 1;
+    if (entry.count <= 0)
+      this.map.delete(key);
   }
 }
 
-// ------------------------------------------------------------------ provider
+/** `HTTPS://` and `https://` are the same scheme. A prefix check would disagree with `new URL`. */
+export function publicOriginIsHttps(publicOrigin: string | undefined): boolean {
+  if (!publicOrigin)
+    return false;
+  try {
+    return new URL(publicOrigin).protocol === 'https:';
+  }
+  catch {
+    return false;
+  }
+}
+
+/**
+ * Scheme and host compared the way the URL parser does, so `HTTPS://Host` matches a browser Origin.
+ * A path of `/` is the same as no path. Returns null when the value is not an absolute URL.
+ */
+function originKey(value: string): string | null {
+  try {
+    const url = new URL(value);
+    const path = url.pathname === '/' ? '' : url.pathname.replace(/\/+$/, '');
+    return `${url.protocol}//${url.host}${path}${url.search}`;
+  }
+  catch {
+    return null;
+  }
+}
+
+export function assertHttpsPublicOrigin(serverHost: string, publicOrigin: string | undefined): void {
+  if (isLoopbackBindHost(serverHost))
+    return;
+  let url: URL | null = null;
+  try {
+    if (publicOrigin)
+      url = new URL(publicOrigin);
+  }
+  catch {
+    url = null;
+  }
+  const pathOk = !!url && (url.pathname === '' || url.pathname === '/');
+  if (!url || url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || !pathOk) {
+    throw new Error(
+      `password auth on ${serverHost} requires PUBLIC_ORIGIN to be an https origin `
+      + `with no userinfo and no path (for example https://lifeline.example.com).`,
+    );
+  }
+}
 
 export interface PasswordProviderOptions {
-  /** sqlite path (factory concatenates from dataDir; connection opens lazily). */
   dbPath: string;
-  /** Preset password (env AUTH_PASSWORD): skip claim, persist the hash on first login. For automation. */
-  presetPassword?: string;
   serverHost: string;
   serverPort: number;
-  /** Public origin (env PUBLIC_ORIGIN): expected value for WS Origin checks; highest priority. */
   publicOrigin?: string;
-  /** Server-issued avatar URL (env AUTH_AVATAR_URL template); default '' → frontend initial. */
+  /** AUTH_TRUSTED_PROXY=1. Only then may a private/loopback peer supply X-Real-IP. */
+  trustedProxy?: boolean;
+  /** Unset or anything other than closed means open. */
+  registrationOpen?: boolean;
   avatarUrlFor?: AvatarUrlFor;
   now?: () => number;
 }
 
-const PUBLIC_EXACT_PATHS = new Set(['/claim', '/login', '/api/claim', '/api/login']);
+const PUBLIC_EXACT_PATHS = new Set(['/register', '/login', '/api/register', '/api/login']);
+
+function jsonMedia(header: string | undefined): boolean {
+  const media = header?.split(';')[0]?.trim().toLowerCase() ?? '';
+  return media === 'application/json';
+}
+
+function originAllowed(headers: IncomingHttpHeaders, publicOrigin?: string): boolean {
+  const origin = headerString(headers, 'origin');
+  if (!origin)
+    return false;
+  const expected = expectedOrigin(headers, publicOrigin);
+  if (!expected)
+    return false;
+  const actualKey = originKey(origin);
+  const expectedKey = originKey(expected);
+  if (!actualKey || !expectedKey)
+    return false;
+  return actualKey === expectedKey;
+}
+
+function peerOf(req: FastifyRequest): string {
+  return req.socket.remoteAddress ?? req.ip ?? '';
+}
 
 export function createPasswordProvider(opts: PasswordProviderOptions): AuthProvider {
+  assertHttpsPublicOrigin(opts.serverHost, opts.publicOrigin);
   const now = opts.now ?? Date.now;
-  const store = new LocalAuthStore(opts.dbPath);
-  const claims = new ClaimCodes(CLAIM_TTL_MS, now);
-  const limiter = new AttemptLimiter(RATE_MAX_FAILURES, RATE_WINDOW_MS, now);
+  const sessions = new LocalAuthStore(opts.dbPath);
+  const accounts = new AccountStore(opts.dbPath);
+  const failures = new WindowCounter(FAILURE_MAX, FAILURE_WINDOW_MS, now);
+  const registerAttempts = new WindowCounter(REGISTER_ATTEMPT_MAX, REGISTER_WINDOW_MS, now);
+  const registerSuccesses = new WindowCounter(REGISTER_SUCCESS_MAX, REGISTER_WINDOW_MS, now);
+  const registrationOpen = opts.registrationOpen !== false;
 
-  /** "Password is available": claim completed, or a preset exists (preset hashes lazily; see /api/login). */
-  const claimed = (): boolean => store.hasPassword() || !!opts.presetPassword;
+  function secureCookie(req: FastifyRequest): boolean {
+    if (publicOriginIsHttps(opts.publicOrigin))
+      return true;
+    return headerString(req.headers, 'x-forwarded-proto')?.toLowerCase() === 'https';
+  }
 
-  function sendSessionCookie(req: FastifyRequest, reply: FastifyReply): void {
-    const value = buildSessionCookie('owner', now() + SESSION_TTL_MS, store.sessionSecret());
-    let cookie
-      = `${COOKIE_NAME}=${value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_TTL_MS / 1000}`;
-    // Secure boundary: PUBLIC_ORIGIN is https, or the reverse proxy declared https (case-insensitive) — either hits.
-    // A deploy that only sets PUBLIC_ORIGIN=https and whose proxy does not send XFP still needs a Secure cookie.
-    const forwardedProto = headerString(req.headers, 'x-forwarded-proto');
-    if (opts.publicOrigin?.startsWith('https://') || forwardedProto?.toLowerCase() === 'https') {
+  function setSessionCookie(req: FastifyRequest, reply: FastifyReply, userId: string): void {
+    const value = buildSessionCookie(userId, now() + SESSION_TTL_MS, sessions.sessionSecret());
+    let cookie = `${COOKIE_NAME}=${value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_TTL_MS / 1000}`;
+    if (secureCookie(req))
       cookie += '; Secure';
-    }
     reply.header('Set-Cookie', cookie);
+  }
+
+  function clearSessionCookie(req: FastifyRequest, reply: FastifyReply): void {
+    let cookie = `${COOKIE_NAME}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`;
+    if (secureCookie(req))
+      cookie += '; Secure';
+    reply.header('Set-Cookie', cookie);
+  }
+
+  function keyFor(req: FastifyRequest): string {
+    return rateLimitKey(peerOf(req), req.headers, !!opts.trustedProxy);
+  }
+
+  function failLog(path: string, result: string, key: string): void {
+    console.warn(`[auth] ${path} ${result} key=${key}`);
+  }
+
+  /** Content-Type and Origin. Returns true when a response was already sent. Does not set a cookie. */
+  function rejectCrossSite(req: FastifyRequest, reply: FastifyReply): boolean {
+    const type = typeof req.headers['content-type'] === 'string' ? req.headers['content-type'] : undefined;
+    if (!jsonMedia(type)) {
+      reply.code(415).send({ error: 'Content-Type must be application/json.' });
+      return true;
+    }
+    if (!originAllowed(req.headers, opts.publicOrigin)) {
+      reply.code(403).send({ error: 'Origin mismatch.' });
+      return true;
+    }
+    return false;
+  }
+
+  function sendPage(reply: FastifyReply, html: string, nonce: string): FastifyReply {
+    for (const [name, value] of Object.entries(securityHeaders(nonce)))
+      reply.header(name, value);
+    return reply.type('text/html').send(html);
   }
 
   return {
@@ -172,8 +271,10 @@ export function createPasswordProvider(opts: PasswordProviderOptions): AuthProvi
       const cookie = cookieFromHeaders(headers, COOKIE_NAME);
       if (!cookie)
         return null;
-      const userId = parseSessionCookie(cookie, store.sessionSecret(), now());
-      return userId ? { userId } : null;
+      const userId = parseSessionCookie(cookie, sessions.sessionSecret(), now());
+      if (!userId || !accounts.has(userId))
+        return null;
+      return { userId };
     },
 
     avatarUrlFor: opts.avatarUrlFor ?? NO_AVATAR,
@@ -185,11 +286,9 @@ export function createPasswordProvider(opts: PasswordProviderOptions): AuthProvi
     },
 
     /**
-     * Unauthenticated page GET → 302 to /claim (unset) or /login, **with a next bounce** —
+     * Unauthenticated page GET → 302 to /login, with a next bounce.
      * CLI `lifeline setup` opening /cli-setup is necessarily unauthenticated; without next the
-     * local callback waits out the full 3-minute timeout (found in review). next is consumed only
-     * by page JS; open-redirect checks live on the JS side (only same-origin paths starting with
-     * `/` and not `//` or `/\`).
+     * local callback waits out the full 3-minute timeout. next is consumed only by page JS.
      */
     onHttpDenied(req: FastifyRequest, reply: FastifyReply): boolean {
       if (req.method !== 'GET' && req.method !== 'HEAD')
@@ -198,92 +297,127 @@ export function createPasswordProvider(opts: PasswordProviderOptions): AuthProvi
       const lastSegment = path.split('/').pop() ?? '';
       if (path.startsWith('/api/') || lastSegment.includes('.'))
         return false;
-      const target = claimed() ? '/login' : '/claim';
-      // Fastify v5 onwards: redirect(url, code?) — url first; default code is 302
       reply
         .header('Cache-Control', 'no-store')
-        .redirect(`${target}?next=${encodeURIComponent(req.url ?? '/')}`);
+        .redirect(`/login?next=${encodeURIComponent(req.url ?? '/')}`);
       return true;
     },
 
-    /** Cross-site WS handshakes carry the victim's cookie (unprotected by same-origin policy) — Origin must match the expected origin. */
     checkHandshake(headers: IncomingHttpHeaders): string | null {
       return checkOriginAgainstExpected(headers, opts.publicOrigin);
     },
 
     setupRoutes(app: FastifyInstance): void {
-      // First-boot onboarding: no password and no preset → print a one-shot claim code to the console.
-      if (!opts.presetPassword && !store.hasPassword()) {
-        const code = claims.issue();
-        const displayHost
-          = opts.serverHost === '0.0.0.0' || opts.serverHost === '::'
-            ? '127.0.0.1'
-            : opts.serverHost.replace(/^\[|\]$/g, '');
-        console.log('');
-        console.log('[auth] password provider: no password set yet (first boot).');
-        console.log(`[auth] Open http://${displayHost}:${opts.serverPort}/claim and enter this one-time code:`);
-        console.log(`[auth]   ${code}`);
-        console.log('');
+      if (!registrationOpen && accounts.count() === 0) {
+        console.warn('[auth] registration is closed and there are no accounts; nobody can sign in.');
       }
-
-      app.get('/claim', async (req, reply) => {
-        if (await this.verify(req.headers))
-          return reply.redirect('/');
-        return reply.type('text/html').header('Cache-Control', 'no-store').send(CLAIM_HTML);
-      });
 
       app.get('/login', async (req, reply) => {
         if (await this.verify(req.headers))
           return reply.redirect('/');
-        if (!claimed())
-          return reply.redirect('/claim');
-        return reply.type('text/html').header('Cache-Control', 'no-store').send(LOGIN_HTML);
+        const nonce = randomBytes(16).toString('base64url');
+        return sendPage(reply, loginPage(nonce, registrationOpen), nonce);
       });
 
-      app.post('/api/claim', async (req, reply) => {
-        const ip = req.ip;
-        if (!limiter.allow(ip)) {
-          return reply.code(429).send({ error: 'Too many attempts; wait a minute and retry.' });
+      app.get('/register', async (req, reply) => {
+        if (await this.verify(req.headers))
+          return reply.redirect('/');
+        if (!registrationOpen)
+          return reply.header('Cache-Control', 'no-store').redirect('/login');
+        const nonce = randomBytes(16).toString('base64url');
+        return sendPage(reply, registerPage(nonce), nonce);
+      });
+
+      app.post('/api/register', { bodyLimit: BODY_LIMIT }, async (req, reply) => {
+        if (rejectCrossSite(req, reply))
+          return;
+        const key = keyFor(req);
+        if (!registrationOpen) {
+          return reply.code(403).send({ error: AUTH_ERRORS.closed });
         }
-        const body = (req.body ?? {}) as { code?: unknown; password?: unknown };
-        const code = typeof body.code === 'string' ? body.code.trim() : '';
+        if (!failures.allow(key) || !registerAttempts.allow(key) || !registerSuccesses.allow(key)) {
+          failLog('/api/register', '429', key);
+          return reply.code(429).send({ error: AUTH_ERRORS.limited });
+        }
+        const body = (req.body ?? {}) as { username?: unknown; password?: unknown; passwordConfirm?: unknown };
+        const usernameRaw = typeof body.username === 'string' ? body.username : '';
         const password = typeof body.password === 'string' ? body.password : '';
-        // Check the password before redeeming the code: a wrong password must not burn the claim code.
-        if (password.length < MIN_PASSWORD_LEN) {
-          limiter.recordFailure(ip);
-          return reply.code(400).send({ error: `Password must be at least ${MIN_PASSWORD_LEN} characters.` });
+        const confirm = typeof body.passwordConfirm === 'string' ? body.passwordConfirm : '';
+        const username = canonicalUsername(usernameRaw);
+        if (!username) {
+          failures.hit(key);
+          registerAttempts.hit(key);
+          failLog('/api/register', '400', key);
+          return reply.code(400).send({ error: AUTH_ERRORS.username });
         }
-        if (!claims.exchange(code)) {
-          limiter.recordFailure(ip);
-          return reply.code(400).send({ error: 'Invalid or expired code.' });
+        if (password !== confirm) {
+          failures.hit(key);
+          registerAttempts.hit(key);
+          failLog('/api/register', '400', key);
+          return reply.code(400).send({ error: AUTH_ERRORS.passwordMismatch });
         }
-        await store.setPassword(password);
-        sendSessionCookie(req, reply);
+        const problem = passwordProblem(password, username);
+        if (problem) {
+          failures.hit(key);
+          registerAttempts.hit(key);
+          failLog('/api/register', '400', key);
+          return reply.code(400).send({ error: passwordError(problem) });
+        }
+        // Reserve before scrypt. A parallel burst otherwise all see the old count and all proceed.
+        // Success does not count as a failure. A taken name is not a successful registration.
+        registerAttempts.hit(key);
+        registerSuccesses.hit(key);
+        failures.hit(key);
+        const created = await accounts.create(username, password);
+        if (created === 'taken') {
+          registerSuccesses.release(key);
+          failLog('/api/register', '409', key);
+          return reply.code(409).send({ error: AUTH_ERRORS.taken });
+        }
+        failures.release(key);
+        setSessionCookie(req, reply, username);
         return reply.send({ ok: true });
       });
 
-      app.post('/api/login', async (req, reply) => {
-        const ip = req.ip;
-        if (!limiter.allow(ip)) {
-          return reply.code(429).send({ error: 'Too many attempts; wait a minute and retry.' });
+      app.post('/api/login', { bodyLimit: BODY_LIMIT }, async (req, reply) => {
+        if (rejectCrossSite(req, reply))
+          return;
+        const key = keyFor(req);
+        if (!failures.allow(key)) {
+          failLog('/api/login', '429', key);
+          return reply.code(429).send({ error: AUTH_ERRORS.limited });
         }
-        const body = (req.body ?? {}) as { password?: unknown };
+        const body = (req.body ?? {}) as { username?: unknown; password?: unknown };
+        const username = typeof body.username === 'string' ? canonicalUsername(body.username) : null;
         const password = typeof body.password === 'string' ? body.password : '';
-        // Preset password hashes lazily: same scrypt verify path as a password set via claim.
-        if (opts.presetPassword && !store.hasPassword()) {
-          await store.setPassword(opts.presetPassword);
+        if (password.length > 128) {
+          failures.hit(key);
+          failLog('/api/login', '400', key);
+          return reply.code(400).send({ error: AUTH_ERRORS.passwordLong });
         }
-        if (!password || !(await store.verifyPassword(password))) {
-          limiter.recordFailure(ip);
-          return reply.code(401).send({ error: 'Invalid password.' });
+        // Reserve before scrypt. A correct password gives the slot back, so success does not count.
+        failures.hit(key);
+        const ok = await accounts.verify(username, password);
+        if (!ok) {
+          failLog('/api/login', '401', key);
+          return reply.code(401).send({ error: AUTH_ERRORS.login });
         }
-        sendSessionCookie(req, reply);
+        failures.release(key);
+        setSessionCookie(req, reply, username!);
+        return reply.send({ ok: true });
+      });
+
+      app.post('/api/logout', { bodyLimit: BODY_LIMIT }, async (req, reply) => {
+        if (rejectCrossSite(req, reply))
+          return;
+        clearSessionCookie(req, reply);
         return reply.send({ ok: true });
       });
     },
 
     close(): void {
-      store.close();
+      accounts.close();
+      sessions.close();
     },
   };
 }

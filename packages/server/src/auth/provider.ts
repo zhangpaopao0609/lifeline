@@ -35,7 +35,7 @@ export interface AuthProvider {
   forbiddenHtml: string;
   /** Provider-layered unauthenticated paths (password's /login, etc.); stacked on top of the common isPublicPath; must be exact paths. */
   isPublicPath?: (path: string) => boolean;
-  /** Mount login routes (password-only: /claim /login /api/*). */
+  /** Mount login routes (password accounts: /register /login /api/*). */
   setupRoutes?: (app: FastifyInstance) => void;
   /** Custom response after verify fails. Return true = already replied; default is 403 forbiddenHtml. */
   onHttpDenied?: (req: FastifyRequest, reply: FastifyReply) => boolean;

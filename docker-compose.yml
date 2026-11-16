@@ -7,17 +7,16 @@
 # ⚠️ Do not `docker compose up` at the repo root: the `./data` bind mount would
 # put the developer's local data/ (real SQLite) into the container.
 #
-# Auth defaults to password + first-boot claim (copy the one-time code from the
-# container logs after opening the browser). Gateway / reverse-proxy / preset
-# password all go through .env (full variable table: docs/selfhost.md and the
-# Auth providers section of the repo-root .env.example).
+# Auth defaults to username/password registration. Set PUBLIC_ORIGIN to an https
+# origin or the container refuses to start. Publish the port on 127.0.0.1 and
+# put nginx or Caddy in front. See docs/selfhost.md.
 services:
   lifeline:
     image: ghcr.io/zhangpaopao0609/lifeline:latest
     container_name: lifeline
     restart: unless-stopped
     ports:
-      - '${LIFELINE_PORT:-8080}:18765'
+      - '127.0.0.1:${LIFELINE_PORT:-8080}:18765'
     volumes:
       - ./data:/data
     env_file:

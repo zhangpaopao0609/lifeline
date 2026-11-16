@@ -9,8 +9,9 @@
 ```bash
 mkdir lifeline && cd lifeline
 curl -fsSL <url-to-selfhost.sh> | sh     # or copy scripts/selfhost.sh from the repo
-# open http://<host>:8080
-docker logs lifeline                   # copy the first-boot claim code → set the password on the page
+# the first run writes .env and stops. Set PUBLIC_ORIGIN=https://<your-domain>
+# and AUTH_TRUSTED_PROXY=1, then run the script again. Register on that URL.
+# AUTH_PASSWORD is rejected.
 ```
 
 ## Image layout (read this before editing the Dockerfile)
@@ -25,10 +26,10 @@ docker logs lifeline                   # copy the first-boot claim code → set 
 
 | Variable | Role |
 |---|---|
-| `LIFELINE_PORT` | Compose-side port (default 8080; changing it means delete `docker-compose.yml` and re-run selfhost.sh, or edit `ports` by hand) |
-| `AUTH_PASSWORD` | Preset password, skip claim (automation; the value is visible in process env) |
-| `AUTH_HEADER` + `AUTH_TRUSTED_PROXY=1` | Gateway-injected user header (CF Access / Authelia / nginx auth_request; the gateway must strip the same header from the client) |
-| `PUBLIC_ORIGIN` | Public URL behind the proxy (`https://lifeline.example.com`) — password-mode WS Origin checks and cookie Secure both use it |
+| `LIFELINE_PORT` | Host port published on `127.0.0.1` only (default 8080). Changing it means delete `docker-compose.yml` and re-run selfhost.sh, or edit `ports` by hand |
+| `AUTH_REGISTRATION` | Exact `0` closes sign-up. Anything else (including unset) leaves registration open |
+| `AUTH_HEADER` + `AUTH_TRUSTED_PROXY=1` | Gateway-injected user header (CF Access / Authelia / nginx auth_request; the gateway must strip the same header from the client). With password accounts, the same flag is what lets a private peer's `X-Real-IP` become the rate-limit key |
+| `PUBLIC_ORIGIN` | Public https origin (`https://lifeline.example.com`, no path). Required for password accounts whenever the process is not bound to loopback. Also used for WS Origin checks and the Secure cookie |
 | `AUTH_AVATAR_URL` | Avatar URL template (must contain `{userId}`, e.g. `https://cdn.example.com/avatars/{userId}.png`); unset → the page draws an initial block |
 | `TZ` | Timezone |
 
@@ -36,23 +37,29 @@ docker logs lifeline                   # copy the first-boot claim code → set 
 
 Full auth matrix (including explicit `AUTH_PROVIDER` and `AUTH_INSECURE_ALLOW`) is in the root `.env.example`.
 
-## Reverse proxy (optional)
+## Reverse proxy
 
-Minimal Caddy for password mode + https:
+Set `X-Real-IP` to the client address, overwriting anything the client sent, and set `AUTH_TRUSTED_PROXY=1` in `.env`. Without that flag every visitor shares one rate-limit bucket. Also pass Host or `X-Forwarded-Host`; WS Origin checks depend on it.
+
+Minimal Caddy:
 
 ```
 lifeline.example.com {
-    reverse_proxy 127.0.0.1:8080
+    reverse_proxy 127.0.0.1:8080 {
+        header_up X-Real-IP {remote_host}
+    }
 }
 ```
 
-nginx equivalent (**must** pass Host or X-Forwarded-Host; WS Origin checks depend on it):
+nginx:
 
 ```nginx
 location / {
     proxy_pass http://127.0.0.1:8080;
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Real-IP $remote_addr;
+    add_header Strict-Transport-Security "max-age=31536000" always;
     proxy_http_version 1.1;
     proxy_set_header Upgrade $http_upgrade;      # WS (/socket.io and /agent-io)
     proxy_set_header Connection "upgrade";
@@ -62,7 +69,7 @@ location / {
 
 ## Data and upgrades
 
-- **All state is the `./data` volume** (`lifeline.sqlite`: users / machines / session mirrors / `auth_local` password and session keys). Backup = that directory (prefer stopping the container, then `sqlite3 data/lifeline.sqlite ".backup …"`). The container runs as root; Docker creates `./data` owned by root — non-root copies need `sudo`.
+- **All state is the `./data` volume** (`lifeline.sqlite`: users / machines / session mirrors / `auth_accounts` password hashes / the `auth_local` session key). Backup = that directory (prefer stopping the container, then `sqlite3 data/lifeline.sqlite ".backup …"`). The container runs as root; Docker creates `./data` owned by root — non-root copies need `sudo`.
 - **Upgrade**: `docker compose pull && docker compose up -d`. DB migrations (if any) run when the server opens the DB (idempotent ALTER chain in `applySchema`, see `db/open.ts`). Pin production images to a tag (`ghcr.io/…:v0.1.x`), not `latest` — upgrade = change the tag and `up`; rollback = the old tag (`latest` cannot roll back).
 - **Rollback**: previous image tag + restore the backed-up data directory (migrations are one-way — backup before upgrading).
 
@@ -71,8 +78,8 @@ location / {
 Once the server is up, enroll commands are served from **its own origin** (`__SERVER_ORIGIN__` rewrite, zero config):
 
 ```bash
-curl -fsSL http://<server>:8080/public/install.sh | sh
-lifeline setup --server-url http://<server>:8080
+curl -fsSL https://<your-domain>/public/install.sh | sh
+lifeline setup --server-url https://<your-domain>
 ```
 
 One agent per machine, and never the same `agentId` on two machines (a copied config is enough to make

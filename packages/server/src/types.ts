@@ -58,10 +58,15 @@ export interface ServerConfig {
   authProviderName?: string;
   /** trusted-header user header name (env AUTH_HEADER). */
   authHeaderName?: string;
-  /** Preset password (env AUTH_PASSWORD, skips claim; for automation). */
+  /**
+   * Legacy single shared password (env AUTH_PASSWORD). Setting it refuses startup.
+   * Kept on the type so a leftover config fails closed instead of being ignored.
+   */
   authPassword?: string;
   /** Acknowledge "this server sits behind a gateway that strips that header" (env AUTH_TRUSTED_PROXY=1). */
   authTrustedProxy?: boolean;
+  /** Account sign-up. False only when AUTH_REGISTRATION is exactly `0`. Default open. */
+  authRegistrationOpen?: boolean;
   /** Avatar URL template with a {userId} placeholder (env AUTH_AVATAR_URL); default = frontend initial fallback. */
   authAvatarUrl?: string;
   /** Public origin (env PUBLIC_ORIGIN; expected value for WS Origin checks in password mode). */

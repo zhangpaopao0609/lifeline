@@ -75,7 +75,7 @@ ENV NODE_ENV=production \
     SERVER_PORT=18765 \
     SERVER_HOST=0.0.0.0
 # SERVER_HOST=0.0.0.0 is container semantics (the exposure surface is compose
-# ports plus auth factory guards: no AUTH config → password provider + first-boot claim)
+# ports plus auth: password accounts require PUBLIC_ORIGIN to be https).
 EXPOSE 18765
 VOLUME /data
 CMD ["node", "dist/packages/server/src/index.js"]

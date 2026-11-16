@@ -31,7 +31,7 @@ lifeline setup --server-url http://<your-lifeline-server>
 - 不需要预装 Node：安装脚本下载自带 runtime（Node + CLI + better-sqlite3），并做 sha256 校验
 - 安装位置：runtime 在 `~/.lifeline/`，命令在 `~/.local/bin/lifeline`（不在 PATH 时脚本会给出追加方法）
 - 源站地址就是上面那个（自托管常见 `http://<host>:8080`；有证书就用 https）
-- `setup` 打开浏览器完成登录（自托管是密码 / 网关鉴权），机器归属记在登录人名下，之后只有本人能看见这台机器
+- `setup` 打开浏览器完成登录（自托管是注册用户名和密码，或网关鉴权），机器归属记在登录人名下，之后只有本人能看见这台机器
 - CDP 端口由 agent 自行拉起，不用手动配置
 - 不支持 Alpine（musl）
 
@@ -88,7 +88,7 @@ curl -fsSL http://<your-lifeline-server>/public/uninstall.sh | sh
 - CDP 端口无鉴权，等同本机任意代码执行：**不得**暴露到公网（agent 只从 loopback 访问它）
 - 密钥只存在于 server 的 `.env` 与本机 `~/.lifeline/config.json`，不进代码、不进提交
 - 不分发共享 `AGENT_TOKEN`：每台机器用接入者自己的登录身份
-- 鉴权矩阵（`AUTH_HEADER` / `AUTH_PASSWORD` / `AUTH_INSECURE_ALLOW`）见根 `.env.example`
+- 鉴权矩阵（`AUTH_HEADER` / `AUTH_REGISTRATION` / `PUBLIC_ORIGIN` / `AUTH_INSECURE_ALLOW`）见根 `.env.example`。`AUTH_PASSWORD` 会让进程拒绝启动。
 
 ---
 

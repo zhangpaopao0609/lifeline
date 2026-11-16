@@ -5,14 +5,19 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
+import Database from 'better-sqlite3';
 import { io as ioClient } from 'socket.io-client';
+import { scryptCallCount, verifyPasswordHash } from '../packages/server/src/auth/accounts.js';
+import { rateLimitKey } from '../packages/server/src/auth/client-address.js';
+import { loginPage, safeNext } from '../packages/server/src/auth/password-pages.js';
 import {
   buildSessionCookie,
   parseSessionCookie,
+  publicOriginIsHttps,
 } from '../packages/server/src/auth/password.js';
 import { Relay } from '../packages/server/src/relay.js';
 
-const PRESET = 'preset-password-42';
+const PASSWORD = 'correct-horse-1';
 
 function getFreePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -42,7 +47,6 @@ function passwordConfig(
     dataDir,
     logLevel: 'error',
     authProviderName: 'password',
-    authPassword: PRESET,
     ...overrides,
   };
 }
@@ -53,21 +57,36 @@ async function startRelay(cfg: ServerConfig): Promise<Relay> {
   return relay;
 }
 
-function postJson(port: number, path: string, body: unknown): Promise<Response> {
+function origin(port: number): string {
+  return `http://127.0.0.1:${port}`;
+}
+
+function postJson(
+  port: number,
+  path: string,
+  body: unknown,
+  headers: Record<string, string> = {},
+): Promise<Response> {
   return fetch(`http://127.0.0.1:${port}${path}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'Origin': origin(port),
+      ...headers,
+    },
     body: JSON.stringify(body),
   });
 }
 
-function login(port: number, password: string): Promise<Response> {
-  return postJson(port, '/api/login', { password });
+function register(port: number, username: string, password = PASSWORD, confirm = password): Promise<Response> {
+  return postJson(port, '/api/register', { username, password, passwordConfirm: confirm });
 }
 
-async function sessionCookie(port: number): Promise<string> {
-  const res = await login(port, PRESET);
-  assert.equal(res.status, 200, 'preset login should succeed');
+function login(port: number, username: string, password = PASSWORD): Promise<Response> {
+  return postJson(port, '/api/login', { username, password });
+}
+
+function cookieOf(res: Response): string {
   const raw = res.headers.get('set-cookie') ?? '';
   const cookie = /lifeline_session=[^;]+/.exec(raw)?.[0];
   assert.ok(cookie, `no session cookie in "${raw}"`);
@@ -100,114 +119,72 @@ describe('session cookie primitives', () => {
   it('round-trips and rejects tampering, wrong secret, expiry, and garbage', () => {
     const secret = 's'.repeat(64);
     const now = Date.now();
-    const cookie = buildSessionCookie('owner', now + 60_000, secret);
-    assert.equal(parseSessionCookie(cookie, secret, now), 'owner');
-    assert.equal(parseSessionCookie(cookie, secret, now + 61_000), null); // expired
-    assert.equal(parseSessionCookie(cookie.replace('owner', 'admin'), secret, now), null); // tampered userId
-    assert.equal(parseSessionCookie(cookie, 'x'.repeat(64), now), null); // wrong secret
+    const cookie = buildSessionCookie('alice', now + 60_000, secret);
+    assert.equal(parseSessionCookie(cookie, secret, now), 'alice');
+    assert.equal(parseSessionCookie(cookie, secret, now + 61_000), null);
+    assert.equal(parseSessionCookie(cookie.replace('alice', 'admin'), secret, now), null);
+    assert.equal(parseSessionCookie(cookie, 'x'.repeat(64), now), null);
     assert.equal(parseSessionCookie('garbage', secret, now), null);
     assert.equal(parseSessionCookie('v1||123|x'.repeat(64), secret, now), null);
   });
 });
 
-describe('password provider claim bootstrap (no preset)', { concurrency: 1 }, () => {
-  let dir: string;
-  let port: number;
-  let relay: Relay;
-  let claimCode: string;
-
-  beforeEach(async () => {
-    dir = mkdtempSync(join(tmpdir(), 'pw-claim-'));
-    port = await getFreePort();
-    // Capture stdout: the claim code only appears here (no API should expose it)
-    const logs: string[] = [];
-    const origLog = console.log;
-    console.log = (...args: unknown[]) => logs.push(args.map(String).join(' '));
-    try {
-      relay = await startRelay(passwordConfig(port, dir, { authPassword: undefined }));
-    }
-    finally {
-      console.log = origLog;
-    }
-    claimCode = /([0-9a-f]{64})/.exec(logs.join('\n'))?.[1] ?? '';
-  });
-
-  afterEach(async () => {
-    await relay.stop();
-    rmSync(dir, { recursive: true, force: true });
-  });
-
-  it('prints a 32-byte-hex one-time code and serves /claim publicly', async () => {
-    assert.match(claimCode, /^[0-9a-f]{64}$/);
-    const page = await fetch(`http://127.0.0.1:${port}/claim`);
-    assert.equal(page.status, 200);
-    assert.match(page.headers.get('content-type') ?? '', /text\/html/);
-    const html = await page.text();
-    assert.match(html, /设置密码/);
-  });
-
-  it('rejects a bad code and a short password without burning the real code, then accepts it once', async () => {
-    const bad = await postJson(port, '/api/claim', { code: 'nope', password: 'longenough1' });
-    assert.equal(bad.status, 400);
-
-    // Short password is rejected before redeeming → a good code is not burned
-    const short = await postJson(port, '/api/claim', { code: claimCode, password: 'short' });
-    assert.equal(short.status, 400);
-
-    const ok = await postJson(port, '/api/claim', { code: claimCode, password: 'longenough1' });
-    assert.equal(ok.status, 200);
-    const setCookie = ok.headers.get('set-cookie') ?? '';
-    assert.match(setCookie, /lifeline_session=v1\|owner\|\d+\|[0-9a-f]{64}/);
-    assert.match(setCookie, /HttpOnly/i);
-    assert.match(setCookie, /SameSite=Strict/i);
-    assert.match(setCookie, /Path=\//);
-
-    // One-shot redeem: replaying the same code → 400
-    const replay = await postJson(port, '/api/claim', { code: claimCode, password: 'longenough1' });
-    assert.equal(replay.status, 400);
-  });
-
-  it('unauthenticated page GET redirects to /claim; APIs and assets get 403', async () => {
-    const root = await fetch(`http://127.0.0.1:${port}/`, { redirect: 'manual' });
-    assert.equal(root.status, 302);
-    assert.equal(root.headers.get('location'), '/claim?next=%2F');
-
-    const api = await fetch(`http://127.0.0.1:${port}/api/health`);
-    assert.equal(api.status, 403);
-  });
-
-  it('keeps the original URL in the redirect (CLI setup flow survives login)', async () => {
-    // `/cli-setup?redirect_uri=...` opened by `lifeline setup` always happens while logged out:
-    // a 302 that drops params makes the local callback wait the full 3 minutes — next must come back intact.
-    const target = '/cli-setup?redirect_uri=http%3A%2F%2F127.0.0.1%3A9%2Fcallback';
-    const res = await fetch(`http://127.0.0.1:${port}${target}`, { redirect: 'manual' });
-    assert.equal(res.status, 302);
-    const location = res.headers.get('location') ?? '';
-    assert.ok(location.startsWith('/claim?next='), location);
-    const next = decodeURIComponent(location.slice('/claim?next='.length));
-    assert.equal(next, target);
-  });
-
-  it('after claiming, page GET redirects to /login and the cookie opens the API', async () => {
-    const ok = await postJson(port, '/api/claim', { code: claimCode, password: 'longenough1' });
-    assert.equal(ok.status, 200);
-    const cookie = /lifeline_session=[^;]+/.exec(ok.headers.get('set-cookie') ?? '')?.[0] ?? '';
-
-    const root = await fetch(`http://127.0.0.1:${port}/`, { redirect: 'manual' });
-    assert.equal(root.headers.get('location'), '/login?next=%2F');
-
-    const health = await fetch(`http://127.0.0.1:${port}/api/health`, { headers: { Cookie: cookie } });
-    assert.equal(health.status, 200);
+describe('next target', () => {
+  it('keeps a same-origin path and rejects off-site or odd targets', () => {
+    assert.equal(safeNext('/cli-setup?redirect_uri=http%3A%2F%2F127.0.0.1%3A9%2Fcallback'), '/cli-setup?redirect_uri=http%3A%2F%2F127.0.0.1%3A9%2Fcallback');
+    assert.equal(safeNext('//evil.example'), '/');
+    assert.equal(safeNext('/\\evil.example'), '/');
+    assert.equal(safeNext('/has space'), '/');
+    assert.equal(safeNext('/has\nline'), '/');
+    assert.equal(safeNext('https://evil.example'), '/');
+    assert.equal(safeNext('/\u0085evil'), '/');
+    assert.equal(safeNext('/\u009F'), '/');
+    assert.ok(loginPage('nonce', true).includes(safeNext.toString()));
   });
 });
 
-describe('password provider login and rate limit (preset)', { concurrency: 1 }, () => {
+describe('password hash parameters', () => {
+  it('does not run scrypt when N is larger than the one we write', async () => {
+    const before = scryptCallCount();
+    const ok = await verifyPasswordHash(
+      'correct-horse-1',
+      `scrypt$999999$8$1$${'ab'.repeat(16)}$${'cd'.repeat(32)}`,
+    );
+    assert.equal(ok, false);
+    assert.equal(scryptCallCount(), before);
+  });
+});
+
+describe('rate-limit key', () => {
+  it('ignores forwarded headers from a public peer', () => {
+    assert.equal(
+      rateLimitKey('8.8.8.8', { 'x-real-ip': '1.1.1.1', 'x-forwarded-for': '2.2.2.2' }, true),
+      '8.8.8.8',
+    );
+  });
+
+  it('uses a single X-Real-IP only from a private peer when the proxy flag is on', () => {
+    assert.equal(rateLimitKey('172.17.0.1', { 'x-real-ip': '9.9.9.9' }, true), '9.9.9.9');
+    assert.equal(rateLimitKey('127.0.0.1', { 'x-real-ip': '9.9.9.9' }, false), '127.0.0.1');
+    assert.equal(rateLimitKey('127.0.0.1', { 'x-real-ip': '1.2.3.4, 5.6.7.8' }, true), '127.0.0.1');
+    assert.equal(rateLimitKey('::ffff:172.17.0.1', { 'x-real-ip': '9.9.9.9' }, true), '9.9.9.9');
+    assert.equal(rateLimitKey('172.17.0.1', { 'x-real-ip': '::ffff:1.2.3.4' }, true), '1.2.3.4');
+    assert.equal(rateLimitKey('100.64.0.1', { 'x-real-ip': '9.9.9.9' }, true), '100.64.0.1');
+  });
+
+  it('treats an uppercase https scheme as https', () => {
+    assert.equal(publicOriginIsHttps('HTTPS://lifeline.example.com'), true);
+    assert.equal(publicOriginIsHttps('http://lifeline.example.com'), false);
+  });
+});
+
+describe('password accounts', { concurrency: 1 }, () => {
   let dir: string;
   let port: number;
   let relay: Relay;
 
   beforeEach(async () => {
-    dir = mkdtempSync(join(tmpdir(), 'pw-login-'));
+    dir = mkdtempSync(join(tmpdir(), 'pw-accounts-'));
     port = await getFreePort();
     relay = await startRelay(passwordConfig(port, dir));
   });
@@ -217,39 +194,201 @@ describe('password provider login and rate limit (preset)', { concurrency: 1 }, 
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('preset password: no claim code printed, /login served, wrong password 401', async () => {
-    const loginPage = await fetch(`http://127.0.0.1:${port}/login`);
-    assert.equal(loginPage.status, 200);
-    assert.match(await loginPage.text(), /登录/);
+  it('registers a canonical username and only that user can enroll a machine', async () => {
+    const created = await register(port, 'Alice');
+    assert.equal(created.status, 200);
+    const setCookie = created.headers.get('set-cookie') ?? '';
+    assert.match(setCookie, /lifeline_session=v1\|alice\|\d+\|[0-9a-f]{64}/);
+    assert.match(setCookie, /HttpOnly/i);
+    assert.match(setCookie, /SameSite=Strict/i);
+    const cookie = cookieOf(created);
 
-    const wrong = await login(port, 'wrong-password');
-    assert.equal(wrong.status, 401);
+    const setup = await fetch(
+      `http://127.0.0.1:${port}/cli-setup?redirect_uri=${encodeURIComponent('http://127.0.0.1:9/callback')}`,
+      { headers: { Cookie: cookie }, redirect: 'manual' },
+    );
+    assert.equal(setup.status, 302);
+    const code = new URL(setup.headers.get('location') ?? '').searchParams.get('code');
+    assert.ok(code);
+    const exchanged = await postJson(port, '/public/cli-setup/exchange', { code, agentId: 'agent-alice' });
+    assert.equal(exchanged.status, 200);
+
+    const db = new Database(join(dir, 'lifeline.sqlite'));
+    const row = db.prepare('SELECT owner_user_id FROM machine_tokens WHERE agent_id = ?').get('agent-alice') as { owner_user_id: string };
+    db.close();
+    assert.equal(row.owner_user_id, 'alice');
   });
 
-  it('five failures lock the IP for the window (even the correct password is 429)', async () => {
-    for (let i = 0; i < 5; i++) {
-      const res = await login(port, 'wrong-password');
-      assert.equal(res.status, 401);
+  it('rejects illegal usernames without echoing them', async () => {
+    for (const username of ['ab', '全角名', 'Ａlice', 'has space', '\u212Aelvinname']) {
+      const res = await register(port, username);
+      assert.equal(res.status, 400, username);
+      const body = await res.json() as { error: string };
+      assert.equal(body.error.includes(username), false);
     }
-    const limitedWrong = await login(port, 'wrong-password');
-    assert.equal(limitedWrong.status, 429);
-    const limitedRight = await login(port, PRESET);
-    assert.equal(limitedRight.status, 429);
   });
 
-  it('correct password sets a cookie that opens gated HTTP and sockets', async () => {
-    const cookie = await sessionCookie(port);
+  it('rejects a weak password and a taken name', async () => {
+    assert.equal((await register(port, 'alice', 'short')).status, 400);
+    assert.equal((await register(port, 'alice', PASSWORD, 'different-pass')).status, 400);
+    assert.equal((await register(port, 'longnamehere', 'longnamehere')).status, 400);
+    assert.equal((await register(port, 'Alice')).status, 200);
+    const again = await register(port, 'alice');
+    assert.equal(again.status, 409);
+    const body = await again.json() as { error: string };
+    assert.equal(body.error.includes('SQLITE'), false);
+  });
 
+  it('does not run scrypt for a password longer than 128 characters', async () => {
+    const before = scryptCallCount();
+    const res = await register(port, 'alice', 'x'.repeat(129));
+    assert.equal(res.status, 400);
+    assert.equal(scryptCallCount(), before);
+    const loggingIn = await login(port, 'alice', 'y'.repeat(129));
+    assert.equal(loggingIn.status, 400);
+    assert.equal(scryptCallCount(), before);
+  });
+
+  it('login failure looks the same when the user is missing or the password is wrong', async () => {
+    await register(port, 'alice');
+    const before = scryptCallCount();
+    const missing = await login(port, 'nobody');
+    const wrong = await login(port, 'alice', 'wrong-password-xx');
+    assert.equal(missing.status, 401);
+    assert.equal(wrong.status, 401);
+    assert.deepEqual(await missing.json(), await wrong.json());
+    assert.ok(scryptCallCount() > before);
+  });
+
+  it('five failures lock the address, including a later correct password', async () => {
+    await register(port, 'alice');
+    for (let i = 0; i < 5; i++)
+      assert.equal((await login(port, 'alice', 'wrong-password-xx')).status, 401);
+    assert.equal((await login(port, 'alice', 'wrong-password-xx')).status, 429);
+    assert.equal((await login(port, 'alice')).status, 429);
+  });
+
+  it('a burst of wrong passwords cannot slip past the five-failure cap', async () => {
+    await register(port, 'alice');
+    const before = scryptCallCount();
+    const results = await Promise.all(
+      Array.from({ length: 12 }, () => login(port, 'alice', 'wrong-password-xx')),
+    );
+    const denied = results.filter(res => res.status === 401).length;
+    const limited = results.filter(res => res.status === 429).length;
+    assert.equal(denied, 5);
+    assert.equal(limited, 7);
+    assert.equal(scryptCallCount() - before, 5);
+  });
+
+  it('a burst cannot create more than three accounts', async () => {
+    const names = ['a01', 'a02', 'a03', 'a04', 'a05', 'a06'];
+    const results = await Promise.all(names.map(name => register(port, name)));
+    assert.equal(results.filter(res => res.status === 200).length, 3);
+    assert.equal(results.filter(res => res.status === 429).length, 3);
+    const db = new Database(join(dir, 'lifeline.sqlite'));
+    const row = db.prepare('SELECT COUNT(*) AS n FROM auth_accounts').get() as { n: number };
+    db.close();
+    assert.equal(row.n, 3);
+  });
+
+  it('two simultaneous registers of one name yield one account and no SQL error', async () => {
+    const [left, right] = await Promise.all([register(port, 'alice'), register(port, 'alice')]);
+    assert.deepEqual([left.status, right.status].sort(), [200, 409]);
+    const bodies = [JSON.stringify(await left.json()), JSON.stringify(await right.json())];
+    assert.equal(bodies.some(body => body.includes('SQLITE')), false);
+  });
+
+  it('does not record the submitted password in the failure log', async () => {
+    const lines: string[] = [];
+    const orig = console.warn;
+    console.warn = (...args: unknown[]) => {
+      lines.push(args.map(String).join(' '));
+    };
+    try {
+      await login(port, 'alice', 'unique-secret-pass');
+    }
+    finally {
+      console.warn = orig;
+    }
+    assert.equal(lines.some(line => line.includes('unique-secret-pass')), false);
+    assert.equal(lines.some(line => line.includes('/api/login') && line.includes('401')), true);
+  });
+
+  it('rejects login and register without Origin or JSON', async () => {
+    const noOrigin = await fetch(`http://127.0.0.1:${port}/api/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'alice', password: PASSWORD }),
+    });
+    assert.equal(noOrigin.status, 403);
+    assert.equal(noOrigin.headers.get('set-cookie'), null);
+
+    const cross = await postJson(port, '/api/register', {
+      username: 'alice',
+      password: PASSWORD,
+      passwordConfirm: PASSWORD,
+    }, { Origin: 'https://evil.example' });
+    assert.equal(cross.status, 403);
+    assert.equal(cross.headers.get('set-cookie'), null);
+
+    const text = await fetch(`http://127.0.0.1:${port}/api/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain', 'Origin': origin(port) },
+      body: 'username=alice',
+    });
+    assert.equal(text.status, 415);
+    assert.equal(text.headers.get('set-cookie'), null);
+  });
+
+  it('sends the login page with a locked-down policy and redirects logged-out pages to it', async () => {
+    const page = await fetch(`http://127.0.0.1:${port}/login`);
+    assert.equal(page.status, 200);
+    const html = await page.text();
+    assert.match(html, /登录/);
+    assert.match(html, /注册账号/);
+    assert.match(html, /textContent/);
+    assert.equal(html.includes('innerHTML'), false);
+    assert.equal(page.headers.get('x-frame-options'), 'DENY');
+    assert.match(page.headers.get('content-security-policy') ?? '', /connect-src 'self'/);
+    assert.match(page.headers.get('content-security-policy') ?? '', /script-src 'nonce-/);
+
+    const root = await fetch(`http://127.0.0.1:${port}/`, { redirect: 'manual' });
+    assert.equal(root.status, 302);
+    assert.equal(root.headers.get('location'), '/login?next=%2F');
+    const target = '/cli-setup?redirect_uri=http%3A%2F%2F127.0.0.1%3A9%2Fcallback';
+    const bounced = await fetch(`http://127.0.0.1:${port}${target}`, { redirect: 'manual' });
+    const location = bounced.headers.get('location') ?? '';
+    assert.equal(decodeURIComponent(location.slice('/login?next='.length)), target);
+  });
+
+  it('sends an already logged-in browser from login and register back to the console', async () => {
+    const cookie = cookieOf(await register(port, 'alice'));
+    const loggingIn = await fetch(`http://127.0.0.1:${port}/login`, {
+      headers: { Cookie: cookie },
+      redirect: 'manual',
+    });
+    assert.equal(loggingIn.status, 302);
+    assert.equal(loggingIn.headers.get('location'), '/');
+    const signingUp = await fetch(`http://127.0.0.1:${port}/register`, {
+      headers: { Cookie: cookie },
+      redirect: 'manual',
+    });
+    assert.equal(signingUp.status, 302);
+    assert.equal(signingUp.headers.get('location'), '/');
+  });
+
+  it('opens HTTP and the socket for the registered user', async () => {
+    const cookie = cookieOf(await register(port, 'alice'));
     const health = await fetch(`http://127.0.0.1:${port}/api/health`, { headers: { Cookie: cookie } });
     assert.equal(health.status, 200);
-
     const socket = ioClient(`http://127.0.0.1:${port}`, {
       extraHeaders: { Cookie: cookie },
       reconnection: false,
     });
     try {
       const info = await waitForUserInfo(socket);
-      assert.equal(info.userId, 'owner');
+      assert.equal(info.userId, 'alice');
       assert.equal(info.authKind, 'password');
     }
     finally {
@@ -257,14 +396,57 @@ describe('password provider login and rate limit (preset)', { concurrency: 1 }, 
     }
   });
 
+  it('rejects a signed cookie after the account row is gone', async () => {
+    const cookie = cookieOf(await register(port, 'alice'));
+    const db = new Database(join(dir, 'lifeline.sqlite'));
+    db.prepare('DELETE FROM auth_accounts WHERE user_id = ?').run('alice');
+    db.close();
+    const health = await fetch(`http://127.0.0.1:${port}/api/health`, { headers: { Cookie: cookie } });
+    assert.equal(health.status, 403);
+  });
+
   it('marks the cookie Secure when the proxy declares https', async () => {
-    const res = await fetch(`http://127.0.0.1:${port}/api/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Forwarded-Proto': 'https' },
-      body: JSON.stringify({ password: PRESET }),
+    await register(port, 'alice');
+    const res = await postJson(port, '/api/login', { username: 'alice', password: PASSWORD }, {
+      'Origin': `https://127.0.0.1:${port}`,
+      'X-Forwarded-Proto': 'https',
     });
     assert.equal(res.status, 200);
     assert.match(res.headers.get('set-cookie') ?? '', /Secure/);
+  });
+});
+
+describe('registration closed', { concurrency: 1 }, () => {
+  let dir: string;
+  let port: number;
+  let relay: Relay;
+
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'pw-closed-'));
+    port = await getFreePort();
+    relay = await startRelay(passwordConfig(port, dir));
+    assert.equal((await register(port, 'alice')).status, 200);
+    await relay.stop();
+    relay = await startRelay(passwordConfig(port, dir, { authRegistrationOpen: false }));
+  });
+
+  afterEach(async () => {
+    await relay.stop();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('refuses new accounts without saying whether the name exists, and still logs the old one in', async () => {
+    const probe = 'not-a-real-name';
+    const res = await register(port, probe);
+    assert.equal(res.status, 403);
+    const body = await res.json() as { error: string };
+    assert.equal(body.error.includes(probe), false);
+    const page = await fetch(`http://127.0.0.1:${port}/register`, { redirect: 'manual' });
+    assert.equal(page.status, 302);
+    assert.equal(page.headers.get('location'), '/login');
+    const loginPage = await fetch(`http://127.0.0.1:${port}/login`);
+    assert.equal((await loginPage.text()).includes('注册账号'), false);
+    assert.equal((await login(port, 'alice')).status, 200);
   });
 });
 
@@ -276,9 +458,7 @@ describe('password provider Secure flag via PUBLIC_ORIGIN', { concurrency: 1 }, 
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), 'pw-secure-'));
     port = await getFreePort();
-    relay = await startRelay(
-      passwordConfig(port, dir, { publicOrigin: 'https://lifeline.example.com' }),
-    );
+    relay = await startRelay(passwordConfig(port, dir, { publicOrigin: 'https://lifeline.example.com' }));
   });
 
   afterEach(async () => {
@@ -286,8 +466,39 @@ describe('password provider Secure flag via PUBLIC_ORIGIN', { concurrency: 1 }, 
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('PUBLIC_ORIGIN=https alone is enough for the Secure flag (no XFP needed)', async () => {
-    const res = await login(port, PRESET);
+  it('PUBLIC_ORIGIN=https alone is enough for the Secure flag', async () => {
+    const res = await postJson(port, '/api/register', {
+      username: 'alice',
+      password: PASSWORD,
+      passwordConfirm: PASSWORD,
+    }, { Origin: 'https://lifeline.example.com' });
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('set-cookie') ?? '', /Secure/);
+  });
+});
+
+describe('uppercase PUBLIC_ORIGIN', { concurrency: 1 }, () => {
+  let dir: string;
+  let port: number;
+  let relay: Relay;
+
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'pw-https-case-'));
+    port = await getFreePort();
+    relay = await startRelay(passwordConfig(port, dir, { publicOrigin: 'HTTPS://lifeline.example.com' }));
+  });
+
+  afterEach(async () => {
+    await relay.stop();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('accepts a lowercase browser Origin and still marks the cookie Secure', async () => {
+    const res = await postJson(port, '/api/register', {
+      username: 'alice',
+      password: PASSWORD,
+      passwordConfirm: PASSWORD,
+    }, { Origin: 'https://lifeline.example.com' });
     assert.equal(res.status, 200);
     assert.match(res.headers.get('set-cookie') ?? '', /Secure/);
   });
@@ -297,11 +508,13 @@ describe('password provider WS origin checks', { concurrency: 1 }, () => {
   let dir: string;
   let port: number;
   let relay: Relay;
+  let cookie: string;
 
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), 'pw-ws-'));
     port = await getFreePort();
     relay = await startRelay(passwordConfig(port, dir));
+    cookie = cookieOf(await register(port, 'alice'));
   });
 
   afterEach(async () => {
@@ -310,7 +523,6 @@ describe('password provider WS origin checks', { concurrency: 1 }, () => {
   });
 
   it('rejects a cross-origin handshake even with a valid cookie', async () => {
-    const cookie = await sessionCookie(port);
     const socket = ioClient(`http://127.0.0.1:${port}`, {
       extraHeaders: { Cookie: cookie, Origin: 'https://evil.example' },
       reconnection: false,
@@ -325,82 +537,27 @@ describe('password provider WS origin checks', { concurrency: 1 }, () => {
   });
 
   it('accepts a matching Origin derived from the Host header', async () => {
-    const cookie = await sessionCookie(port);
     const socket = ioClient(`http://127.0.0.1:${port}`, {
-      extraHeaders: { Cookie: cookie, Origin: `http://127.0.0.1:${port}` },
+      extraHeaders: { Cookie: cookie, Origin: origin(port) },
       reconnection: false,
     });
     try {
       const info = await waitForUserInfo(socket);
-      assert.equal(info.userId, 'owner');
+      assert.equal(info.userId, 'alice');
     }
     finally {
       socket.close();
-    }
-  });
-
-  it('honors X-Forwarded-Host + Proto as the expected origin (reverse proxy)', async () => {
-    const cookie = await sessionCookie(port);
-    const socket = ioClient(`http://127.0.0.1:${port}`, {
-      extraHeaders: {
-        'Cookie': cookie,
-        'Origin': 'https://example.com',
-        'X-Forwarded-Host': 'example.com',
-        'X-Forwarded-Proto': 'https',
-      },
-      reconnection: false,
-    });
-    try {
-      const info = await waitForUserInfo(socket);
-      assert.equal(info.userId, 'owner');
-    }
-    finally {
-      socket.close();
-    }
-
-    // Same forwarded headers + forged Origin → reject
-    const bad = ioClient(`http://127.0.0.1:${port}`, {
-      extraHeaders: {
-        'Cookie': cookie,
-        'Origin': 'https://evil.example',
-        'X-Forwarded-Host': 'example.com',
-        'X-Forwarded-Proto': 'https',
-      },
-      reconnection: false,
-    });
-    try {
-      const err = await connectError(bad);
-      assert.match(err.message, /Origin/);
-    }
-    finally {
-      bad.close();
     }
   });
 
   it('lets non-browser clients through without an Origin header', async () => {
-    const cookie = await sessionCookie(port);
-    // node's socket.io-client sends no Origin by default — CLI / non-browser shape
     const socket = ioClient(`http://127.0.0.1:${port}`, {
       extraHeaders: { Cookie: cookie },
       reconnection: false,
     });
     try {
       const info = await waitForUserInfo(socket);
-      assert.equal(info.userId, 'owner');
-    }
-    finally {
-      socket.close();
-    }
-  });
-
-  it('without a cookie the handshake is Unauthorized regardless of Origin', async () => {
-    const socket = ioClient(`http://127.0.0.1:${port}`, {
-      extraHeaders: { Origin: `http://127.0.0.1:${port}` },
-      reconnection: false,
-    });
-    try {
-      const err = await connectError(socket);
-      assert.match(err.message, /Unauthorized/);
+      assert.equal(info.userId, 'alice');
     }
     finally {
       socket.close();

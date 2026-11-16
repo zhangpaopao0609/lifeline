@@ -1,19 +1,26 @@
 /**
- * Self-contained /claim and /login pages (server-rendered, zero web-package dependency); visual language
- * matches the 403 page. Submit via fetch to /api/claim, /api/login; success navigates to /.
- * Page content contains no internal names (release-scan grep gate).
+ * Self-contained /register and /login pages (server-rendered, zero web-package dependency).
+ * Submit via fetch. The page never interpolates the request's username, password, or next into HTML.
+ * Errors are written with textContent.
  */
 
 /**
- * Post-login / post-set-password bounce target: `?next=<original path>` from the 302 (e.g. CLI setup opening
- * /cli-setup?redirect_uri=...). Only same-origin relative paths are accepted — `//evil.com` / `/\evil.com`
- * would be treated by the browser as protocol-relative / normalized escapes; send those back to /.
+ * Where `?next=` may send the browser. One function: the page embeds this source,
+ * so the check the tests call and the check the browser runs cannot diverge.
+ * Rejects a scheme-relative URL, a backslash, whitespace, and C0/C1 controls.
  */
+export function safeNext(next: string): string {
+  if (!next.startsWith('/') || next.startsWith('//') || next.startsWith('/\\'))
+    return '/';
+  if (/[\s\\\u0000-\u001F\u007F-\u009F]/.test(next))
+    return '/';
+  return next;
+}
+
 const NEXT_HELPER = `
     function nextTarget() {
       var next = new URLSearchParams(location.search).get('next') || '/';
-      if (!next.startsWith('/') || next.startsWith('//') || next.startsWith('/\\\\')) return '/';
-      return next;
+      return (${safeNext.toString()})(next);
     }`;
 
 const STYLE = `
@@ -39,64 +46,39 @@ const STYLE = `
       justify-content: center;
       gap: 6px;
       margin-bottom: 28px;
-      user-select: none;
     }
-    .brand-name {
-      font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-      font-size: 13px;
-      font-weight: 600;
-      letter-spacing: 0.38em;
-      text-indent: 0.38em;
-    }
-    .brand-dim { color: rgba(255,255,255,0.26); font-weight: 400; }
+    .brand-name { font-weight: 640; letter-spacing: 0.14em; font-size: 13px; }
+    .brand-dim { opacity: 0.45; }
     .brand-cursor {
-      width: 7px;
-      height: 15px;
-      background: #f2f2f2;
-      animation: blink 1.1s steps(2, start) infinite;
+      width: 7px; height: 13px; background: #fff; opacity: 0.8;
     }
-    @keyframes blink {
-      0%, 49% { opacity: 1; }
-      50%, 100% { opacity: 0; }
-    }
-    h1 {
-      font-size: 18px;
-      font-weight: 560;
-      letter-spacing: -0.02em;
-      margin-bottom: 10px;
-      text-align: center;
-    }
-    p.desc {
+    h1 { font-size: 22px; font-weight: 600; letter-spacing: -0.02em; text-align: center; }
+    .desc {
+      margin: 10px 0 22px;
       font-size: 13px;
-      line-height: 1.65;
-      color: rgba(255,255,255,0.62);
+      line-height: 1.5;
+      color: rgba(255,255,255,0.55);
       text-align: center;
-      margin-bottom: 22px;
     }
     form { display: flex; flex-direction: column; gap: 10px; }
     input {
       width: 100%;
       background: rgba(255,255,255,0.06);
-      border: 1px solid rgba(255,255,255,0.14);
+      color: inherit;
+      border: 1px solid rgba(255,255,255,0.1);
       border-radius: 10px;
-      color: rgba(255,255,255,0.94);
-      font-size: 14px;
-      padding: 11px 13px;
+      padding: 12px 14px;
+      font-size: 15px;
       outline: none;
     }
-    input:focus { border-color: rgba(255,255,255,0.34); }
-    input.code {
-      font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-      font-size: 12px;
-      letter-spacing: 0.06em;
-    }
+    input:focus { border-color: rgba(255,255,255,0.28); }
     button {
-      width: 100%;
-      background: #f2f2f2;
+      margin-top: 6px;
+      background: #fff;
       color: #000;
-      border: none;
+      border: 0;
       border-radius: 10px;
-      font-size: 14px;
+      font-size: 15px;
       font-weight: 600;
       padding: 11px 0;
       cursor: pointer;
@@ -109,9 +91,11 @@ const STYLE = `
       color: rgba(255,120,110,0.9);
       text-align: center;
     }
+    .alt { margin-top: 16px; text-align: center; font-size: 13px; }
+    .alt a { color: rgba(255,255,255,0.7); }
 `;
 
-function pageHtml(body: string, script: string): string {
+function pageHtml(body: string, script: string, nonce: string): string {
   return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -129,68 +113,86 @@ function pageHtml(body: string, script: string): string {
     </div>
 ${body}
   </main>
-  <script>${script}</script>
+  <script nonce="${nonce}">${script}</script>
 </body>
 </html>
 `;
 }
 
-export const CLAIM_HTML = pageHtml(
-  `    <h1>设置密码</h1>
-    <p class="desc">首次启动。服务器控制台打印了一串一次性引导码——复制它，在这里设置密码（至少 8 位）。</p>
-    <form id="f">
-      <input id="code" class="code" placeholder="一次性引导码" autocomplete="off" spellcheck="false">
-      <input id="password" type="password" placeholder="密码（至少 8 位）" autocomplete="new-password">
-      <button type="submit">保存并进入</button>
-    </form>
-    <p class="err" id="err"></p>`,
-  `${NEXT_HELPER}
+const SUBMIT = `
     document.getElementById('f').addEventListener('submit', async (e) => {
       e.preventDefault();
-      const err = document.getElementById('err');
+      var err = document.getElementById('err');
       err.textContent = '';
+      var username = document.getElementById('username').value;
+      var password = document.getElementById('password').value;
+      var extra = document.getElementById('confirm');
+      var payload = extra
+        ? { username: username, password: password, passwordConfirm: extra.value }
+        : { username: username, password: password };
       try {
-        const res = await fetch('/api/claim', {
+        var res = await fetch(extra ? '/api/register' : '/api/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            code: document.getElementById('code').value.trim(),
-            password: document.getElementById('password').value,
-          }),
+          body: JSON.stringify(payload),
         });
         if (res.ok) { location.href = nextTarget(); return; }
-        const data = await res.json().catch(() => ({}));
+        var data = await res.json().catch(function () { return {}; });
         err.textContent = data.error || '失败，请重试。';
-      } catch {
+      } catch (e) {
         err.textContent = '网络错误，请重试。';
       }
-    });`,
-);
+    });`;
 
-export const LOGIN_HTML = pageHtml(
-  `    <h1>登录</h1>
-    <p class="desc">输入密码进入控制台。连续失败会被暂时限流。</p>
+export function securityHeaders(nonce: string): Record<string, string> {
+  return {
+    'Cache-Control': 'no-store',
+    'X-Frame-Options': 'DENY',
+    'Content-Security-Policy': [
+      'default-src \'none\'',
+      `script-src 'nonce-${nonce}'`,
+      'style-src \'unsafe-inline\'',
+      'img-src \'none\'',
+      'connect-src \'self\'',
+      'form-action \'none\'',
+      'base-uri \'none\'',
+      'frame-ancestors \'none\'',
+    ].join('; '),
+  };
+}
+
+export function loginPage(nonce: string, registrationOpen: boolean): string {
+  const alt = registrationOpen
+    ? '    <p class="alt"><a href="/register">注册账号</a></p>'
+    : '';
+  return pageHtml(
+    `    <h1>登录</h1>
+    <p class="desc">用你的用户名和密码进入控制台。</p>
     <form id="f">
+      <input id="username" placeholder="用户名" autocomplete="username" spellcheck="false">
       <input id="password" type="password" placeholder="密码" autocomplete="current-password">
       <button type="submit">登录</button>
     </form>
-    <p class="err" id="err"></p>`,
-  `${NEXT_HELPER}
-    document.getElementById('f').addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const err = document.getElementById('err');
-      err.textContent = '';
-      try {
-        const res = await fetch('/api/login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ password: document.getElementById('password').value }),
-        });
-        if (res.ok) { location.href = nextTarget(); return; }
-        const data = await res.json().catch(() => ({}));
-        err.textContent = data.error || '失败，请重试。';
-      } catch {
-        err.textContent = '网络错误，请重试。';
-      }
-    });`,
-);
+    <p class="err" id="err"></p>
+${alt}`,
+    `${NEXT_HELPER}${SUBMIT}`,
+    nonce,
+  );
+}
+
+export function registerPage(nonce: string): string {
+  return pageHtml(
+    `    <h1>注册</h1>
+    <p class="desc">用户名注册后不能修改。密码至少 12 位。</p>
+    <form id="f">
+      <input id="username" placeholder="用户名" autocomplete="username" spellcheck="false">
+      <input id="password" type="password" placeholder="密码（至少 12 位）" autocomplete="new-password">
+      <input id="confirm" type="password" placeholder="再输入一次密码" autocomplete="new-password">
+      <button type="submit">注册并进入</button>
+    </form>
+    <p class="err" id="err"></p>
+    <p class="alt"><a href="/login">已有账号，去登录</a></p>`,
+    `${NEXT_HELPER}${SUBMIT}`,
+    nonce,
+  );
+}

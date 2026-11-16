@@ -12,7 +12,7 @@ import { posix } from 'node:path';
  *   enroll time (agent-hub.ts).
  *
  * Every other path requires identity (pages, page static assets, `/api/*`). A provider may layer extra
- * exemptions via `AuthProvider.isPublicPath` (password's /login, /claim — exact paths). If something new
+ * exemptions via `AuthProvider.isPublicPath` (password's /login, /register — exact paths). If something new
  * is not one of these three, do not add it here — enumerating paths one by one is exactly what this
  * function exists to stop.
  *

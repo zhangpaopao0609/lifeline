@@ -109,22 +109,32 @@ describe('createAuthProvider (explicit AUTH_PROVIDER)', () => {
 
 // After Task 2 landed: this set pins "route to password, and never silently become none / run naked".
 describe('password wiring', () => {
-  it('AUTH_PASSWORD on loopback routes to the password provider (not none)', () => {
-    assert.equal(
-      createAuthProvider(baseConfig({ authPassword: 'x'.repeat(8) })).kind,
-      'password',
+  const https = { publicOrigin: 'https://lifeline.example.com' };
+
+  it('AUTH_PASSWORD refuses to start', () => {
+    assert.throws(
+      () => createAuthProvider(baseConfig({ authPassword: 'x'.repeat(8) })),
+      /AUTH_PASSWORD is no longer used/,
     );
   });
 
-  it('no config on a non-loopback bind routes to the password provider', () => {
-    assert.equal(createAuthProvider(baseConfig({ serverHost: '0.0.0.0' })).kind, 'password');
-    assert.equal(createAuthProvider(baseConfig({ serverHost: '192.168.1.10' })).kind, 'password');
-    assert.equal(createAuthProvider(baseConfig({ serverHost: '8.8.8.8' })).kind, 'password');
+  it('no config on a non-loopback bind routes to the password provider when PUBLIC_ORIGIN is https', () => {
+    assert.equal(createAuthProvider(baseConfig({ serverHost: '0.0.0.0', ...https })).kind, 'password');
+    assert.equal(createAuthProvider(baseConfig({ serverHost: '192.168.1.10', ...https })).kind, 'password');
+    assert.equal(createAuthProvider(baseConfig({ serverHost: '8.8.8.8', ...https })).kind, 'password');
+  });
+
+  it('non-loopback password auth refuses a missing or non-https PUBLIC_ORIGIN', () => {
+    assert.throws(() => createAuthProvider(baseConfig({ serverHost: '0.0.0.0' })), /PUBLIC_ORIGIN/);
+    assert.throws(
+      () => createAuthProvider(baseConfig({ serverHost: '8.8.8.8', publicOrigin: 'http://lifeline.example.com' })),
+      /PUBLIC_ORIGIN/,
+    );
   });
 
   it('0.0.0.0 with AUTH_INSECURE_ALLOW still never gets none', () => {
     assert.equal(
-      createAuthProvider(baseConfig({ serverHost: '0.0.0.0', authInsecureAllow: true })).kind,
+      createAuthProvider(baseConfig({ serverHost: '0.0.0.0', authInsecureAllow: true, ...https })).kind,
       'password',
     );
   });

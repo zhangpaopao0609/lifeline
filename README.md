@@ -30,7 +30,7 @@ lifeline setup --server-url http://<your-lifeline-server>
 - No preinstalled Node: the installer downloads a bundled runtime (Node + CLI + better-sqlite3) and checks sha256
 - Install layout: runtime under `~/.lifeline/`, command at `~/.local/bin/lifeline` (the script tells you how to append PATH if needed)
 - The origin is the server URL above (self-host often `http://<host>:8080`; use https when you have a cert)
-- `setup` opens a browser to log in (self-host is password / gateway auth). The machine is owned by that login; only that person can see it afterwards
+- `setup` opens a browser to log in (self-host is a registered username and password, or gateway auth). The machine is owned by that login; only that person can see it afterwards
 - The agent brings up the CDP port itself — no manual config
 - Alpine (musl) is not supported
 
@@ -87,7 +87,7 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md). Project context for AI agents (archite
 - The CDP port has no auth — equivalent to arbitrary local code execution. **Do not** expose it to the public internet (the agent reaches it over loopback only)
 - Secrets live only in the server `.env` and on-machine `~/.lifeline/config.json` — not in the tree, not in commits
 - Do not ship a shared `AGENT_TOKEN`: each machine uses the enroller's login identity
-- Auth matrix (`AUTH_HEADER` / `AUTH_PASSWORD` / `AUTH_INSECURE_ALLOW`) is in the root `.env.example`
+- Auth matrix (`AUTH_HEADER` / `AUTH_REGISTRATION` / `PUBLIC_ORIGIN` / `AUTH_INSECURE_ALLOW`) is in the root `.env.example`. `AUTH_PASSWORD` is rejected at startup.
 
 ---
 

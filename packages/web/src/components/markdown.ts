@@ -17,13 +17,15 @@ const defaultFence: RenderRule | undefined = md.renderer.rules.fence;
 const fenceWithToolbar: RenderRule = (tokens, idx, options, env, self) => {
   const token = tokens[idx];
   const lang = (token.info || '').trim().split(/\s+/)[0] || '';
+  // Text content, not markup. markdown-it already escapes the fence body; this label is our own interpolation.
+  const label = md.utils.escapeHtml(lang || 'text');
   const inner = defaultFence
     ? defaultFence(tokens, idx, options, env, self)
     : self.renderToken(tokens, idx, options);
   return (
     `<div class="md-codeblock">`
     + `<div class="md-codeblock-bar">`
-    + `<span class="md-codeblock-lang">${lang || 'text'}</span>`
+    + `<span class="md-codeblock-lang">${label}</span>`
     + `<span class="md-codeblock-actions">`
     + `<button type="button" class="md-codeblock-expand">全屏</button>`
     + `<button type="button" class="md-codeblock-copy">复制</button>`

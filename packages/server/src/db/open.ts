@@ -68,13 +68,18 @@ export function applySchema(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS machine_tokens_agent ON machine_tokens (agent_id);
 
-    -- Local credentials for the password provider (single-row table; this row does not exist when password login is unused).
-    -- password_hash empty string = claim has not been completed / preset has not been persisted.
+    -- Session signing key (single row). password_hash is leftover and is not read.
     CREATE TABLE IF NOT EXISTS auth_local (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       password_hash TEXT NOT NULL,
       session_secret TEXT NOT NULL,
       updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS auth_accounts (
+      user_id TEXT PRIMARY KEY,
+      password_hash TEXT NOT NULL,
+      created_at INTEGER NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS sessions (

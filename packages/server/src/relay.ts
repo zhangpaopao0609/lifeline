@@ -450,7 +450,7 @@ export class Relay {
       return reply.code(404).send('Not found');
     });
 
-    // Provider's own login routes (password: /claim /login /api/*). Mounted here, still after the
+    // Provider's own login routes (password: /register /login /api/*). Mounted here, still after the
     // onRequest gate — exemption relies on provider.isPublicPath (exact paths).
     this.auth.setupRoutes?.(this.app);
   }
