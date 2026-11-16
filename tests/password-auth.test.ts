@@ -93,6 +93,28 @@ function cookieOf(res: Response): string {
   return cookie;
 }
 
+interface HealthBody {
+  machines: Array<{ agentId: string }>;
+  agentConnected: boolean;
+}
+
+async function waitForMachines(
+  port: number,
+  cookie: string,
+  ready: (ids: string[]) => boolean,
+): Promise<HealthBody> {
+  const start = Date.now();
+  let last: HealthBody = { machines: [], agentConnected: false };
+  while (Date.now() - start < 5000) {
+    const res = await fetch(`http://127.0.0.1:${port}/api/health`, { headers: { Cookie: cookie } });
+    last = await res.json() as HealthBody;
+    if (ready(last.machines.map(machine => machine.agentId)))
+      return last;
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  throw new Error(`machines never matched: ${JSON.stringify(last.machines)}`);
+}
+
 function waitForUserInfo(
   socket: ReturnType<typeof ioClient>,
 ): Promise<{ userId: string; authKind?: string }> {
@@ -217,6 +239,39 @@ describe('password accounts', { concurrency: 1 }, () => {
     const row = db.prepare('SELECT owner_user_id FROM machine_tokens WHERE agent_id = ?').get('agent-alice') as { owner_user_id: string };
     db.close();
     assert.equal(row.owner_user_id, 'alice');
+
+    const token = ((await exchanged.json()) as { agentToken: string }).agentToken;
+    const agent = ioClient(`http://127.0.0.1:${port}/agent`, {
+      path: '/agent-io',
+      auth: { agentToken: token },
+      transports: ['websocket'],
+      reconnection: false,
+    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('agent did not connect')), 5000);
+        agent.on('connect', () => {
+          agent.emit('agent:register', { agentId: 'agent-alice', hostname: 'Alice-MBP', version: '9.9.9' });
+          clearTimeout(timer);
+          resolve();
+        });
+        agent.on('connect_error', (err: Error) => {
+          clearTimeout(timer);
+          reject(err);
+        });
+      });
+      const aliceHealth = await waitForMachines(port, cookie, ids => ids.includes('agent-alice'));
+      assert.deepEqual(aliceHealth.machines.map(machine => machine.agentId), ['agent-alice']);
+
+      const bob = cookieOf(await register(port, 'bob'));
+      const bobHealth = await fetch(`http://127.0.0.1:${port}/api/health`, { headers: { Cookie: bob } });
+      const bobBody = await bobHealth.json() as HealthBody;
+      assert.deepEqual(bobBody.machines, []);
+      assert.equal(bobBody.agentConnected, false);
+    }
+    finally {
+      agent.close();
+    }
   });
 
   it('rejects illegal usernames without echoing them', async () => {
@@ -253,11 +308,13 @@ describe('password accounts', { concurrency: 1 }, () => {
     await register(port, 'alice');
     const before = scryptCallCount();
     const missing = await login(port, 'nobody');
+    const afterMissing = scryptCallCount();
     const wrong = await login(port, 'alice', 'wrong-password-xx');
     assert.equal(missing.status, 401);
     assert.equal(wrong.status, 401);
     assert.deepEqual(await missing.json(), await wrong.json());
-    assert.ok(scryptCallCount() > before);
+    assert.equal(afterMissing - before, 1, 'a missing user still pays one dummy scrypt');
+    assert.equal(scryptCallCount() - afterMissing, 1);
   });
 
   it('five failures lock the address, including a later correct password', async () => {
@@ -562,5 +619,87 @@ describe('password provider WS origin checks', { concurrency: 1 }, () => {
     finally {
       socket.close();
     }
+  });
+});
+
+describe('registration attempt cap', { concurrency: 1 }, () => {
+  let dir: string;
+  let port: number;
+  let relay: Relay;
+  let clock: number;
+
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'pw-hourly-'));
+    port = await getFreePort();
+    clock = 1_000_000;
+    relay = await startRelay(passwordConfig(port, dir, { now: () => clock }));
+  });
+
+  afterEach(async () => {
+    await relay.stop();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('stops at 30 registration attempts per hour after the per-minute failures reset', async () => {
+    for (let minute = 0; minute < 6; minute++) {
+      for (let n = 0; n < 5; n++)
+        assert.equal((await register(port, 'bad name')).status, 400);
+      clock += 60_000;
+    }
+    const before = scryptCallCount();
+    const blocked = await register(port, 'alice');
+    assert.equal(blocked.status, 429);
+    assert.equal(scryptCallCount(), before);
+    const db = new Database(join(dir, 'lifeline.sqlite'));
+    const row = db.prepare('SELECT COUNT(*) AS n FROM auth_accounts').get() as { n: number };
+    db.close();
+    assert.equal(row.n, 0);
+  });
+});
+
+describe('gateway auth does not mount account registration', { concurrency: 1 }, () => {
+  let dir: string;
+  let port: number;
+  let relay: Relay;
+
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'pw-header-'));
+    port = await getFreePort();
+    relay = await startRelay({
+      serverPort: port,
+      serverHost: '127.0.0.1',
+      dataDir: dir,
+      logLevel: 'error',
+      authHeaderName: 'x-test-user',
+    });
+  });
+
+  afterEach(async () => {
+    await relay.stop();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('serves neither the register page nor a register API', async () => {
+    const page = await fetch(`http://127.0.0.1:${port}/register`, {
+      headers: { 'x-test-user': 'alice' },
+    });
+    const html = await page.text();
+    assert.equal(html.includes('注册并进入'), false);
+
+    const anonymous = await postJson(port, '/api/register', {
+      username: 'alice',
+      password: PASSWORD,
+      passwordConfirm: PASSWORD,
+    });
+    assert.equal(anonymous.status, 403);
+    assert.equal(anonymous.headers.get('set-cookie'), null);
+
+    const authed = await postJson(port, '/api/register', {
+      username: 'alice',
+      password: PASSWORD,
+      passwordConfirm: PASSWORD,
+    }, { 'x-test-user': 'alice' });
+    assert.equal(authed.status, 404);
+    assert.equal(authed.headers.get('set-cookie'), null);
   });
 });

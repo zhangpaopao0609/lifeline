@@ -73,4 +73,6 @@ export interface ServerConfig {
   publicOrigin?: string;
   /** Allow running none unauthenticated on a private-network bind (env AUTH_INSECURE_ALLOW=1; never on the public internet). */
   authInsecureAllow?: boolean;
+  /** Clock for password rate limits. Unset means `Date.now`. Tests move it to cross a window. */
+  now?: () => number;
 }

@@ -80,6 +80,7 @@ function passwordProvider(config: ServerConfig, avatarUrlFor: AvatarUrlFor): Aut
     trustedProxy: config.authTrustedProxy,
     registrationOpen: config.authRegistrationOpen !== false,
     avatarUrlFor,
+    now: config.now,
   });
 }
 
