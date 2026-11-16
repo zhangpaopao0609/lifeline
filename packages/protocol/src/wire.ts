@@ -70,6 +70,10 @@ export interface ToolCallElement {
   additions?: number;
   deletions?: number;
   summaryText?: string;
+  /** Saved tool output, capped by the source adapter. */
+  output?: string;
+  /** Cursor child composer opened by this task. */
+  childSessionId?: string;
   actions?: RunAction[];
   blocked?: string;
   diffBlock?: CodeBlockItem;

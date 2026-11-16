@@ -495,6 +495,12 @@ describe('chatElementSchema', () => {
       assert.equal(chatElementSchema.safeParse(element).success, true, element.type);
   });
 
+  it('preserves Cursor child links and tool output', () => {
+    const linked = { ...tool, childSessionId: 'child-1', output: 'saved output' };
+    assert.deepEqual(chatElementSchema.parse(linked), linked);
+    assert.equal(chatElementSchema.safeParse({ ...tool, childSessionId: '' }).success, false);
+  });
+
   it('rejects a partial element, an unknown type, and an unknown field', () => {
     assert.equal(chatElementSchema.safeParse({ id: 'h1', type: 'human', flatIndex: 0 }).success, false);
     assert.equal(chatElementSchema.safeParse({ id: 't1', type: 'tool', flatIndex: 0 }).success, false);

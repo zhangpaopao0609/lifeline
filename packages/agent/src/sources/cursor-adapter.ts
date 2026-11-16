@@ -14,6 +14,7 @@ import type {
   SessionRef,
   SourceProbe,
 } from './types.js';
+import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -67,6 +68,7 @@ export interface ComposerData {
   totalLinesRemoved?: number;
   filesChangedCount?: number;
   subagentComposerIds?: string[];
+  subagentInfo?: { parentComposerId?: string; toolCallId?: string; toolCallIdHistory?: string[] };
   generatingBubbleIds?: string[];
   fullConversationHeadersOnly?: HeaderEntry[];
   /** Newer builds only: where the message headers live (`composerConvHeaders:<id>:<chunk>`). */
@@ -408,7 +410,27 @@ export class CursorAdapter implements ContentSource {
     // change is seen (and the bubble is re-read) the moment the fill first appears or grows.
     for (const [id, text] of this.transcriptFill(sessionId))
       out.set(id, (out.get(id) ?? 0) + text.length);
+    // A child can be linked before the task bubble changes. Invalidate that projection too.
+    const links = this.subagentLinks(sessionId);
+    if (links.size > 0) {
+      const stamp = createHash('sha256').update(JSON.stringify([...links])).digest().readUInt32LE(0);
+      for (const [id, size] of out) out.set(id, size + stamp);
+    }
     return out;
+  }
+
+  private subagentLinks(sessionId: string): Map<string, string> {
+    const links = new Map<string, string>();
+    for (const childId of this.readComposer(sessionId)?.subagentComposerIds ?? []) {
+      const info = this.readComposer(childId)?.subagentInfo;
+      if (info?.parentComposerId !== sessionId)
+        continue;
+      for (const callId of [info.toolCallId, ...(info.toolCallIdHistory ?? [])]) {
+        if (callId)
+          links.set(callId, childId);
+      }
+    }
+    return links;
   }
 
   /** Path of this chat's transcript, or null. Found once by scanning the projects dir, then remembered. */
@@ -543,6 +565,10 @@ export class CursorAdapter implements ContentSource {
     return this.readComposer(sessionId) !== null;
   }
 
+  isSubagentSession(sessionId: string): boolean {
+    return !!this.readComposer(sessionId)?.subagentInfo?.parentComposerId;
+  }
+
   projectSession(sessionId: string, ids?: string[]): ChatElement[] {
     const index = this.readIndex(sessionId);
     const useIndex = ids ? index.filter(h => ids.includes(h.messageId)) : index;
@@ -560,6 +586,11 @@ export class CursorAdapter implements ContentSource {
     let { messages } = project(useIndex, bubbles, diffs, {
       includeProcess: this.includeProcess,
     });
+    const links = this.subagentLinks(sessionId);
+    for (const message of messages) {
+      if (message.type === 'tool' && message.toolName === 'task_v2')
+        message.childSessionId ??= links.get(message.toolCallId);
+    }
     const cd = this.readComposer(sessionId);
     const generating = (cd?.generatingBubbleIds?.length ?? 0) > 0;
     if (this.includeProcess && !generating) {

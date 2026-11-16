@@ -333,6 +333,8 @@ const toolElementSchema = z.object({
   additions: z.number().optional(),
   deletions: z.number().optional(),
   summaryText: z.string().optional(),
+  output: z.string().optional(),
+  childSessionId: z.string().min(1).optional(),
   actions: z.array(runActionSchema).optional(),
   blocked: z.string().optional(),
   diffBlock: codeBlockSchema.optional(),

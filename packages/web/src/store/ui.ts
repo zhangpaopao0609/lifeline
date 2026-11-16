@@ -77,6 +77,10 @@ export interface PendingNewChat {
 }
 
 interface UiStore {
+  subagentPath: Array<{ sessionId: string; title: string }>;
+  openSubagent: (sessionId: string, title: string) => void;
+  backFromSubagent: () => void;
+  closeSubagents: () => void;
   toasts: ToastItem[];
   pushToast: (text: string, kind?: ToastItem['kind']) => void;
   dismissToast: (id: number) => void;
@@ -136,6 +140,10 @@ function initialActiveTarget(): ActiveTarget {
 }
 
 export const useUiStore = create<UiStore>()((set, get) => ({
+  subagentPath: [],
+  openSubagent: (sessionId, title) => set(s => ({ subagentPath: [...s.subagentPath, { sessionId, title }] })),
+  backFromSubagent: () => set(s => ({ subagentPath: s.subagentPath.slice(0, -1) })),
+  closeSubagents: () => set({ subagentPath: [] }),
   toasts: [],
   bottomNonce: 0,
   activeTarget: initialActiveTarget(),

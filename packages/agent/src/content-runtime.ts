@@ -190,13 +190,18 @@ const WATERMARK_SAVE_DEBOUNCE_MS = 3000;
  * Persisted watermarks survive daemon upgrades; without this prefix an upgraded agent can answer
  * "sync" from an old semantic projection and leave stale server rows in place indefinitely.
  */
-const PROJECTION_SIGNATURE_VERSION = 'projection-v3';
+const PROJECTION_SIGNATURE_VERSION = 'projection-v4';
+
+// The server refreshes a viewed session at most once a minute. Keep a small set alive between asks.
+const REQUESTED_SESSION_TTL_MS = 120_000;
+const MAX_REQUESTED_SESSIONS = 4;
 
 export class ContentLiveRuntime {
   private readonly intervalMs: number;
   private timer: ReturnType<typeof setInterval> | undefined;
   private lastDataVersion: number | undefined;
   private activeSessionId: string | null = null;
+  private readonly requestedSessions = new Map<string, number>();
   private liveTail: ContentLiveTickOpts['liveTail'];
   private readonly fullSent = new Set<string>();
   private readonly lastIndex = new Map<string, MessageHeader[]>();
@@ -331,6 +336,12 @@ export class ContentLiveRuntime {
       }
       return false;
     }
+    if (this.adapter.ide === 'cursor') {
+      this.requestedSessions.delete(sessionId);
+      this.requestedSessions.set(sessionId, Date.now() + REQUESTED_SESSION_TTL_MS);
+      if (this.requestedSessions.size > MAX_REQUESTED_SESSIONS)
+        this.requestedSessions.delete(this.requestedSessions.keys().next().value!);
+    }
     if (sinceSeq !== undefined && this.seqBySession.get(sessionId) === sinceSeq && this.upToDate(sessionId)) {
       timingLog('content:sync', { ide: this.adapter.ide, sessionId, seq: sinceSeq });
       this.handlers.onSessionSync?.(sessionId, this.adapter.ide, sinceSeq);
@@ -412,14 +423,19 @@ export class ContentLiveRuntime {
       this.lastDataVersion = dv;
     }
 
-    const active = this.activeSessionId;
-    if (!active) {
-      if (changed) {
-        timingLog('content:tick', { ide: this.adapter.ide, changed: true, active: '' });
-      }
-      return;
+    const sessions = new Set<string>();
+    if (this.activeSessionId)
+      sessions.add(this.activeSessionId);
+    for (const [sessionId, expiresAt] of this.requestedSessions) {
+      if (expiresAt <= Date.now())
+        this.requestedSessions.delete(sessionId);
+      else sessions.add(sessionId);
     }
+    for (const sessionId of sessions)
+      this.tickSession(sessionId, changed, liveTail);
+  }
 
+  private tickSession(active: string, changed: boolean, liveTail: ContentLiveTickOpts['liveTail']): void {
     if (!this.fullSent.has(active)) {
       timingLog('content:tick', { ide: this.adapter.ide, changed, active, needDisk: true });
       this.emitProjected(active, liveTail);

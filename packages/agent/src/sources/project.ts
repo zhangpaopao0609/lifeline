@@ -91,6 +91,8 @@ function pickOutput(result: unknown): string | undefined {
     ?? str(r.stdout)
     ?? str(r.text)
     ?? str(r.content)
+    ?? str(r.markdown)
+    ?? str(r.error)
   );
 }
 
@@ -120,7 +122,7 @@ function summarize(
     case 'glob_file_search':
       return str(params.globPattern) ?? '';
     case 'web_search':
-      return str(params.query) ?? '';
+      return str(params.searchTerm) ?? str(params.query) ?? '';
     case 'web_fetch':
       return str(params.url) ?? '';
     case 'task_v2':
@@ -301,6 +303,8 @@ export function project(
           details: filename ?? '',
           filename,
           summaryText: summarize(name, params, filename),
+          output: output && (output.length > 4000 ? `${output.slice(0, 4000)}\n…` : output),
+          childSessionId: name === 'task_v2' ? str(parseParams(tfd.result).agentId) : undefined,
           diffBlock,
           ...stamp(b.createdAt),
         };
