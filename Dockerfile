@@ -1,14 +1,12 @@
 # Lifeline server self-host image.
 #
-# Two stages: build (pnpm install + three builds + linux-x64 runtime pack) → run
+# Two stages: build (pnpm install + three builds + all five runtime packs) → run
 # (dist + node_modules + /data volume). Build and run share the same base
 # (node:22-bookworm-slim): better-sqlite3's prebuilt .node must match the
 # runtime Node ABI.
 #
-# Only the linux-x64 runtime tarball is built here: the container platform is
-# fixed. The other four platform tarballs are assets the agent installs on the
-# user's machine; the server only serves them statically (change PACK_TARGETS
-# or hang a CDN in front to ship all platforms — see docs/selfhost.md).
+# The container itself is linux, but it serves the agent runtime for every
+# platform the install script asks for. Empty PACK_TARGETS packs all five.
 
 # ---- build ----
 FROM node:22-bookworm-slim AS build
@@ -56,7 +54,7 @@ COPY . .
 RUN pnpm run build:cli \
  && pnpm run build \
  && pnpm run build:web \
- && PACK_TARGETS=linux-x64 pnpm run build:runtime
+ && pnpm run build:runtime
 
 # ---- run ----
 FROM node:22-bookworm-slim

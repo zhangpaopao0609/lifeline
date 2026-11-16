@@ -19,7 +19,7 @@ curl -fsSL <selfhost.sh 地址> | sh     # 或直接拷仓库 scripts/selfhost.s
 - **两阶段同 base**（`node:22-bookworm-slim`）：better-sqlite3 的预编译 `.node` 与运行时 Node 的 ABI 必须一致——run 阶段带 build 阶段装好的整包 `node_modules`（不为省体积拆依赖清单，slim 镜像可接受）。
 - **依赖安装只有一层**（pnpm 迁移后）。原来是两层：`npm ci` 对「lockfile 声明、但文件系统里还没有的 workspace」会把它的依赖**整体剔除**，所以 web 必须单独 `npm --prefix packages/web install` 补一层。**pnpm 没有这个行为** —— 它按 `pnpm-workspace.yaml` 的 glob 实际扫目录，缺失的 workspace 只是不参与，不牵连别的包。所以现在是「先 COPY 全部 workspace 的 package.json + 四个清单文件 → 一次 `pnpm install --frozen-lockfile`」。改回两层不是错，但没必要；**别再退回 npm**（仓库里已经没有 `package-lock.json`，`npm ci` 会直接炸）。
 - **发布镜像用 buildx 多平台**（`--platform linux/amd64,linux/arm64`）：本机直接 `build` 出的是**本架构**镜像——arm64 Mac 上出的镜像在 x64 服务器 `pull` 报 no matching manifest。与「同 base 保 ABI」同主题。
-- **runtime 只打 linux-x64**（`PACK_TARGETS=linux-x64`）：容器平台固定；其余四平台 tarball 是 agent 装在用户机器上的资产，server 只做静态分发。要全平台分发改这行或外挂 CDN。
+- **runtime 打齐五个平台**（`PACK_TARGETS` 留空）。容器镜像仍然只是 linux；这些 tarball 是安装脚本下载到用户机器上的静态文件。
 - `.dockerignore` **只排除根层** `node_modules`/`dist`（`/` 前缀）——全层级排除会挡掉 workspace 依赖解析。
 
 ## env 变量（`.env`）
