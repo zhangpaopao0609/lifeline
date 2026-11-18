@@ -302,10 +302,15 @@ export function createLiveCliEntry(options: LiveCliEntryOptions): LiveCliEntry {
     });
   }
 
-  async function readCodebuddyCatalog(cwd: string | undefined) {
+  /**
+   * CodeBuddy and Codex both list models on `session/new` in the asked cwd. Reading the CodeBuddy
+   * catalog for a Codex request fails whenever CodeBuddy is not signed in, leaving the new-session
+   * dialog spinning -- so pass the requested source through.
+   */
+  async function readSessionNewCatalog(source: CliSource, cwd: string | undefined) {
     if (!cwd)
       return { ok: false as const, errorCode: 'invalid-cwd' as const };
-    return manager.readCatalog({ source: 'codebuddy-cli' as const, cwd });
+    return manager.readCatalog({ source, cwd });
   }
 
   async function acceptCatalog(payload: unknown): Promise<void> {
@@ -328,7 +333,7 @@ export function createLiveCliEntry(options: LiveCliEntryOptions): LiveCliEntry {
       }
       const result = asked.source === 'cursor-cli'
         ? await readCursorCatalog()
-        : await readCodebuddyCatalog(asked.cwd);
+        : await readSessionNewCatalog(asked.source, asked.cwd);
       options.emit('command:result', result.ok
         ? { commandId: asked.commandId, ok: true, data: result.data }
         : { commandId: asked.commandId, ok: false, errorCode: result.errorCode, error: result.errorCode });
