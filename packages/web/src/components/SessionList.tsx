@@ -1,5 +1,5 @@
 import type { Ref } from 'react';
-import type { ChatTab, CliSource, CursorState } from '../net/protocol';
+import type { ChatTab, CliSource, CursorState, SessionGroupsState } from '../net/protocol';
 import type { CliSessionState } from '../store/cli';
 import {
   AppWindow,
@@ -7,6 +7,9 @@ import {
   CaretRight,
   CircleNotch,
   DotsSixVertical,
+  DotsThree,
+  Folder,
+  FolderPlus,
   MagnifyingGlass,
   Plus,
   Robot,
@@ -34,9 +37,11 @@ import {
   useIdesStore,
 } from '../store/ides';
 import { useMachinesStore } from '../store/machines';
+import { groupNameById, useSessionGroupsStore, withGroups } from '../store/sessionGroups';
 import { sessionBodyKey, useSessionsStore } from '../store/sessions';
 import { useUiStore } from '../store/ui';
 import { CliNewDialog } from './CliNewDialog';
+import { FloatLayer } from './FloatLayer';
 
 /**
  * Running → spinner (IDE sidebar row-level status is canonical; only a row without a status of its own — old agent / extraction gap — falls back to the live session state so the spinner stays on after a switch);
@@ -180,6 +185,106 @@ export function SessionList({
    */
   const newHere = usePendingNewChat();
 
+  // ---- 会话分组（服务端按登录用户存，跨设备一致；归属键 = composerId） ----
+  const sessionGroupsList = useSessionGroupsStore(s => s.groups);
+  const sessionAssignments = useSessionGroupsStore(s => s.assignments);
+  const sessionGroupsLoaded = useSessionGroupsStore(s => s.loaded);
+  const applyGroupList = useSessionGroupsStore(s => s.applyList);
+  const putGroupLocal = useSessionGroupsStore(s => s.putLocal);
+  const [pickerGroupId, setPickerGroupId] = useState<string | null>(null);
+  const [pickerQuery, setPickerQuery] = useState('');
+  const [menuGroupId, setMenuGroupId] = useState<string | null>(null);
+  const [menuRenaming, setMenuRenaming] = useState(false);
+  const [renameDraft, setRenameDraft] = useState('');
+  const [creatingGroup, setCreatingGroup] = useState(false);
+  const [newGroupName, setNewGroupName] = useState('');
+
+  // 参与分组的标签池：本机器+IDE 的真实会话。草稿 / 合成 id 排除（还没落盘，id 不稳）；
+  // raised window 与 windows[] 双来源按 composerId 去重（同 groupTabsByWindow 的合并口径）。
+  const groupableTabs = useMemo(() => {
+    const all = [
+      ...(state?.chatTabs ?? []),
+      ...(state?.windows ?? []).flatMap(w => w.chatTabs ?? []),
+    ];
+    const seen = new Set<string>();
+    return all.filter((t) => {
+      if (!t.composerId || isSyntheticComposerId(t.composerId) || isDraftTab(t))
+        return false;
+      if (seen.has(t.composerId))
+        return false;
+      seen.add(t.composerId);
+      return true;
+    });
+  }, [state]);
+
+  const groupedIds = useMemo(() => new Set(Object.keys(sessionAssignments)), [sessionAssignments]);
+
+  const manualSections = useMemo(() => sessionGroupsList
+    .slice()
+    .sort((a, b) => a.sortOrder - b.sortOrder)
+    .map(g => ({ group: g, tabs: groupableTabs.filter(t => sessionAssignments[t.composerId] === g.id) })), [sessionGroupsList, groupableTabs, sessionAssignments]);
+
+  // 已归组的标签从窗口分组里收走（窗口组只剩未归组的），"属于哪个分组"由上面的分组区展示。
+  const visibleGroups = useMemo(
+    () => groups.map(g => ({ ...g, tabs: g.tabs.filter(t => !groupedIds.has(t.composerId)) })),
+    [groups, groupedIds],
+  );
+
+  const putGroups = (next: SessionGroupsState) => {
+    // 乐观落地：界面即时响应；失败时拉回服务端权威状态（失败不会广播）。
+    putGroupLocal(next);
+    socket.emit('session-groups:put', next, (r: { ok?: boolean } | undefined) => {
+      if (r?.ok)
+        return;
+      pushToast('分组保存失败，已恢复服务器状态', 'error');
+      socket.emit('session-groups:get', {}, (state: SessionGroupsState | undefined) => applyGroupList(state));
+    });
+  };
+  const createGroup = () => {
+    const name = newGroupName.trim();
+    if (!name)
+      return;
+    if (name.length > 60) {
+      pushToast('分组名最多 60 个字符', 'error');
+      return;
+    }
+    const sortOrder = sessionGroupsList.reduce((m, g) => Math.max(m, g.sortOrder), 0) + 1;
+    putGroups(withGroups({ groups: sessionGroupsList, assignments: sessionAssignments }, (d) => {
+      d.groups.push({ id: crypto.randomUUID(), name, sortOrder });
+    }));
+    setCreatingGroup(false);
+    setNewGroupName('');
+  };
+  const renameGroup = (id: string, name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed || trimmed.length > 60)
+      return;
+    putGroups(withGroups({ groups: sessionGroupsList, assignments: sessionAssignments }, (d) => {
+      const g = d.groups.find(x => x.id === id);
+      if (g)
+        g.name = trimmed;
+    }));
+    setMenuGroupId(null);
+    setMenuRenaming(false);
+  };
+  const deleteGroup = (id: string) => {
+    putGroups(withGroups({ groups: sessionGroupsList, assignments: sessionAssignments }, (d) => {
+      d.groups = d.groups.filter(g => g.id !== id);
+    }));
+    setMenuGroupId(null);
+  };
+  const assignToGroup = (groupId: string, composerId: string) => {
+    putGroups(withGroups({ groups: sessionGroupsList, assignments: sessionAssignments }, (d) => {
+      d.assignments[composerId] = groupId;
+    }));
+    setPickerGroupId(null);
+  };
+  const removeFromGroup = (composerId: string) => {
+    putGroups(withGroups({ groups: sessionGroupsList, assignments: sessionAssignments }, (d) => {
+      delete d.assignments[composerId];
+    }));
+  };
+
   // Folded-by-default + desktop = a session is open on the right while the list shows nothing selected anywhere (2026-10-20 feedback;
   // the default flipped to folded and only the phone switcher force-opened the current group).
   // Unfold the group (and the Agents-window section) holding the session currently on screen.
@@ -194,8 +299,14 @@ export function SessionList({
       const key = `${agentId}:${selectedIde}:${g.windowId}`;
       return tab.section ? [key, `${key}:${tab.section}`] : [key];
     }
+    // 当前会话在手动分组里：同样自动展开那一组（否则"会话开着，列表里却看不到它"）。
+    for (const sec of manualSections) {
+      const viewing = sec.tabs.some(t => isViewingTab(t, t.windowId || state.activeWindowId || '', selectedIde, state, pendingSwitch));
+      if (viewing)
+        return [`${agentId}:${selectedIde}:group:${sec.group.id}`];
+    }
     return [];
-  }, [groups, state, selectedIde, pendingSwitch, agentId]);
+  }, [groups, manualSections, state, selectedIde, pendingSwitch, agentId]);
   const autoExpandSig = autoExpandKeys.join('\n');
   // layoutEffect: unfold before the first paint, so the desktop column never shows "session open, every group folded" for a frame
   useLayoutEffect(() => {
@@ -397,6 +508,41 @@ export function SessionList({
     }
   };
 
+  /** 手动分组区的行：同窗口行，但 windowId 取标签自己的（分组横跨窗口），尾缀一个"移出分组"的 ✕。 */
+  const renderGroupedRow = (t: ChatTab) => {
+    const wid = t.windowId || state?.activeWindowId || '';
+    const viewing = !newHere && !!state && isViewingTab(t, wid, selectedIde, state, pendingSwitch);
+    return (
+      <button
+        key={`${t.composerId}:${t.title}`}
+        ref={revealCurrent && viewing ? currentRowRef : undefined}
+        type="button"
+        onClick={() => switchTab(t, t.windowId || '')}
+        className={`sess-tab ${viewing ? 'is-viewing' : t.isActive ? 'is-window-live' : ''} ${t.isActive ? 'cursor-default' : 'cursor-pointer'}`}
+      >
+        <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap">{t.title || '（未命名）'}</span>
+        {state && tabBadge(t, state, wid === state.activeWindowId)}
+        <span
+          role="button"
+          tabIndex={-1}
+          aria-label={`把「${t.title || '未命名'}」移出分组`}
+          title="移出分组"
+          className="sess-chip shrink-0 cursor-pointer"
+          onClick={(e) => { e.stopPropagation(); removeFromGroup(t.composerId); }}
+          onKeyDown={(e) => {
+            if (e.key !== 'Enter' && e.key !== ' ')
+              return;
+            e.preventDefault();
+            e.stopPropagation();
+            removeFromGroup(t.composerId);
+          }}
+        >
+          <X size={10} weight="bold" />
+        </span>
+      </button>
+    );
+  };
+
   return (
     <div className="flex h-full flex-col bg-[var(--bg-1)]">
       <div className="flex flex-col gap-2 border-b border-[var(--hairline)] p-2.5">
@@ -447,7 +593,206 @@ export function SessionList({
           : (
               <>
                 {!state && <div className="p-2.5 text-[length:var(--text-chrome)] text-[var(--text-weak)]">该 IDE 无状态</div>}
-                {groups.map((g) => {
+                {sessionGroupsLoaded && (
+                  <>
+                    <div className="flex items-center justify-between px-2.5 pb-1">
+                      <span className="text-[length:var(--text-chrome)] text-[var(--text-weak)]">分组</span>
+                      {!creatingGroup && (
+                        <button
+                          type="button"
+                          className="sess-add"
+                          aria-label="新建分组"
+                          title="新建分组"
+                          onClick={() => { setCreatingGroup(true); setNewGroupName(''); }}
+                        >
+                          <FolderPlus size={12} weight="bold" />
+                        </button>
+                      )}
+                    </div>
+                    {creatingGroup && (
+                      <div className="mx-1 mb-1 flex items-center gap-1 rounded-[var(--radius-md)] border border-[var(--hairline)] px-2 py-1">
+                        <input
+                          autoFocus
+                          value={newGroupName}
+                          onChange={e => setNewGroupName(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              createGroup();
+                            }
+                            if (e.key === 'Escape') {
+                              e.preventDefault();
+                              setCreatingGroup(false);
+                            }
+                          }}
+                          placeholder="分组名称（回车确认）"
+                          maxLength={80}
+                          className="min-w-0 flex-1 border-0 bg-transparent font-[inherit] text-[length:var(--text-chrome)] text-[var(--text-primary)] outline-none"
+                        />
+                        <button type="button" className="btn btn-ghost" onClick={createGroup}>确认</button>
+                        <button type="button" className="btn btn-ghost" onClick={() => setCreatingGroup(false)}>取消</button>
+                      </div>
+                    )}
+                    {manualSections.map(({ group, tabs }) => {
+                      const foldKey = `${agentId}:${selectedIde}:group:${group.id}`;
+                      const secTabs = q ? tabs.filter(t => t.title.toLowerCase().includes(q)) : tabs;
+                      const viewingInSec = revealCurrent && !!state
+                        && tabs.some(t => isViewingTab(t, t.windowId || state.activeWindowId || '', selectedIde, state, pendingSwitch));
+                      const folded = !q && !viewingInSec && !openKeys.has(foldKey);
+                      return (
+                        <div key={group.id} className={`sess-group ${folded ? 'is-collapsed' : ''}`}>
+                          <div
+                            className="sess-head"
+                            role="button"
+                            tabIndex={0}
+                            aria-expanded={!folded}
+                            aria-label={`${folded ? '展开' : '收起'}分组「${group.name}」`}
+                            onClick={() => toggleKey(foldKey)}
+                            onKeyDown={(e) => {
+                              if (e.key !== 'Enter' && e.key !== ' ')
+                                return;
+                              e.preventDefault();
+                              toggleKey(foldKey);
+                            }}
+                          >
+                            <span className="sess-head-icon" aria-hidden>
+                              <Folder className="ico-window" size={14} />
+                              <CaretDown className="ico-toggle ico-open" size={12} weight="fill" />
+                              <CaretRight className="ico-toggle ico-closed" size={12} weight="fill" />
+                            </span>
+                            <span className="sess-head-title">{group.name}</span>
+                            <span className="sess-section-count">{tabs.length}</span>
+                            <FloatLayer
+                              open={pickerGroupId === group.id}
+                              onOpenChange={(next) => {
+                                setPickerGroupId(next ? group.id : null);
+                                if (!next)
+                                  setPickerQuery('');
+                              }}
+                              side="right"
+                              label={`添加会话到「${group.name}」`}
+                              trigger={(
+                                <button
+                                  type="button"
+                                  className="sess-add"
+                                  aria-label={`添加会话到「${group.name}」`}
+                                  title="把会话加进这个分组"
+                                  onClick={e => e.stopPropagation()}
+                                >
+                                  <Plus size={12} weight="bold" />
+                                </button>
+                              )}
+                            >
+                              <div className="px-1 py-1.5">
+                                <div className="px-2 pb-1 text-[length:var(--text-chrome)] text-[var(--text-weak)]">
+                                  加入「
+                                  {group.name}
+                                  」（已在别的分组则移动过来）
+                                </div>
+                                {groupableTabs.length > 6 && (
+                                  <div className="px-2 pb-1">
+                                    <input
+                                      autoFocus
+                                      value={pickerQuery}
+                                      onChange={e => setPickerQuery(e.target.value)}
+                                      placeholder="搜索会话"
+                                      className="w-full rounded-[var(--radius-md)] border border-[var(--hairline)] bg-transparent px-2 py-1 text-[length:var(--text-chrome)] text-[var(--text-primary)] outline-none"
+                                    />
+                                  </div>
+                                )}
+                                {groupableTabs.length === 0 && (
+                                  <div className="px-2 py-1 text-[length:var(--text-chrome)] text-[var(--text-weak)]">这个 IDE 暂无可分组的会话</div>
+                                )}
+                                {groupableTabs
+                                  .filter(t => !pickerQuery || t.title.toLowerCase().includes(pickerQuery))
+                                  .map(t => (
+                                    <button
+                                      key={t.composerId}
+                                      type="button"
+                                      className="menu-item"
+                                      onClick={() => assignToGroup(group.id, t.composerId)}
+                                    >
+                                      <span className="min-w-0 flex-1 truncate text-left">{t.title || '（未命名）'}</span>
+                                      {sessionAssignments[t.composerId] === group.id && <span className="sess-chip shrink-0">本组</span>}
+                                      {sessionAssignments[t.composerId] && sessionAssignments[t.composerId] !== group.id && (
+                                        <span className="sess-chip shrink-0">
+                                          {groupNameById(sessionGroupsList, sessionAssignments[t.composerId]) ?? '其他分组'}
+                                        </span>
+                                      )}
+                                    </button>
+                                  ))}
+                              </div>
+                            </FloatLayer>
+                            <FloatLayer
+                              open={menuGroupId === group.id}
+                              onOpenChange={(next) => {
+                                setMenuGroupId(next ? group.id : null);
+                                if (!next)
+                                  setMenuRenaming(false);
+                              }}
+                              side="right"
+                              label={`分组「${group.name}」菜单`}
+                              trigger={(
+                                <button
+                                  type="button"
+                                  className="sess-add"
+                                  aria-label={`分组「${group.name}」菜单`}
+                                  title="分组菜单"
+                                  onClick={e => e.stopPropagation()}
+                                >
+                                  <DotsThree size={12} weight="bold" />
+                                </button>
+                              )}
+                            >
+                              <div className="px-1 py-1.5">
+                                {menuRenaming
+                                  ? (
+                                      <div className="px-2 py-1">
+                                        <input
+                                          autoFocus
+                                          value={renameDraft}
+                                          onChange={e => setRenameDraft(e.target.value)}
+                                          onKeyDown={(e) => {
+                                            if (e.key === 'Enter') {
+                                              e.preventDefault();
+                                              renameGroup(group.id, renameDraft);
+                                            }
+                                            if (e.key === 'Escape') {
+                                              e.preventDefault();
+                                              setMenuGroupId(null);
+                                              setMenuRenaming(false);
+                                            }
+                                          }}
+                                          placeholder="新名称（回车确认）"
+                                          maxLength={80}
+                                          className="w-full rounded-[var(--radius-md)] border border-[var(--hairline)] bg-transparent px-2 py-1 text-[length:var(--text-chrome)] text-[var(--text-primary)] outline-none"
+                                        />
+                                        <div className="mt-1 flex gap-1">
+                                          <button type="button" className="btn btn-ghost" onClick={() => renameGroup(group.id, renameDraft)}>确认</button>
+                                          <button type="button" className="btn btn-ghost" onClick={() => { setMenuGroupId(null); setMenuRenaming(false); }}>取消</button>
+                                        </div>
+                                      </div>
+                                    )
+                                  : (
+                                      <>
+                                        <button type="button" className="menu-item" onClick={() => { setMenuRenaming(true); setRenameDraft(group.name); }}>重命名…</button>
+                                        <button type="button" className="menu-item text-[var(--error)]" onClick={() => deleteGroup(group.id)}>删除分组</button>
+                                      </>
+                                    )}
+                              </div>
+                            </FloatLayer>
+                          </div>
+                          {!folded && (
+                            secTabs.length === 0
+                              ? <div className="px-3 py-1.5 text-[length:var(--text-chrome)] text-[var(--text-weak)]">{q ? '没有匹配的会话' : '空分组 —— 点右上角 ＋ 把会话加进来'}</div>
+                              : secTabs.map(renderGroupedRow)
+                          )}
+                        </div>
+                      );
+                    })}
+                  </>
+                )}
+                {visibleGroups.map((g) => {
                   const tabs = q ? g.tabs.filter(t => t.title.toLowerCase().includes(q)) : g.tabs;
                   /** Optimistic create landing in this window (never filtered by search: the user just asked for it). */
                   const pendingRow = newHere && newHere.windowId === g.windowId ? newHere : null;
@@ -619,7 +964,7 @@ export function SessionList({
                     </div>
                   );
                 })}
-                {state && !newHere && groups.every(g => g.tabs.length === 0) && (
+                {state && !newHere && visibleGroups.every(g => g.tabs.length === 0) && manualSections.every(sec => sec.tabs.length === 0) && (
                   <div className="p-2.5 text-[length:var(--text-chrome)] text-[var(--text-weak)]">
                     {contentOnlyMachine ? '暂无会话 —— 这台机器只读，不能新建。' : '暂无会话 —— 点窗口分组头部的 ＋ 新建。'}
                   </div>

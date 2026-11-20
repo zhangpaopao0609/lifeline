@@ -81,3 +81,23 @@ export const sessionSeq = sqliteTable(
   },
   t => [primaryKey({ columns: [t.agentId, t.ide, t.sessionId] })],
 );
+
+/** 用户手动建的会话分组（网页会话列）。按登录用户存，跨机器共享；归属见 `session_group_members`。 */
+export const sessionGroups = sqliteTable('session_groups', {
+  id: text('id').primaryKey(),
+  ownerUserId: text('owner_user_id').notNull(),
+  name: text('name').notNull(),
+  sortOrder: integer('sort_order').notNull(),
+  createdAt: integer('created_at').notNull(),
+});
+
+/** 会话 → 分组归属。一个会话最多属于一个分组（"属于那个"），移动 = 覆盖这一行。 */
+export const sessionGroupMembers = sqliteTable(
+  'session_group_members',
+  {
+    ownerUserId: text('owner_user_id').notNull(),
+    sessionId: text('session_id').notNull(),
+    groupId: text('group_id').notNull(),
+  },
+  t => [primaryKey({ columns: [t.ownerUserId, t.sessionId] })],
+);

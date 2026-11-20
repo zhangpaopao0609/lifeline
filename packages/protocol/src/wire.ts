@@ -209,6 +209,22 @@ export interface ChatTab {
 
 export type WindowKind = 'project' | 'agents';
 
+/**
+ * 会话分组的 wire 类型（网页会话列的手动分组）。**按登录用户存**，跨机器共享：会话 id
+ * （composerId）是全局 uuid，归属表只记 `sessionId → groupId`。一个会话最多属于一个
+ * 分组（"属于那个"），移动 = 覆盖归属行。
+ */
+export interface SessionGroup {
+  id: string;
+  name: string;
+  sortOrder: number;
+}
+
+export interface SessionGroupsState {
+  groups: SessionGroup[];
+  assignments: Record<string, string>;
+}
+
 export interface CursorWindow {
   id: string;
   title: string;

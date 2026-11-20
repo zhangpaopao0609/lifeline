@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import type { IdeKind } from '../../protocol/src/index.js';
+import type { IdeKind, SessionGroupsState } from '../../protocol/src/index.js';
 import type { AgentSocket, StatePatchPayload } from './agent-hub.js';
 import type { AuthProvider } from './auth/provider.js';
 import type { AgentIdesState } from './ide.js';
@@ -180,6 +180,58 @@ function trySendInstaller(
   reply.header('Cache-Control', 'no-store');
   reply.send(content.split(ORIGIN_PLACEHOLDER).join(origin));
   return true;
+}
+
+/**
+ * 会话分组 put 的校验与归一（网页会话列的手动分组）。**纯函数**，直接可测。
+ *
+ * put 是网页发来的完整期望状态（数据量小：几十组/几百归属），一次覆盖建组 / 重命名 /
+ * 排序 / 删除 / 移动全部语义。非法输入整体拒绝（返回 null），不做部分应用 —— 页面
+ * 的本地乐观状态和服务端要么一致、要么原样，不存在"存了一半"。
+ *
+ * 上限：64 个分组（名字 ≤ 60 字符，去重后）、1000 条归属。超出视为异常客户端而不是
+ * 数据，直接拒绝。
+ */
+export function normalizeSessionGroupsPut(payload: unknown): SessionGroupsState | null {
+  if (!payload || typeof payload !== 'object')
+    return null;
+  const raw = payload as { groups?: unknown; assignments?: unknown };
+  if (!Array.isArray(raw.groups) || raw.groups.length > 64)
+    return null;
+  const seen = new Set<string>();
+  const groups: SessionGroupsState['groups'] = [];
+  for (const item of raw.groups) {
+    if (!item || typeof item !== 'object')
+      return null;
+    const g = item as { id?: unknown; name?: unknown; sortOrder?: unknown };
+    if (typeof g.id !== 'string' || g.id.length === 0 || g.id.length > 64)
+      return null;
+    if (seen.has(g.id))
+      return null;
+    if (typeof g.name !== 'string')
+      return null;
+    const name = g.name.trim();
+    if (name.length === 0 || name.length > 60)
+      return null;
+    if (typeof g.sortOrder !== 'number' || !Number.isFinite(g.sortOrder) || g.sortOrder < 0)
+      return null;
+    seen.add(g.id);
+    groups.push({ id: g.id, name, sortOrder: Math.floor(g.sortOrder) });
+  }
+  if (!raw.assignments || typeof raw.assignments !== 'object' || Array.isArray(raw.assignments))
+    return null;
+  const entries = Object.entries(raw.assignments as Record<string, unknown>);
+  if (entries.length > 1000)
+    return null;
+  const assignments: Record<string, string> = {};
+  for (const [sessionId, groupId] of entries) {
+    if (sessionId.length === 0 || sessionId.length > 200)
+      return null;
+    if (typeof groupId !== 'string' || !seen.has(groupId))
+      return null;
+    assignments[sessionId] = groupId;
+  }
+  return { groups, assignments };
 }
 
 export class Relay {
@@ -494,6 +546,8 @@ export class Relay {
       const viewer = this.viewerUserId(socket.data.userId);
       socket.emit('machines:list', this.machinesPayload(viewer));
       socket.emit('agent:uplink', { connected: this.agentHub.hasAgent(viewer) });
+      // 会话分组跟着连接推一次（重连 = 新连接 = 再推）：网页端不需要再发 get。
+      socket.emit('session-groups:list', this.identity.sessionGroupsOf(viewer));
 
       socket.on('machine:select', (payload: { agentId?: string }) => {
         const agentId = payload?.agentId;
@@ -573,6 +627,33 @@ export class Relay {
             return;
           }
           reply(this.agentHub.setDisplayName(agentId, normalizeMachineName(rawName ?? '')));
+        },
+      );
+
+      // 会话分组（网页会话列的手动分组）：按登录用户存，跨机器共享。归属校验同 machine:forget
+      // 一脉 —— 这里没有机器作用域（分组是用户级的），put 全量覆盖，成功后广播给该用户的
+      // 所有打开页面，保证多端一致。
+      socket.on('session-groups:get', (_payload: unknown, ack?: (r: SessionGroupsState) => void) => {
+        if (typeof ack === 'function')
+          ack(this.identity.sessionGroupsOf(viewer));
+      });
+
+      socket.on(
+        'session-groups:put',
+        (payload: unknown, ack?: (r: { ok: boolean }) => void) => {
+          const reply = (ok: boolean) => {
+            if (typeof ack === 'function')
+              ack({ ok });
+          };
+          const state = normalizeSessionGroupsPut(payload);
+          if (!state) {
+            reply(false);
+            return;
+          }
+          this.identity.putSessionGroups(viewer, state);
+          // 广播含发起者自己（同在 user room）：ack 之外再收一次 list，两端路径统一走 applyList。
+          this.io.to(userRoom(socket.data.userId ?? '')).emit('session-groups:list', state);
+          reply(true);
         },
       );
 

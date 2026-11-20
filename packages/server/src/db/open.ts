@@ -113,6 +113,26 @@ export function applySchema(db: Database.Database): void {
       last_seq INTEGER NOT NULL,
       PRIMARY KEY (agent_id, ide, session_id)
     );
+
+    -- Manual session groups (web session column). Per-user, cross-machine; a session id may
+    -- exist on several IDE slots, so the assignment key is (owner, session_id) alone.
+    CREATE TABLE IF NOT EXISTS session_groups (
+      id TEXT PRIMARY KEY,
+      owner_user_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      sort_order INTEGER NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS session_groups_owner ON session_groups (owner_user_id);
+
+    CREATE TABLE IF NOT EXISTS session_group_members (
+      owner_user_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      group_id TEXT NOT NULL,
+      PRIMARY KEY (owner_user_id, session_id)
+    );
+    CREATE INDEX IF NOT EXISTS session_group_members_group
+      ON session_group_members (owner_user_id, group_id);
   `);
 }
 
