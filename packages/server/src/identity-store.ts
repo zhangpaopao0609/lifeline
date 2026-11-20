@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import type { AgentPlatform } from '../../protocol/src/index.js';
+import type { AgentPlatform, SessionGroupsState } from '../../protocol/src/index.js';
 import type { LifelineDb } from './db/open.js';
 import type { AgentIdesState } from './ide.js';
 import type { CursorState } from './types.js';
@@ -13,7 +13,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { toAgentPlatform } from '../../protocol/src/index.js';
 import { openDrizzle } from './db/open.js';
-import { machines, machineTokens, users } from './db/schema.js';
+import { machines, machineTokens, sessionGroupMembers, sessionGroups, users } from './db/schema.js';
 import { IDE_KINDS, wrapIncomingFull } from './ide.js';
 
 export interface MachineRow {
@@ -292,6 +292,63 @@ export class IdentityStore {
         .set({ agentId: newAgentId })
         .where(eq(machineTokens.agentId, oldAgentId))
         .run();
+    });
+    apply();
+  }
+
+  // ------------------------------------------------------------- session groups
+
+  /** 该用户的分组与归属（网页会话列的手动分组）。数据量小（几十组/几百归属），直接全量读。 */
+  sessionGroupsOf(owner: string): SessionGroupsState {
+    const groups = this.orm
+      .select()
+      .from(sessionGroups)
+      .where(eq(sessionGroups.ownerUserId, owner))
+      .all()
+      .sort((a, b) => a.sortOrder - b.sortOrder || a.createdAt - b.createdAt)
+      .map(g => ({ id: g.id, name: g.name, sortOrder: g.sortOrder }));
+    const assignments: Record<string, string> = {};
+    for (const row of this.orm
+      .select()
+      .from(sessionGroupMembers)
+      .where(eq(sessionGroupMembers.ownerUserId, owner))
+      .all()) {
+      assignments[row.sessionId] = row.groupId;
+    }
+    return { groups, assignments };
+  }
+
+  /**
+   * 全量替换该用户的分组与归属。put 是网页发来的完整期望状态：一次事务覆盖建组 / 重命名 /
+   * 排序 / 删除 / 移动全部语义，不用为每种操作单独建模。孤儿归属（组已不存在）由调用方
+   * 的校验挡住；这里再兜底跳过一次。
+   */
+  putSessionGroups(owner: string, state: SessionGroupsState): void {
+    const known = new Set(state.groups.map(g => g.id));
+    const apply = this.sqlite.transaction(() => {
+      this.orm.delete(sessionGroupMembers).where(eq(sessionGroupMembers.ownerUserId, owner)).run();
+      this.orm.delete(sessionGroups).where(eq(sessionGroups.ownerUserId, owner)).run();
+      const now = this.now();
+      for (const group of state.groups) {
+        this.orm
+          .insert(sessionGroups)
+          .values({
+            id: group.id,
+            ownerUserId: owner,
+            name: group.name,
+            sortOrder: group.sortOrder,
+            createdAt: now,
+          })
+          .run();
+      }
+      for (const [sessionId, groupId] of Object.entries(state.assignments)) {
+        if (!known.has(groupId))
+          continue;
+        this.orm
+          .insert(sessionGroupMembers)
+          .values({ ownerUserId: owner, sessionId, groupId })
+          .run();
+      }
     });
     apply();
   }

@@ -12,6 +12,7 @@ import type {
   IdeKind,
   MachinesListPayload,
   SessionBodyPayload,
+  SessionGroupsState,
   SessionMissingPayload,
   SessionPatchPayload,
   SessionSyncPayload,
@@ -25,6 +26,7 @@ import { dispatchCli, nextActiveTarget, setCliEffectHandler, useCliStore } from 
 import { useConnectionStore } from '../store/connection';
 import { isSyntheticComposerId, liveSessionKeyOf, pendingMatchesTab, useIdesStore } from '../store/ides';
 import { useMachinesStore } from '../store/machines';
+import { useSessionGroupsStore } from '../store/sessionGroups';
 import { sessionBodyKey, useSessionsStore } from '../store/sessions';
 import { useUiStore } from '../store/ui';
 import { useUserStore } from '../store/user';
@@ -259,6 +261,10 @@ export function bindSocket(): void {
     machines().applyMachinesList(data?.machines ?? [], data?.cliLatest);
   });
   socket.on('agent:uplink', (data: { connected?: boolean }) => machines().applyUplink(!!data?.connected));
+  // 会话分组：连接建立时服务端推一次，put 成功后向 user room 广播 —— 全部走这里落地。
+  socket.on('session-groups:list', (state: SessionGroupsState) => {
+    useSessionGroupsStore.getState().applyList(state);
+  });
 
   socket.on('state:full', (wire: StateFullWire) => {
     useIdesStore.getState().applyStateFull(wire);
